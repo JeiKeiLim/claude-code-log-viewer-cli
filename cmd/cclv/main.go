@@ -2,9 +2,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
@@ -14,31 +16,64 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/tui"
 )
 
+// Output mode for display
+type outputMode int
+
+const (
+	modeTUI outputMode = iota
+	modePlain
+)
+
 func main() {
-	// Detect if stdin is a TTY
-	isTTY := term.IsTerminal(int(os.Stdin.Fd()))
+	// Parse command-line flags
+	plainFlag := flag.Bool("plain", false, "Output plain text without TUI")
+	tuiFlag := flag.Bool("tui", false, "Force TUI mode even when stdout is piped")
+	flag.Parse()
 
-	// Determine mode based on TTY and arguments
-	args := os.Args[1:]
+	// Get remaining args after flag parsing
+	args := flag.Args()
 
-	if !isTTY || len(args) > 0 {
-		// Pipeline mode: stdin is piped or file argument provided
-		if err := runPipelineMode(args, isTTY); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
+	// Detect TTY status
+	stdinTTY := term.IsTerminal(int(os.Stdin.Fd()))
+	stdoutTTY := term.IsTerminal(int(os.Stdout.Fd()))
+
+	// Determine output mode per data-model.md flow:
+	// 1. --plain flag? → Plain Mode
+	// 2. --tui flag? → TUI Mode
+	// 3. stdin is TTY + no args → Interactive Mode (TUI)
+	// 4. Otherwise → Pipeline Mode: stdout is TTY? → TUI, else Plain
+	var mode outputMode
+	if *plainFlag {
+		mode = modePlain
+	} else if *tuiFlag {
+		mode = modeTUI
+	} else if stdinTTY && len(args) == 0 {
 		// Interactive mode: launch project browser
 		if err := runInteractiveMode(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+		return
+	} else {
+		// Pipeline mode: check stdout TTY
+		if stdoutTTY {
+			mode = modeTUI
+		} else {
+			mode = modePlain
+		}
+	}
+
+	// Pipeline/file mode with determined output mode
+	if err := runPipelineMode(args, mode); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
 // runPipelineMode handles viewing logs from stdin or a file argument.
-func runPipelineMode(args []string, isTTY bool) error {
+func runPipelineMode(args []string, mode outputMode) error {
 	var reader io.Reader
+	var source string
 
 	if len(args) > 0 {
 		// File argument provided
@@ -49,9 +84,11 @@ func runPipelineMode(args []string, isTTY bool) error {
 		}
 		defer file.Close()
 		reader = file
+		source = filepath.Base(filePath)
 	} else {
 		// Read from stdin
 		reader = os.Stdin
+		source = "stdin"
 	}
 
 	// Parse the JSONL content
@@ -64,8 +101,16 @@ func runPipelineMode(args []string, isTTY bool) error {
 		return fmt.Errorf("no entries found in input")
 	}
 
-	// Create and run the viewer
-	model := tui.NewViewerModel(result.Entries, result.ParseErrors)
+	// Output based on mode
+	if mode == modePlain {
+		// Plain text output to stdout
+		output := tui.RenderPlain(result.Entries, source)
+		fmt.Print(output)
+		return nil
+	}
+
+	// TUI mode
+	model := tui.NewViewerModel(result.Entries, result.ParseErrors, source)
 
 	// Use alternate screen buffer for TUI
 	p := tea.NewProgram(model, tea.WithAltScreen())

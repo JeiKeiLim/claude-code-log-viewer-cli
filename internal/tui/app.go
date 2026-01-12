@@ -2,6 +2,8 @@
 package tui
 
 import (
+	"fmt"
+
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
@@ -19,13 +21,14 @@ const (
 
 // AppModel is the root Bubbletea model for the interactive mode.
 type AppModel struct {
-	state             viewState
-	projectModel      ProjectModel
-	conversationModel ConversationModel
-	viewerModel       ViewerModel
-	selectedProject   types.Project
-	width             int
-	height            int
+	state                viewState
+	projectModel         ProjectModel
+	conversationModel    ConversationModel
+	viewerModel          ViewerModel
+	selectedProject      types.Project
+	selectedConversation types.Conversation
+	width                int
+	height               int
 }
 
 // NewAppModel creates a new application model with the project browser.
@@ -46,7 +49,8 @@ func NewAppModelWithError(err error) AppModel {
 
 // Init implements tea.Model.
 func (m AppModel) Init() tea.Cmd {
-	return m.projectModel.Init()
+	// Request window size to properly initialize the list dimensions
+	return tea.Batch(m.projectModel.Init(), tea.WindowSize())
 }
 
 // Update implements tea.Model.
@@ -89,19 +93,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.conversations) == 0 {
 			// No conversations - show empty conversation list
 			m.conversationModel = NewConversationModel(msg.conversations, m.selectedProject.DisplayName)
-			m.conversationModel.list.SetSize(m.width, m.height-4)
+			m.conversationModel.SetSize(m.width, m.height)
 			m.state = viewConversations
 			return m, nil
 		}
 
 		// Show conversation list
 		m.conversationModel = NewConversationModel(msg.conversations, m.selectedProject.DisplayName)
-		m.conversationModel.list.SetSize(m.width, m.height-4)
+		m.conversationModel.SetSize(m.width, m.height)
 		m.state = viewConversations
 		return m, nil
 
 	case ConversationSelectedMsg:
 		// User selected a conversation, load it
+		m.selectedConversation = msg.Conversation
 		return m, m.loadConversation(msg.Conversation.FilePath)
 
 	case conversationLoadedMsg:
@@ -110,7 +115,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Handle error - stay on conversation list
 			return m, nil
 		}
-		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors)
+		// Build title: "project-name - 2026-01-12 09:00"
+		title := fmt.Sprintf("%s - %s", m.selectedProject.DisplayName, formatTimestamp(m.selectedConversation.LastModified))
+		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title)
 		m.viewerModel.SetSize(m.width, m.height)
 		m.state = viewViewer
 		return m, nil

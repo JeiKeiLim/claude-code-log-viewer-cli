@@ -74,6 +74,7 @@ type ConversationModel struct {
 	projectName   string
 	width         int
 	height        int
+	ready         bool // Set to true after first WindowSizeMsg
 }
 
 // NewConversationModel creates a new conversation browser model.
@@ -84,12 +85,12 @@ func NewConversationModel(conversations []types.Conversation, projectName string
 	}
 
 	delegate := ConversationItemDelegate{}
-	l := list.New(items, delegate, 0, 0)
-	l.Title = fmt.Sprintf("Conversations: %s", projectName)
-	l.SetShowStatusBar(true)
+	// Use reasonable default size, will be resized on WindowSizeMsg
+	l := list.New(items, delegate, 80, 20)
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(false)
 	l.SetShowHelp(false)
-	l.Styles.Title = Styles.Title
 
 	return ConversationModel{
 		list:          l,
@@ -101,6 +102,15 @@ func NewConversationModel(conversations []types.Conversation, projectName string
 // Init implements tea.Model.
 func (m ConversationModel) Init() tea.Cmd {
 	return nil
+}
+
+// SetSize sets the list size and marks the model as ready.
+func (m *ConversationModel) SetSize(width, height int) {
+	m.width = width
+	m.height = height
+	// Reserve 2 lines: 1 for newline after list, 1 for help text
+	m.list.SetSize(width, height-2)
+	m.ready = true
 }
 
 // ConversationSelectedMsg is sent when a conversation is selected.
@@ -119,11 +129,7 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 
-		case "j", "down":
-			m.list.CursorDown()
-
-		case "k", "up":
-			m.list.CursorUp()
+		// j/k/down/up navigation handled by bubbles list component via m.list.Update(msg) below
 
 		case "enter", "l":
 			if item, ok := m.list.SelectedItem().(ConversationItem); ok {
@@ -137,23 +143,14 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return BackToProjectsFromConversationsMsg{}
 			}
 
-		case "g":
-			m.list.CursorUp()
-			for m.list.Index() > 0 {
-				m.list.CursorUp()
-			}
-
-		case "G":
-			m.list.CursorDown()
-			for m.list.Index() < len(m.list.Items())-1 {
-				m.list.CursorDown()
-			}
+		// g/G navigation handled by bubbles list component via m.list.Update(msg) below
 		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.list.SetSize(msg.Width, msg.Height-4)
+		m.list.SetSize(msg.Width, msg.Height-2)
+		m.ready = true
 	}
 
 	var cmd tea.Cmd
@@ -167,16 +164,22 @@ func (m ConversationModel) View() string {
 		return m.renderEmpty()
 	}
 
-	var b strings.Builder
+	if !m.ready {
+		return "Loading..."
+	}
 
-	b.WriteString(m.list.View())
-	b.WriteString("\n")
+	// Header
+	header := Styles.Title.Render(fmt.Sprintf("Conversations: %s", m.projectName))
 
-	// Help text
+	// Footer
 	help := "j/k:nav • enter/l:open • h/esc:back • g/G:top/bottom • q:quit"
-	b.WriteString(Styles.HelpText.Render(help))
+	footer := Styles.HelpText.Render(help)
 
-	return b.String()
+	// Truncate list to exact height (total - header - footer = height-2)
+	listHeight := m.height - 2
+	listView := truncateConvLines(m.list.View(), listHeight)
+
+	return fmt.Sprintf("%s\n%s\n%s", header, listView, footer)
 }
 
 // renderEmpty renders the empty state when no conversations exist.
@@ -194,4 +197,16 @@ func (m ConversationModel) SelectedConversation() (types.Conversation, bool) {
 		return item.conversation, true
 	}
 	return types.Conversation{}, false
+}
+
+// truncateConvLines truncates a string to at most n lines.
+func truncateConvLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n")
 }

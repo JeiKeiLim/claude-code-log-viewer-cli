@@ -3,6 +3,8 @@
 Auto-generated from all feature plans. Last updated: 2026-01-12
 
 ## Active Technologies
+- Go 1.21+ + Bubbletea, Lipgloss, Bubbles (existing) (002-cclv-fixes-enhancements)
+- N/A (local file reading only) (002-cclv-fixes-enhancements)
 
 - Go 1.21+ + Bubbletea (TUI), Lipgloss (styling), Bubbles (components), Glamour (markdown) (001-claude-log-viewer)
 
@@ -22,6 +24,7 @@ tests/
 Go 1.21+: Follow standard conventions
 
 ## Recent Changes
+- 002-cclv-fixes-enhancements: Added Go 1.21+ + Bubbletea, Lipgloss, Bubbles (existing)
 
 - 001-claude-log-viewer: Added Go 1.21+ + Bubbletea (TUI), Lipgloss (styling), Bubbles (components), Glamour (markdown)
 

@@ -76,20 +76,130 @@ func ScanProjects(projectsPath string) ([]types.Project, error) {
 }
 
 // DecodeProjectPath converts an encoded project name to the original path.
+// Claude Code encoding is lossy: both "/" and "_" become "-", and literal "-" also stays "-".
+// We use filesystem validation to find the correct path.
 // e.g., "-Users-limjk-GitHub-foo" -> "/Users/limjk/GitHub/foo"
+// e.g., "-Users-limjk-GitHub-vibe-dash" -> "/Users/limjk/GitHub/vibe-dash" (if that path exists)
 func DecodeProjectPath(encodedName string) string {
 	if encodedName == "" {
 		return ""
 	}
 
-	// Replace dashes with slashes
-	// The encoded name starts with a dash which becomes the root /
-	decoded := strings.ReplaceAll(encodedName, "-", "/")
+	// First, handle the simple case: replace -- with placeholder for underscore sequences
+	// (when / and _ are adjacent, they become --)
+	const placeholder = "\x00"
+	decoded := strings.ReplaceAll(encodedName, "--", placeholder)
+	decoded = strings.ReplaceAll(decoded, "-", "/")
+	decoded = strings.ReplaceAll(decoded, placeholder, "_")
 
-	// Handle double dashes (escaped dashes in original path)
-	decoded = strings.ReplaceAll(decoded, "//", "-")
+	// Check if this path exists
+	if pathExists(decoded) {
+		return decoded
+	}
 
-	return decoded
+	// Try alternative: -- might represent /- (slash followed by literal hyphen)
+	decoded = strings.ReplaceAll(encodedName, "--", placeholder)
+	decoded = strings.ReplaceAll(decoded, "-", "/")
+	decoded = strings.ReplaceAll(decoded, placeholder, "-")
+
+	if pathExists(decoded) {
+		return decoded
+	}
+
+	// If simple decode doesn't work, try to find actual path by validating each component
+	return decodeWithValidation(encodedName)
+}
+
+// pathExists checks if a path exists on the filesystem.
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// decodeWithValidation attempts to decode by validating path components exist.
+// It tries different interpretations of hyphens (as / or literal - or _).
+// Uses recursive backtracking to find a valid path.
+func decodeWithValidation(encodedName string) string {
+	if encodedName == "" {
+		return ""
+	}
+
+	// Start with empty path, first char should be - which becomes /
+	if encodedName[0] != '-' {
+		// Fallback to simple decode
+		return strings.ReplaceAll(encodedName, "-", "/")
+	}
+
+	// Split by hyphen and try to reconstruct the path
+	parts := strings.Split(encodedName[1:], "-") // Skip leading -
+	if len(parts) == 0 {
+		return "/"
+	}
+
+	// Use recursive backtracking to find the correct path
+	result := findValidPath("", parts, 0)
+	if result != "" {
+		return result
+	}
+
+	// Fallback: simple decode
+	return strings.ReplaceAll(encodedName, "-", "/")
+}
+
+// findValidPath recursively tries to find a valid filesystem path
+// by interpreting hyphens as either path separators, literal hyphens, or underscores.
+func findValidPath(currentPath string, parts []string, startIdx int) string {
+	if startIdx >= len(parts) {
+		// All parts consumed, check if path exists
+		if currentPath != "" && pathExists(currentPath) {
+			return currentPath
+		}
+		return ""
+	}
+
+	// Try consuming 1 to N remaining parts as a single path component
+	for endIdx := startIdx + 1; endIdx <= len(parts); endIdx++ {
+		// Build component name by joining parts with hyphens
+		componentParts := parts[startIdx:endIdx]
+		component := strings.Join(componentParts, "-")
+
+		// Try as new directory
+		var testPath string
+		if currentPath == "" {
+			testPath = "/" + component
+		} else {
+			testPath = filepath.Join(currentPath, component)
+		}
+
+		if pathExists(testPath) {
+			// This component exists, try to complete the rest
+			result := findValidPath(testPath, parts, endIdx)
+			if result != "" {
+				return result
+			}
+			// If rest failed but we consumed all parts and this exists, return it
+			if endIdx == len(parts) {
+				return testPath
+			}
+		}
+
+		// Try with underscore prefix (for _bmad-output style paths)
+		if currentPath != "" && len(componentParts) > 0 {
+			underscoreComponent := "_" + strings.Join(componentParts, "-")
+			testPath = filepath.Join(currentPath, underscoreComponent)
+			if pathExists(testPath) {
+				result := findValidPath(testPath, parts, endIdx)
+				if result != "" {
+					return result
+				}
+				if endIdx == len(parts) {
+					return testPath
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 // assignDisplayNames assigns display names to projects with collision disambiguation.

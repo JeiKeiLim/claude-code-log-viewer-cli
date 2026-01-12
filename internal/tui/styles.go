@@ -119,8 +119,7 @@ var Styles = struct {
 	// UI elements
 	Title: lipgloss.NewStyle().
 		Foreground(primaryColor).
-		Bold(true).
-		MarginBottom(1),
+		Bold(true),
 
 	Subtitle: lipgloss.NewStyle().
 		Foreground(secondaryColor),
