@@ -58,6 +58,7 @@ type ProjectModel struct {
 	filterInput textinput.Model
 	filtering   bool
 	err         error
+	ready       bool // Set to true after first WindowSizeMsg
 }
 
 // NewProjectModel creates a new project browser model.
@@ -68,12 +69,12 @@ func NewProjectModel(projects []types.Project) ProjectModel {
 	}
 
 	delegate := ProjectItemDelegate{}
-	l := list.New(items, delegate, 0, 0)
-	l.Title = "Claude Code Projects"
-	l.SetShowStatusBar(true)
+	// Use reasonable default size, will be resized on WindowSizeMsg
+	l := list.New(items, delegate, 80, 20)
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(false)
-	l.Styles.Title = Styles.Title
 
 	ti := textinput.New()
 	ti.Placeholder = "Filter projects..."
@@ -94,6 +95,15 @@ func NewProjectModelWithError(err error) ProjectModel {
 // Init implements tea.Model.
 func (m ProjectModel) Init() tea.Cmd {
 	return nil
+}
+
+// SetSize sets the list size and marks the model as ready.
+func (m *ProjectModel) SetSize(width, height int) {
+	m.width = width
+	m.height = height
+	// Reserve 2 lines: 1 for newline after list, 1 for help text
+	m.list.SetSize(width, height-2)
+	m.ready = true
 }
 
 // ProjectSelectedMsg is sent when a project is selected.
@@ -139,11 +149,7 @@ func (m ProjectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 
-		case "j", "down":
-			m.list.CursorDown()
-
-		case "k", "up":
-			m.list.CursorUp()
+		// j/k/down/up navigation handled by bubbles list component via m.list.Update(msg) below
 
 		case "enter", "l":
 			if item, ok := m.list.SelectedItem().(ProjectItem); ok {
@@ -157,23 +163,15 @@ func (m ProjectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filterInput.Focus()
 			return m, textinput.Blink
 
-		case "g":
-			m.list.CursorUp()
-			for m.list.Index() > 0 {
-				m.list.CursorUp()
-			}
-
-		case "G":
-			m.list.CursorDown()
-			for m.list.Index() < len(m.list.Items())-1 {
-				m.list.CursorDown()
-			}
+		// g/G navigation handled by bubbles list component via m.list.Update(msg) below
 		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.list.SetSize(msg.Width, msg.Height-4)
+		// List height = total - header(1) - footer(1) = height-2
+		m.list.SetSize(msg.Width, msg.Height-2)
+		m.ready = true
 	}
 
 	var cmd tea.Cmd
@@ -187,21 +185,31 @@ func (m ProjectModel) View() string {
 		return m.renderError()
 	}
 
-	var b strings.Builder
-
-	b.WriteString(m.list.View())
-	b.WriteString("\n")
-
-	if m.filtering {
-		b.WriteString(Styles.SearchInput.Render(m.filterInput.View()))
-		b.WriteString("\n")
+	if !m.ready {
+		return "Loading..."
 	}
 
-	// Help text
-	help := "j/k:nav • enter/l:select • /:filter • g/G:top/bottom • q:quit"
-	b.WriteString(Styles.HelpText.Render(help))
+	// Header
+	header := Styles.Title.Render("Claude Code Projects")
 
-	return b.String()
+	// Footer
+	help := "j/k:nav • enter/l:select • /:filter • g/G:top/bottom • q:quit"
+	footer := Styles.HelpText.Render(help)
+
+	// Truncate list to exact height (total - header - footer = height-2)
+	listHeight := m.height - 2
+	if m.filtering {
+		listHeight = m.height - 5 // Account for filter input
+	}
+	listView := truncateToLines(m.list.View(), listHeight)
+
+	// Middle content (list + optional filter input)
+	if m.filtering {
+		filterInput := Styles.SearchInput.Render(m.filterInput.View())
+		return fmt.Sprintf("%s\n%s\n%s\n%s", header, listView, filterInput, footer)
+	}
+
+	return fmt.Sprintf("%s\n%s\n%s", header, listView, footer)
 }
 
 // renderError renders the error state.
@@ -251,4 +259,16 @@ func (m ProjectModel) SelectedProject() (types.Project, bool) {
 		return item.project, true
 	}
 	return types.Project{}, false
+}
+
+// truncateToLines truncates a string to at most n lines.
+func truncateToLines(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[:n], "\n")
 }

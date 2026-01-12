@@ -23,6 +23,7 @@ type ViewerModel struct {
 	parseErrors int
 	width       int
 	height      int
+	title       string // Display title based on source context
 
 	// Toggle states (collapsed by default per spec)
 	showThinking   bool
@@ -45,7 +46,7 @@ type ViewerModel struct {
 }
 
 // NewViewerModel creates a new viewer model with the given entries.
-func NewViewerModel(entries []types.LogEntry, parseErrors int) ViewerModel {
+func NewViewerModel(entries []types.LogEntry, parseErrors int, title string) ViewerModel {
 	ti := textinput.New()
 	ti.Placeholder = "Search..."
 	ti.CharLimit = 100
@@ -53,6 +54,7 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int) ViewerModel {
 	return ViewerModel{
 		entries:        entries,
 		parseErrors:    parseErrors,
+		title:          title,
 		showThinking:   false, // Collapsed by default
 		showToolInputs: false, // Collapsed by default
 		canGoBack:      false,
@@ -61,15 +63,15 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int) ViewerModel {
 }
 
 // NewViewerModelWithBack creates a new viewer that can return to a previous view.
-func NewViewerModelWithBack(entries []types.LogEntry, parseErrors int) ViewerModel {
-	m := NewViewerModel(entries, parseErrors)
+func NewViewerModelWithBack(entries []types.LogEntry, parseErrors int, title string) ViewerModel {
+	m := NewViewerModel(entries, parseErrors, title)
 	m.canGoBack = true
 	return m
 }
 
 // NewViewerModelWithBackNavigation is an alias for NewViewerModelWithBack.
-func NewViewerModelWithBackNavigation(entries []types.LogEntry, parseErrors int) ViewerModel {
-	return NewViewerModelWithBack(entries, parseErrors)
+func NewViewerModelWithBackNavigation(entries []types.LogEntry, parseErrors int, title string) ViewerModel {
+	return NewViewerModelWithBack(entries, parseErrors, title)
 }
 
 // SetSize sets the viewport size.
@@ -77,8 +79,10 @@ func (m *ViewerModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height
 
+	// Header: 1 line for title
+	// Footer: 1 line for help/status
 	headerHeight := 1
-	footerHeight := 2
+	footerHeight := 1
 	verticalMargins := headerHeight + footerHeight
 
 	if !m.ready {
@@ -207,8 +211,10 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+		// Header: 1 line for title
+		// Footer: 1 line for help/status
 		headerHeight := 1
-		footerHeight := 2
+		footerHeight := 1
 		verticalMargins := headerHeight + footerHeight
 
 		if !m.ready {
@@ -236,8 +242,12 @@ func (m ViewerModel) View() string {
 		return "Loading..."
 	}
 
-	// Header
-	header := Styles.Title.Render("Claude Code Log Viewer")
+	// Header with contextual title
+	headerText := m.title
+	if headerText == "" {
+		headerText = "Claude Code Log Viewer"
+	}
+	header := Styles.Title.Render(headerText)
 
 	// Search bar (if searching)
 	if m.searching {
