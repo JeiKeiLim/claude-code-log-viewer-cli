@@ -1,0 +1,203 @@
+// Package tui provides the terminal user interface components.
+package tui
+
+import (
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// viewState represents the current view in the application.
+type viewState int
+
+const (
+	viewProjects viewState = iota
+	viewConversations
+	viewViewer
+)
+
+// AppModel is the root Bubbletea model for the interactive mode.
+type AppModel struct {
+	state             viewState
+	projectModel      ProjectModel
+	conversationModel ConversationModel
+	viewerModel       ViewerModel
+	selectedProject   types.Project
+	width             int
+	height            int
+}
+
+// NewAppModel creates a new application model with the project browser.
+func NewAppModel(projects []types.Project) AppModel {
+	return AppModel{
+		state:        viewProjects,
+		projectModel: NewProjectModel(projects),
+	}
+}
+
+// NewAppModelWithError creates an app model showing an error.
+func NewAppModelWithError(err error) AppModel {
+	return AppModel{
+		state:        viewProjects,
+		projectModel: NewProjectModelWithError(err),
+	}
+}
+
+// Init implements tea.Model.
+func (m AppModel) Init() tea.Cmd {
+	return m.projectModel.Init()
+}
+
+// Update implements tea.Model.
+func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		// Forward to current view
+		switch m.state {
+		case viewProjects:
+			var cmd tea.Cmd
+			newModel, cmd := m.projectModel.Update(msg)
+			m.projectModel = newModel.(ProjectModel)
+			return m, cmd
+		case viewConversations:
+			var cmd tea.Cmd
+			newModel, cmd := m.conversationModel.Update(msg)
+			m.conversationModel = newModel.(ConversationModel)
+			return m, cmd
+		case viewViewer:
+			var cmd tea.Cmd
+			newModel, cmd := m.viewerModel.Update(msg)
+			m.viewerModel = newModel.(ViewerModel)
+			return m, cmd
+		}
+
+	case ProjectSelectedMsg:
+		// User selected a project, load its conversations
+		m.selectedProject = msg.Project
+		return m, m.loadConversations()
+
+	case conversationsLoadedMsg:
+		// Conversations loaded, show the conversation list
+		if msg.err != nil {
+			// Handle error - go back to projects
+			return m, nil
+		}
+
+		if len(msg.conversations) == 0 {
+			// No conversations - show empty conversation list
+			m.conversationModel = NewConversationModel(msg.conversations, m.selectedProject.DisplayName)
+			m.conversationModel.list.SetSize(m.width, m.height-4)
+			m.state = viewConversations
+			return m, nil
+		}
+
+		// Show conversation list
+		m.conversationModel = NewConversationModel(msg.conversations, m.selectedProject.DisplayName)
+		m.conversationModel.list.SetSize(m.width, m.height-4)
+		m.state = viewConversations
+		return m, nil
+
+	case ConversationSelectedMsg:
+		// User selected a conversation, load it
+		return m, m.loadConversation(msg.Conversation.FilePath)
+
+	case conversationLoadedMsg:
+		// Conversation loaded, switch to viewer
+		if msg.err != nil {
+			// Handle error - stay on conversation list
+			return m, nil
+		}
+		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors)
+		m.viewerModel.SetSize(m.width, m.height)
+		m.state = viewViewer
+		return m, nil
+
+	case BackToProjectsFromConversationsMsg:
+		// User pressed escape in conversation list, go back to projects
+		m.state = viewProjects
+		return m, nil
+
+	case GoBackMsg:
+		// User pressed escape in viewer, go back to conversation list
+		m.state = viewConversations
+		return m, nil
+	}
+
+	// Route updates to current view
+	switch m.state {
+	case viewProjects:
+		var cmd tea.Cmd
+		newModel, cmd := m.projectModel.Update(msg)
+		m.projectModel = newModel.(ProjectModel)
+		return m, cmd
+
+	case viewConversations:
+		var cmd tea.Cmd
+		newModel, cmd := m.conversationModel.Update(msg)
+		m.conversationModel = newModel.(ConversationModel)
+		return m, cmd
+
+	case viewViewer:
+		var cmd tea.Cmd
+		newModel, cmd := m.viewerModel.Update(msg)
+		m.viewerModel = newModel.(ViewerModel)
+		return m, cmd
+	}
+
+	return m, nil
+}
+
+// View implements tea.Model.
+func (m AppModel) View() string {
+	switch m.state {
+	case viewProjects:
+		return m.projectModel.View()
+	case viewConversations:
+		return m.conversationModel.View()
+	case viewViewer:
+		return m.viewerModel.View()
+	default:
+		return m.projectModel.View()
+	}
+}
+
+// Message types for async operations
+
+type conversationsLoadedMsg struct {
+	conversations []types.Conversation
+	err           error
+}
+
+type conversationLoadedMsg struct {
+	entries     []types.LogEntry
+	parseErrors int
+	err         error
+}
+
+// loadConversations loads conversations for the selected project.
+func (m AppModel) loadConversations() tea.Cmd {
+	return func() tea.Msg {
+		conversations, err := scanner.ScanConversations(m.selectedProject.DirPath)
+		return conversationsLoadedMsg{
+			conversations: conversations,
+			err:           err,
+		}
+	}
+}
+
+// loadConversation loads a conversation file.
+func (m AppModel) loadConversation(filePath string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := parser.ParseJSONLFile(filePath)
+		if err != nil {
+			return conversationLoadedMsg{err: err}
+		}
+		return conversationLoadedMsg{
+			entries:     result.Entries,
+			parseErrors: result.ParseErrors,
+		}
+	}
+}
