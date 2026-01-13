@@ -25,25 +25,25 @@ Download the latest release for your platform from [GitHub Releases](https://git
 **macOS (Apple Silicon):**
 ```bash
 curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_darwin_arm64.tar.gz | tar xz
-sudo mv cclv /usr/local/bin/
+mv cclv ~/.local/bin/
 ```
 
 **macOS (Intel):**
 ```bash
 curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_darwin_amd64.tar.gz | tar xz
-sudo mv cclv /usr/local/bin/
+mv cclv ~/.local/bin/
 ```
 
 **Linux (amd64):**
 ```bash
 curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_linux_amd64.tar.gz | tar xz
-sudo mv cclv /usr/local/bin/
+mv cclv ~/.local/bin/
 ```
 
 **Linux (arm64):**
 ```bash
 curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_linux_arm64.tar.gz | tar xz
-sudo mv cclv /usr/local/bin/
+mv cclv ~/.local/bin/
 ```
 
 ### Go Install
@@ -60,7 +60,7 @@ go install github.com/JeiKeiLim/claude-code-log-viewer-cli/cmd/cclv@latest
 git clone https://github.com/JeiKeiLim/claude-code-log-viewer-cli.git
 cd claude-code-log-viewer-cli
 make build
-sudo mv cclv /usr/local/bin/
+mv cclv ~/.local/bin/
 ```
 
 ## Usage
