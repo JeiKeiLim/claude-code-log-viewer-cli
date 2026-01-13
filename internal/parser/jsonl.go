@@ -52,7 +52,7 @@ func ParseJSONLFile(filePath string) (ParseResult, error) {
 	if err != nil {
 		return ParseResult{}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	return ParseJSONL(file), nil
 }

@@ -125,16 +125,16 @@ func (m ListViewport[T]) Update(msg tea.Msg) (ListViewport[T], tea.Cmd) {
 				m.viewport.GotoBottom()
 			}
 		case "d", "ctrl+d":
-			m.viewport.HalfViewDown()
+			m.viewport.HalfPageDown()
 			m.syncCursorToViewport()
 		case "u", "ctrl+u":
-			m.viewport.HalfViewUp()
+			m.viewport.HalfPageUp()
 			m.syncCursorToViewport()
 		case "pgdown", " ":
-			m.viewport.ViewDown()
+			m.viewport.PageDown()
 			m.syncCursorToViewport()
 		case "pgup":
-			m.viewport.ViewUp()
+			m.viewport.PageUp()
 			m.syncCursorToViewport()
 		}
 	}

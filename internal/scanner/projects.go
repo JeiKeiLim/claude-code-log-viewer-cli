@@ -307,7 +307,7 @@ func extractConversationMetadata(filePath string, conv *types.Conversation) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, 0, 64*1024)
@@ -355,7 +355,8 @@ func extractConversationMetadata(filePath string, conv *types.Conversation) {
 			}
 		}
 
-		if raw.Type == "user" {
+		switch raw.Type {
+		case "user":
 			conv.MessageCount++
 			conv.TurnCount++
 
@@ -368,7 +369,7 @@ func extractConversationMetadata(filePath string, conv *types.Conversation) {
 				}
 				conv.FirstUserMessage = preview
 			}
-		} else if raw.Type == "assistant" {
+		case "assistant":
 			conv.MessageCount++
 
 			// Extract model (use first one we find)

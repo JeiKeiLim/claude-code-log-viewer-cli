@@ -55,11 +55,14 @@ func TestListViewport_Navigation(t *testing.T) {
 			lv.SetSize(80, 20)
 			lv.SetCursor(tt.startPos)
 
-			msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)}
-			if tt.key == "down" {
+			var msg tea.KeyMsg
+			switch tt.key {
+			case "down":
 				msg = tea.KeyMsg{Type: tea.KeyDown}
-			} else if tt.key == "up" {
+			case "up":
 				msg = tea.KeyMsg{Type: tea.KeyUp}
+			default:
+				msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)}
 			}
 
 			lv, _ = lv.Update(msg)

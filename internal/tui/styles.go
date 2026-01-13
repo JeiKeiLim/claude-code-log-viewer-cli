@@ -16,7 +16,6 @@ var (
 	dimColor   = lipgloss.Color("#6B7280") // Dim gray
 
 	// Background colors
-	bgColor    = lipgloss.Color("#1F2937") // Dark background
 	bgAltColor = lipgloss.Color("#374151") // Alternate background
 
 	// Role colors

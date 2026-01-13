@@ -17,12 +17,6 @@ func formatTimestamp(t time.Time) string {
 	return t.Local().Format("2006-01-02 15:04")
 }
 
-// truncateString truncates a string to maxLen visual columns with ellipsis.
-// Deprecated: Use TruncateToWidth instead for proper CJK/unicode support.
-func truncateString(s string, maxLen int) string {
-	return TruncateToWidth(s, maxLen)
-}
-
 // max returns the larger of two integers.
 func max(a, b int) int {
 	if a > b {
@@ -37,29 +31,6 @@ func min(a, b int) int {
 		return a
 	}
 	return b
-}
-
-// formatWithCommas formats an integer with thousands separators (commas).
-// Example: 12345 -> "12,345"
-func formatWithCommas(n int) string {
-	if n < 0 {
-		return "-" + formatWithCommas(-n)
-	}
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-
-	// Convert to string and insert commas
-	s := fmt.Sprintf("%d", n)
-	var result []byte
-	length := len(s)
-	for i, c := range s {
-		if i > 0 && (length-i)%3 == 0 {
-			result = append(result, ',')
-		}
-		result = append(result, byte(c))
-	}
-	return string(result)
 }
 
 // formatDuration formats a duration for display.
@@ -127,11 +98,4 @@ func addBorder(content string, width int) string {
 	result.WriteString("╯")
 
 	return result.String()
-}
-
-// truncateFromLeft truncates a string from the left to fit maxWidth.
-// Adds "..." prefix to indicate truncation. Useful for paths.
-// Deprecated: Use TruncateFromLeftToWidth instead.
-func truncateFromLeft(s string, maxWidth int) string {
-	return TruncateFromLeftToWidth(s, maxWidth)
 }

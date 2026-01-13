@@ -152,8 +152,6 @@ type BackToProjectsFromConversationsMsg struct{}
 
 // conversationMetadataLoadedMsg is sent when a batch of conversation metadata is loaded.
 type conversationMetadataLoadedMsg struct {
-	startIdx    int
-	count       int
 	loadedCount int
 }
 

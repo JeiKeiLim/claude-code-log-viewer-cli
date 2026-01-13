@@ -172,22 +172,22 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "j", "down":
-			m.viewport.LineDown(1)
+			m.viewport.ScrollDown(1)
 
 		case "k", "up":
-			m.viewport.LineUp(1)
+			m.viewport.ScrollUp(1)
 
 		case "d", "ctrl+d":
-			m.viewport.HalfViewDown()
+			m.viewport.HalfPageDown()
 
 		case "u", "ctrl+u":
-			m.viewport.HalfViewUp()
+			m.viewport.HalfPageUp()
 
 		case "pgdown", " ":
-			m.viewport.ViewDown()
+			m.viewport.PageDown()
 
 		case "pgup":
-			m.viewport.ViewUp()
+			m.viewport.PageUp()
 
 		case "home":
 			m.viewport.GotoTop()

@@ -120,7 +120,6 @@ func wrapLine(line string, maxWidth int) string {
 		if wordWidth > maxWidth {
 			if currentLineWidth > 0 {
 				result.WriteString("\n")
-				currentLineWidth = 0
 			}
 			result.WriteString(breakLongWord(word, maxWidth))
 			currentLineWidth = VisualWidth(lastLine(result.String()))
