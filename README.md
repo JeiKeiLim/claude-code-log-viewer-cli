@@ -4,6 +4,7 @@ A beautiful terminal UI for browsing and viewing Claude Code conversation logs.
 
 ![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
+[![Release](https://img.shields.io/github/v/release/JeiKeiLim/claude-code-log-viewer-cli)](https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest)
 
 ## Features
 
@@ -11,21 +12,55 @@ A beautiful terminal UI for browsing and viewing Claude Code conversation logs.
 - **Conversation Timeline** - Browse conversations sorted by most recent
 - **Beautiful Log Viewer** - View messages with syntax highlighting and proper formatting
 - **Vim-style Navigation** - `j/k`, `gg/G`, `/search`, and more
+- **CJK Support** - Proper display of Korean, Japanese, and Chinese characters
 - **Pipeline Mode** - Pipe JSONL logs directly: `cat file.jsonl | cclv`
 - **Plain Text Output** - Export logs without TUI for scripting
 
 ## Installation
 
+### Download Binary (Recommended)
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest).
+
+**macOS (Apple Silicon):**
+```bash
+curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_darwin_arm64.tar.gz | tar xz
+sudo mv cclv /usr/local/bin/
+```
+
+**macOS (Intel):**
+```bash
+curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_darwin_amd64.tar.gz | tar xz
+sudo mv cclv /usr/local/bin/
+```
+
+**Linux (amd64):**
+```bash
+curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_linux_amd64.tar.gz | tar xz
+sudo mv cclv /usr/local/bin/
+```
+
+**Linux (arm64):**
+```bash
+curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_linux_arm64.tar.gz | tar xz
+sudo mv cclv /usr/local/bin/
+```
+
+### Go Install
+
+If you have Go installed:
+
 ```bash
 go install github.com/JeiKeiLim/claude-code-log-viewer-cli/cmd/cclv@latest
 ```
 
-Or build from source:
+### Build from Source
 
 ```bash
 git clone https://github.com/JeiKeiLim/claude-code-log-viewer-cli.git
 cd claude-code-log-viewer-cli
-go build -o cclv ./cmd/cclv
+make build
+sudo mv cclv /usr/local/bin/
 ```
 
 ## Usage
