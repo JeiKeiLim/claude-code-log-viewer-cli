@@ -3,10 +3,8 @@ package tui
 
 import (
 	"fmt"
-	"io"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -14,76 +12,76 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
 
-// ProjectItem implements list.Item for the project list.
+// ProjectItem implements ListItem for the project list.
 type ProjectItem struct {
 	project types.Project
 }
 
-func (i ProjectItem) Title() string       { return i.project.DisplayName }
-func (i ProjectItem) Description() string { return i.project.DecodedPath }
-func (i ProjectItem) FilterValue() string { return i.project.DisplayName }
-
-// ProjectItemDelegate is a custom delegate for rendering project items.
-type ProjectItemDelegate struct{}
-
-func (d ProjectItemDelegate) Height() int                             { return 2 }
-func (d ProjectItemDelegate) Spacing() int                            { return 0 }
-func (d ProjectItemDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
-
-func (d ProjectItemDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
-	i, ok := listItem.(ProjectItem)
-	if !ok {
-		return
-	}
-
-	var style lipgloss.Style
-	if index == m.Index() {
-		style = Styles.Selected
+// Render renders the project item for display.
+func (i ProjectItem) Render(width int, selected bool) string {
+	// Selection indicator and styling
+	var prefix string
+	var titleStyle, descStyle lipgloss.Style
+	if selected {
+		prefix = " > "
+		titleStyle = Styles.Selected
+		descStyle = Styles.Selected.Background(lipgloss.Color("#4C1D95")) // Darker purple for description
 	} else {
-		style = Styles.Normal
+		prefix = "   "
+		titleStyle = Styles.Normal.Bold(true)
+		descStyle = Styles.Muted
 	}
 
-	title := style.Render(i.project.DisplayName)
-	desc := Styles.Muted.Render(i.project.DecodedPath)
+	// Available width for content (account for border and prefix)
+	availWidth := width - VisualWidth(prefix) - 2
+	if availWidth < 10 {
+		availWidth = 10
+	}
 
-	fmt.Fprintf(w, "  %s\n  %s\n", title, desc)
+	title := titleStyle.Render(i.project.DisplayName)
+
+	// Truncate path from left if too long (keeps the meaningful end)
+	path := TruncateFromLeftToWidth(i.project.DecodedPath, availWidth)
+	desc := descStyle.Render(path)
+
+	return fmt.Sprintf("%s%s\n   %s", prefix, title, desc)
 }
+
+// FilterValue returns the value used for filtering.
+func (i ProjectItem) FilterValue() string { return i.project.DisplayName }
 
 // ProjectModel is the Bubbletea model for the project browser.
 type ProjectModel struct {
-	list        list.Model
-	projects    []types.Project
-	width       int
-	height      int
-	filterInput textinput.Model
-	filtering   bool
-	err         error
-	ready       bool // Set to true after first WindowSizeMsg
+	listViewport ListViewport[ProjectItem]
+	projects     []types.Project
+	allItems     []ProjectItem // All items (unfiltered)
+	width        int
+	height       int
+	filterInput  textinput.Model
+	filtering    bool
+	err          error
+	ready        bool // Set to true after first WindowSizeMsg
 }
 
 // NewProjectModel creates a new project browser model.
 func NewProjectModel(projects []types.Project) ProjectModel {
-	items := make([]list.Item, len(projects))
+	items := make([]ProjectItem, len(projects))
 	for i, p := range projects {
 		items[i] = ProjectItem{project: p}
 	}
 
-	delegate := ProjectItemDelegate{}
-	// Use reasonable default size, will be resized on WindowSizeMsg
-	l := list.New(items, delegate, 80, 20)
-	l.SetShowTitle(false)
-	l.SetShowStatusBar(false)
-	l.SetFilteringEnabled(true)
-	l.SetShowHelp(false)
+	// Create viewport-based list with 2 lines per item
+	listViewport := NewListViewport[ProjectItem](items, 2)
 
 	ti := textinput.New()
 	ti.Placeholder = "Filter projects..."
 	ti.CharLimit = 100
 
 	return ProjectModel{
-		list:        l,
-		projects:    projects,
-		filterInput: ti,
+		listViewport: listViewport,
+		projects:     projects,
+		allItems:     items,
+		filterInput:  ti,
 	}
 }
 
@@ -101,8 +99,20 @@ func (m ProjectModel) Init() tea.Cmd {
 func (m *ProjectModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	// Reserve 2 lines: 1 for newline after list, 1 for help text
-	m.list.SetSize(width, height-2)
+	// Calculate actual list height: total - header - footer - border (2 lines for border top/bottom)
+	listHeight := height - 4
+	if m.filtering {
+		listHeight = height - 6 // Account for filter input too
+	}
+	if listHeight < 4 {
+		listHeight = 4
+	}
+	// Width for list is total width minus 4 (2 for outer margins, 2 for border chars)
+	listWidth := width - 4
+	if listWidth < 10 {
+		listWidth = 10
+	}
+	m.listViewport.SetSize(listWidth, listHeight)
 	m.ready = true
 }
 
@@ -129,14 +139,16 @@ func (m ProjectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "enter":
 				m.filtering = false
-				m.list.SetFilteringEnabled(false)
 				m.applyFilter(m.filterInput.Value())
+				// Recalculate list height without filter input
+				m.SetSize(m.width, m.height)
 				return m, nil
 			case "esc":
 				m.filtering = false
 				m.filterInput.SetValue("")
-				m.list.SetFilteringEnabled(false)
 				m.resetFilter()
+				// Recalculate list height without filter input
+				m.SetSize(m.width, m.height)
 				return m, nil
 			}
 			var cmd tea.Cmd
@@ -149,10 +161,8 @@ func (m ProjectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 
-		// j/k/down/up navigation handled by bubbles list component via m.list.Update(msg) below
-
 		case "enter", "l":
-			if item, ok := m.list.SelectedItem().(ProjectItem); ok {
+			if item, ok := m.listViewport.SelectedItem(); ok {
 				return m, func() tea.Msg {
 					return ProjectSelectedMsg{Project: item.project}
 				}
@@ -161,21 +171,19 @@ func (m ProjectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/":
 			m.filtering = true
 			m.filterInput.Focus()
+			// Recalculate list height with filter input
+			m.SetSize(m.width, m.height)
 			return m, textinput.Blink
-
-		// g/G navigation handled by bubbles list component via m.list.Update(msg) below
 		}
 
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		// List height = total - header(1) - footer(1) = height-2
-		m.list.SetSize(msg.Width, msg.Height-2)
-		m.ready = true
+		m.SetSize(msg.Width, msg.Height)
+		return m, nil
 	}
 
+	// Delegate navigation to ListViewport
 	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
+	m.listViewport, cmd = m.listViewport.Update(msg)
 	return m, cmd
 }
 
@@ -189,27 +197,28 @@ func (m ProjectModel) View() string {
 		return "Loading..."
 	}
 
-	// Header
-	header := Styles.Title.Render("Claude Code Projects")
+	// Header with project count
+	projectCount := m.listViewport.ItemCount()
+	headerText := fmt.Sprintf("Claude Code Projects %s", ListStyles.Counter.Render(fmt.Sprintf("(%d)", projectCount)))
+	header := Styles.Title.Render(headerText)
 
 	// Footer
 	help := "j/k:nav • enter/l:select • /:filter • g/G:top/bottom • q:quit"
 	footer := Styles.HelpText.Render(help)
 
-	// Truncate list to exact height (total - header - footer = height-2)
-	listHeight := m.height - 2
-	if m.filtering {
-		listHeight = m.height - 5 // Account for filter input
-	}
-	listView := truncateToLines(m.list.View(), listHeight)
+	// Viewport already respects height strictly
+	listView := m.listViewport.View()
+
+	// Add manual border
+	boxed := addBorder(listView, m.width-2)
 
 	// Middle content (list + optional filter input)
 	if m.filtering {
 		filterInput := Styles.SearchInput.Render(m.filterInput.View())
-		return fmt.Sprintf("%s\n%s\n%s\n%s", header, listView, filterInput, footer)
+		return fmt.Sprintf("%s\n%s\n%s\n%s", header, boxed, filterInput, footer)
 	}
 
-	return fmt.Sprintf("%s\n%s\n%s", header, listView, footer)
+	return fmt.Sprintf("%s\n%s\n%s", header, boxed, footer)
 }
 
 // renderError renders the error state.
@@ -234,41 +243,25 @@ func (m *ProjectModel) applyFilter(filter string) {
 	}
 
 	filter = strings.ToLower(filter)
-	items := make([]list.Item, 0)
+	items := make([]ProjectItem, 0)
 	for _, p := range m.projects {
 		if strings.Contains(strings.ToLower(p.DisplayName), filter) ||
 			strings.Contains(strings.ToLower(p.DecodedPath), filter) {
 			items = append(items, ProjectItem{project: p})
 		}
 	}
-	m.list.SetItems(items)
+	m.listViewport.SetItems(items)
 }
 
 // resetFilter resets the filter and shows all projects.
 func (m *ProjectModel) resetFilter() {
-	items := make([]list.Item, len(m.projects))
-	for i, p := range m.projects {
-		items[i] = ProjectItem{project: p}
-	}
-	m.list.SetItems(items)
+	m.listViewport.SetItems(m.allItems)
 }
 
 // SelectedProject returns the currently selected project.
 func (m ProjectModel) SelectedProject() (types.Project, bool) {
-	if item, ok := m.list.SelectedItem().(ProjectItem); ok {
+	if item, ok := m.listViewport.SelectedItem(); ok {
 		return item.project, true
 	}
 	return types.Project{}, false
-}
-
-// truncateToLines truncates a string to at most n lines.
-func truncateToLines(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	lines := strings.Split(s, "\n")
-	if len(lines) <= n {
-		return s
-	}
-	return strings.Join(lines[:n], "\n")
 }

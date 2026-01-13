@@ -68,6 +68,14 @@ cclv --plain conversation.jsonl | grep "error"
 cat file.jsonl | cclv --tui
 ```
 
+### Version Information
+
+```bash
+# Show version
+cclv --version
+cclv -v
+```
+
 ## Keyboard Shortcuts
 
 ### Project/Conversation List

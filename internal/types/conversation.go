@@ -13,4 +13,12 @@ type Conversation struct {
 	MessageCount int
 	// FirstUserMessage is a preview of the first user message (truncated to 80 chars)
 	FirstUserMessage string
+	// TotalTokens is the sum of all token usage in the conversation
+	TotalTokens TokenUsage
+	// Model is the primary model used (from first assistant message)
+	Model string
+	// Duration is the time between first and last message
+	Duration time.Duration
+	// TurnCount is the number of user-assistant turn pairs (count of user messages)
+	TurnCount int
 }

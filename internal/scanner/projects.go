@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
@@ -228,7 +229,26 @@ func assignDisplayNames(projects []types.Project) {
 }
 
 // ScanConversations scans a project directory for conversation files.
+// For projects with many conversations, use ScanConversationsLazy followed by
+// ExtractConversationMetadataBatch for better performance.
 func ScanConversations(projectPath string) ([]types.Conversation, error) {
+	conversations, err := ScanConversationsLazy(projectPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract metadata for all conversations
+	for i := range conversations {
+		extractConversationMetadata(conversations[i].FilePath, &conversations[i])
+	}
+
+	return conversations, nil
+}
+
+// ScanConversationsLazy scans a project directory for conversation files without
+// extracting metadata. This is faster for initial loading of large projects.
+// Call ExtractConversationMetadataBatch to load metadata for specific conversations.
+func ScanConversationsLazy(projectPath string) ([]types.Conversation, error) {
 	entries, err := os.ReadDir(projectPath)
 	if err != nil {
 		return nil, err
@@ -256,9 +276,6 @@ func ScanConversations(projectPath string) ([]types.Conversation, error) {
 			LastModified: info.ModTime(),
 		}
 
-		// Extract first user message preview and count messages
-		conv.FirstUserMessage, conv.MessageCount = extractConversationPreview(filePath)
-
 		conversations = append(conversations, conv)
 	}
 
@@ -270,11 +287,25 @@ func ScanConversations(projectPath string) ([]types.Conversation, error) {
 	return conversations, nil
 }
 
-// extractConversationPreview reads the first user message and counts entries.
-func extractConversationPreview(filePath string) (string, int) {
+// ExtractConversationMetadataBatch extracts metadata for a batch of conversations.
+// Modifies the conversations in place.
+func ExtractConversationMetadataBatch(conversations []types.Conversation, startIdx, count int) {
+	endIdx := startIdx + count
+	if endIdx > len(conversations) {
+		endIdx = len(conversations)
+	}
+
+	for i := startIdx; i < endIdx; i++ {
+		extractConversationMetadata(conversations[i].FilePath, &conversations[i])
+	}
+}
+
+// extractConversationMetadata reads metadata from a conversation file.
+// This includes first user message, message counts, token usage, duration, and model.
+func extractConversationMetadata(filePath string, conv *types.Conversation) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return "", 0
+		return
 	}
 	defer file.Close()
 
@@ -282,8 +313,8 @@ func extractConversationPreview(filePath string) (string, int) {
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
 
-	var firstUserMessage string
-	messageCount := 0
+	var firstTimestamp, lastTimestamp time.Time
+	var totalTokens types.TokenUsage
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -291,31 +322,76 @@ func extractConversationPreview(filePath string) (string, int) {
 			continue
 		}
 
-		// Quick parse to get type
+		// Quick parse to get type and relevant fields
 		var raw struct {
-			Type    string `json:"type"`
-			Message struct {
+			Type      string `json:"type"`
+			Timestamp string `json:"timestamp"`
+			Message   struct {
 				Content string `json:"content"`
+				Model   string `json:"model"`
+				Usage   *struct {
+					InputTokens              int `json:"input_tokens"`
+					OutputTokens             int `json:"output_tokens"`
+					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+				} `json:"usage"`
 			} `json:"message"`
 		}
 		if err := json.Unmarshal(line, &raw); err != nil {
 			continue
 		}
 
-		if raw.Type == "user" || raw.Type == "assistant" {
-			messageCount++
+		// Parse timestamp
+		if raw.Timestamp != "" {
+			t, err := time.Parse(time.RFC3339, raw.Timestamp)
+			if err != nil {
+				t, _ = time.Parse("2006-01-02T15:04:05.000Z", raw.Timestamp)
+			}
+			if !t.IsZero() {
+				if firstTimestamp.IsZero() {
+					firstTimestamp = t
+				}
+				lastTimestamp = t
+			}
 		}
 
-		// Get first user message
-		if raw.Type == "user" && firstUserMessage == "" {
-			firstUserMessage = raw.Message.Content
-			if len(firstUserMessage) > 80 {
-				firstUserMessage = firstUserMessage[:80] + "..."
+		if raw.Type == "user" {
+			conv.MessageCount++
+			conv.TurnCount++
+
+			// Get first user message (normalize: collapse newlines to spaces for single-line preview)
+			if conv.FirstUserMessage == "" {
+				preview := strings.ReplaceAll(raw.Message.Content, "\n", " ")
+				preview = strings.Join(strings.Fields(preview), " ") // Collapse multiple spaces
+				if len(preview) > 80 {
+					preview = preview[:80] + "..."
+				}
+				conv.FirstUserMessage = preview
+			}
+		} else if raw.Type == "assistant" {
+			conv.MessageCount++
+
+			// Extract model (use first one we find)
+			if conv.Model == "" && raw.Message.Model != "" {
+				conv.Model = raw.Message.Model
+			}
+
+			// Sum token usage
+			if raw.Message.Usage != nil {
+				totalTokens.InputTokens += raw.Message.Usage.InputTokens
+				totalTokens.OutputTokens += raw.Message.Usage.OutputTokens
+				totalTokens.CacheCreationInputTokens += raw.Message.Usage.CacheCreationInputTokens
+				totalTokens.CacheReadInputTokens += raw.Message.Usage.CacheReadInputTokens
 			}
 		}
 	}
 
-	return firstUserMessage, messageCount
+	conv.TotalTokens = totalTokens
+
+	// Calculate duration
+	if !firstTimestamp.IsZero() && !lastTimestamp.IsZero() {
+		conv.Duration = lastTimestamp.Sub(firstTimestamp)
+	}
 }
 
 // ProjectsNotFoundError is returned when the projects directory doesn't exist.

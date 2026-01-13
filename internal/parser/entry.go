@@ -55,11 +55,13 @@ func ParseEntry(data []byte) (types.LogEntry, error) {
 			entry.Message = msg
 
 		case types.EntryTypeAssistant:
-			msg, err := parseAssistantMessage(raw.Message)
+			msg, model, usage, err := parseAssistantMessage(raw.Message)
 			if err != nil {
 				return types.LogEntry{}, fmt.Errorf("failed to parse assistant message: %w", err)
 			}
 			entry.Message = msg
+			entry.Model = model
+			entry.Usage = usage
 		}
 	}
 
@@ -80,10 +82,11 @@ func parseUserMessage(data json.RawMessage) (types.Message, error) {
 }
 
 // parseAssistantMessage parses an assistant message from raw JSON.
-func parseAssistantMessage(data json.RawMessage) (types.Message, error) {
+// Returns the message, model name, token usage, and any error.
+func parseAssistantMessage(data json.RawMessage) (types.Message, string, types.TokenUsage, error) {
 	var raw types.RawAssistantMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return types.Message{}, err
+		return types.Message{}, "", types.TokenUsage{}, err
 	}
 
 	msg := types.Message{
@@ -103,5 +106,16 @@ func parseAssistantMessage(data json.RawMessage) (types.Message, error) {
 		msg.Content = append(msg.Content, content)
 	}
 
-	return msg, nil
+	// Extract token usage if present
+	var usage types.TokenUsage
+	if raw.Usage != nil {
+		usage = types.TokenUsage{
+			InputTokens:              raw.Usage.InputTokens,
+			OutputTokens:             raw.Usage.OutputTokens,
+			CacheCreationInputTokens: raw.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     raw.Usage.CacheReadInputTokens,
+		}
+	}
+
+	return msg, raw.Model, usage, nil
 }

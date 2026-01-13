@@ -3,99 +3,119 @@ package tui
 
 import (
 	"fmt"
-	"io"
-	"strings"
 
-	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
 
-// ConversationItem implements list.Item for the conversation list.
+// ConversationItem implements ListItem for the conversation list.
 type ConversationItem struct {
 	conversation types.Conversation
 }
 
-func (i ConversationItem) Title() string {
-	return formatTimestamp(i.conversation.LastModified)
-}
+// Render renders the conversation item for display.
+func (i ConversationItem) Render(width int, selected bool) string {
+	// Selection indicator and styling
+	var prefix string
+	var titleStyle, descStyle lipgloss.Style
+	if selected {
+		prefix = " > "
+		titleStyle = Styles.Selected
+		descStyle = Styles.Selected.Background(lipgloss.Color("#4C1D95")) // Darker purple for description
+	} else {
+		prefix = "   "
+		titleStyle = Styles.Normal.Bold(true)
+		descStyle = Styles.Muted
+	}
 
-func (i ConversationItem) Description() string {
+	// Available width for content (account for border and prefix)
+	// Total width minus prefix (3) and border chars (2 sides = 4 total when rendered)
+	availWidth := width - VisualWidth(prefix) - 2
+	if availWidth < 10 {
+		availWidth = 10
+	}
+
+	timestamp := formatTimestamp(i.conversation.LastModified)
+	title := titleStyle.Render(timestamp)
+
+	// Build description with message count, duration, and preview
 	preview := i.conversation.FirstUserMessage
 	if preview == "" {
 		preview = "(no preview)"
 	}
-	return fmt.Sprintf("%d msgs • %s", i.conversation.MessageCount, preview)
+
+	// Format duration
+	durationStr := formatDuration(i.conversation.Duration)
+	if i.conversation.Duration == 0 {
+		durationStr = "<1m"
+	}
+
+	countStr := fmt.Sprintf("%d msgs", i.conversation.MessageCount)
+	metaPrefix := fmt.Sprintf("%s • %s • ", countStr, durationStr)
+
+	// Calculate how much space left for preview after metadata prefix
+	metaWidth := VisualWidth(metaPrefix)
+	previewMaxWidth := availWidth - metaWidth
+	if previewMaxWidth < 10 {
+		previewMaxWidth = 10
+	}
+	preview = TruncateToWidth(preview, previewMaxWidth)
+
+	desc := descStyle.Render(metaPrefix + preview)
+
+	return fmt.Sprintf("%s%s\n   %s", prefix, title, desc)
 }
 
+// FilterValue returns the value used for filtering.
 func (i ConversationItem) FilterValue() string {
 	return i.conversation.FirstUserMessage
 }
 
-// ConversationItemDelegate is a custom delegate for rendering conversation items.
-type ConversationItemDelegate struct{}
-
-func (d ConversationItemDelegate) Height() int                             { return 2 }
-func (d ConversationItemDelegate) Spacing() int                            { return 0 }
-func (d ConversationItemDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
-
-func (d ConversationItemDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
-	i, ok := listItem.(ConversationItem)
-	if !ok {
-		return
-	}
-
-	var style lipgloss.Style
-	if index == m.Index() {
-		style = Styles.Selected
-	} else {
-		style = Styles.Normal
-	}
-
-	timestamp := formatTimestamp(i.conversation.LastModified)
-	title := style.Render(timestamp)
-
-	preview := i.conversation.FirstUserMessage
-	if preview == "" {
-		preview = "(no preview)"
-	}
-	countStr := fmt.Sprintf("%d msgs", i.conversation.MessageCount)
-	desc := Styles.Muted.Render(fmt.Sprintf("%s • %s", countStr, preview))
-
-	fmt.Fprintf(w, "  %s\n  %s\n", title, desc)
-}
-
 // ConversationModel is the Bubbletea model for the conversation browser.
 type ConversationModel struct {
-	list          list.Model
+	listViewport  ListViewport[ConversationItem]
 	conversations []types.Conversation
 	projectName   string
 	width         int
 	height        int
 	ready         bool // Set to true after first WindowSizeMsg
+
+	// Lazy loading state
+	lazyLoadState LoadingState
+	loadedCount   int  // Number of conversations with metadata loaded
+	lazyEnabled   bool // Whether lazy loading is enabled (>50 conversations)
 }
 
 // NewConversationModel creates a new conversation browser model.
 func NewConversationModel(conversations []types.Conversation, projectName string) ConversationModel {
-	items := make([]list.Item, len(conversations))
+	return NewConversationModelWithLazyLoad(conversations, projectName, false, len(conversations))
+}
+
+// NewConversationModelWithLazyLoad creates a conversation browser with lazy loading support.
+func NewConversationModelWithLazyLoad(conversations []types.Conversation, projectName string, lazyEnabled bool, loadedCount int) ConversationModel {
+	items := make([]ConversationItem, len(conversations))
 	for i, c := range conversations {
 		items[i] = ConversationItem{conversation: c}
 	}
 
-	delegate := ConversationItemDelegate{}
-	// Use reasonable default size, will be resized on WindowSizeMsg
-	l := list.New(items, delegate, 80, 20)
-	l.SetShowTitle(false)
-	l.SetShowStatusBar(false)
-	l.SetFilteringEnabled(false)
-	l.SetShowHelp(false)
+	// Create viewport-based list with 2 lines per item
+	listViewport := NewListViewport[ConversationItem](items, 2)
+
+	state := LoadingStateComplete
+	if lazyEnabled && loadedCount < len(conversations) {
+		state = LoadingStateIdle
+	}
 
 	return ConversationModel{
-		list:          l,
+		listViewport:  listViewport,
 		conversations: conversations,
 		projectName:   projectName,
+		lazyEnabled:   lazyEnabled,
+		loadedCount:   loadedCount,
+		lazyLoadState: state,
 	}
 }
 
@@ -108,8 +128,17 @@ func (m ConversationModel) Init() tea.Cmd {
 func (m *ConversationModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	// Reserve 2 lines: 1 for newline after list, 1 for help text
-	m.list.SetSize(width, height-2)
+	// Calculate actual list height: total - header - footer - border (2 lines for border top/bottom)
+	listHeight := height - 4
+	if listHeight < 4 {
+		listHeight = 4
+	}
+	// Width for list is total width minus 4 (2 for outer margins, 2 for border chars)
+	listWidth := width - 4
+	if listWidth < 10 {
+		listWidth = 10
+	}
+	m.listViewport.SetSize(listWidth, listHeight)
 	m.ready = true
 }
 
@@ -121,6 +150,13 @@ type ConversationSelectedMsg struct {
 // BackToProjectsFromConversationsMsg is sent when the user wants to go back to projects.
 type BackToProjectsFromConversationsMsg struct{}
 
+// conversationMetadataLoadedMsg is sent when a batch of conversation metadata is loaded.
+type conversationMetadataLoadedMsg struct {
+	startIdx    int
+	count       int
+	loadedCount int
+}
+
 // Update implements tea.Model.
 func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -129,10 +165,8 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 
-		// j/k/down/up navigation handled by bubbles list component via m.list.Update(msg) below
-
 		case "enter", "l":
-			if item, ok := m.list.SelectedItem().(ConversationItem); ok {
+			if item, ok := m.listViewport.SelectedItem(); ok {
 				return m, func() tea.Msg {
 					return ConversationSelectedMsg{Conversation: item.conversation}
 				}
@@ -142,20 +176,61 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				return BackToProjectsFromConversationsMsg{}
 			}
-
-		// g/G navigation handled by bubbles list component via m.list.Update(msg) below
 		}
 
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.list.SetSize(msg.Width, msg.Height-2)
-		m.ready = true
+		m.SetSize(msg.Width, msg.Height)
+		return m, nil
+
+	case conversationMetadataLoadedMsg:
+		// Update the loaded count and refresh the list items
+		m.loadedCount = msg.loadedCount
+		if m.loadedCount >= len(m.conversations) {
+			m.lazyLoadState = LoadingStateComplete
+		} else {
+			m.lazyLoadState = LoadingStateIdle
+		}
+		// Refresh list items with updated metadata
+		m.refreshListItems()
+		return m, nil
 	}
 
+	// Delegate navigation to ListViewport
 	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
+	m.listViewport, cmd = m.listViewport.Update(msg)
+
+	// Lazy loading: if cursor moved beyond loaded boundary, load more metadata
+	if m.lazyEnabled && m.loadedCount < len(m.conversations) {
+		currentIdx := m.listViewport.Cursor()
+		// Load if cursor is within 5 items of the loaded boundary
+		if currentIdx >= m.loadedCount-5 {
+			// Load metadata up to cursor position + buffer
+			targetLoad := currentIdx + 10
+			if targetLoad > len(m.conversations) {
+				targetLoad = len(m.conversations)
+			}
+			if targetLoad > m.loadedCount {
+				// Load synchronously to avoid navigation issues
+				scanner.ExtractConversationMetadataBatch(m.conversations, m.loadedCount, targetLoad-m.loadedCount)
+				m.loadedCount = targetLoad
+				m.refreshListItems()
+			}
+		}
+	}
+
 	return m, cmd
+}
+
+// refreshListItems refreshes the list items with current conversation data.
+// Preserves the current selection index to avoid cursor jump issues.
+func (m *ConversationModel) refreshListItems() {
+	currentIndex := m.listViewport.Cursor()
+	items := make([]ConversationItem, len(m.conversations))
+	for i, c := range m.conversations {
+		items[i] = ConversationItem{conversation: c}
+	}
+	m.listViewport.SetItems(items)
+	m.listViewport.SetCursor(currentIndex)
 }
 
 // View implements tea.Model.
@@ -168,18 +243,27 @@ func (m ConversationModel) View() string {
 		return "Loading..."
 	}
 
-	// Header
-	header := Styles.Title.Render(fmt.Sprintf("Conversations: %s", m.projectName))
+	// Header with conversation count and loading indicator
+	convCount := m.listViewport.ItemCount()
+	headerText := fmt.Sprintf("Conversations: %s %s", m.projectName, ListStyles.Counter.Render(fmt.Sprintf("(%d)", convCount)))
+	if m.lazyLoadState == LoadingStateLoading {
+		headerText += " " + ListStyles.Loading.Render("loading...")
+	} else if m.lazyEnabled && m.loadedCount < len(m.conversations) {
+		headerText += " " + Styles.Muted.Render(fmt.Sprintf("[%d/%d loaded]", m.loadedCount, len(m.conversations)))
+	}
+	header := Styles.Title.Render(headerText)
 
 	// Footer
 	help := "j/k:nav • enter/l:open • h/esc:back • g/G:top/bottom • q:quit"
 	footer := Styles.HelpText.Render(help)
 
-	// Truncate list to exact height (total - header - footer = height-2)
-	listHeight := m.height - 2
-	listView := truncateConvLines(m.list.View(), listHeight)
+	// Viewport already respects height strictly
+	listView := m.listViewport.View()
 
-	return fmt.Sprintf("%s\n%s\n%s", header, listView, footer)
+	// Add manual border
+	boxed := addBorder(listView, m.width-2)
+
+	return fmt.Sprintf("%s\n%s\n%s", header, boxed, footer)
 }
 
 // renderEmpty renders the empty state when no conversations exist.
@@ -193,20 +277,8 @@ func (m ConversationModel) renderEmpty() string {
 
 // SelectedConversation returns the currently selected conversation.
 func (m ConversationModel) SelectedConversation() (types.Conversation, bool) {
-	if item, ok := m.list.SelectedItem().(ConversationItem); ok {
+	if item, ok := m.listViewport.SelectedItem(); ok {
 		return item.conversation, true
 	}
 	return types.Conversation{}, false
-}
-
-// truncateConvLines truncates a string to at most n lines.
-func truncateConvLines(s string, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	lines := strings.Split(s, "\n")
-	if len(lines) <= n {
-		return s
-	}
-	return strings.Join(lines[:n], "\n")
 }
