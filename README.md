@@ -46,6 +46,11 @@ curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/
 mv cclv ~/.local/bin/
 ```
 
+> **Note:** Make sure `~/.local/bin` is in your PATH. If not, add this to your `~/.bashrc` or `~/.zshrc`:
+> ```bash
+> export PATH="$HOME/.local/bin:$PATH"
+> ```
+
 ### Go Install
 
 If you have Go installed:
