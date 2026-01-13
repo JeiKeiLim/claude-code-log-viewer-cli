@@ -32,6 +32,12 @@ type LogEntry struct {
 	Timestamp  time.Time
 	SessionID  string
 	Message    Message
+	// Model is the Claude model used (e.g., "claude-opus-4-5-20251101")
+	// Only populated for assistant entries
+	Model string
+	// Usage contains token usage statistics
+	// Only populated for assistant entries
+	Usage TokenUsage
 }
 
 // Message represents the message content of a log entry.
@@ -72,6 +78,8 @@ type RawUserMessage struct {
 type RawAssistantMessage struct {
 	Role    string              `json:"role"`
 	Content []RawMessageContent `json:"content"`
+	Model   string              `json:"model,omitempty"`
+	Usage   *RawTokenUsage      `json:"usage,omitempty"`
 }
 
 // RawMessageContent is the raw JSON structure for message content blocks.
@@ -82,4 +90,37 @@ type RawMessageContent struct {
 	Name     string         `json:"name,omitempty"`
 	ID       string         `json:"id,omitempty"`
 	Input    map[string]any `json:"input,omitempty"`
+}
+
+// TokenUsage represents token consumption for a message or conversation.
+type TokenUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
+// Total returns the total token count (input + output + cache).
+func (u TokenUsage) Total() int {
+	return u.InputTokens + u.OutputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+}
+
+// TotalInput returns total input tokens including cache.
+func (u TokenUsage) TotalInput() int {
+	return u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+}
+
+// IsEmpty returns true if all token counts are zero.
+func (u TokenUsage) IsEmpty() bool {
+	return u.InputTokens == 0 && u.OutputTokens == 0 &&
+		u.CacheCreationInputTokens == 0 && u.CacheReadInputTokens == 0
+}
+
+// RawTokenUsage is the raw JSON structure for token usage.
+type RawTokenUsage struct {
+	InputTokens              int    `json:"input_tokens"`
+	OutputTokens             int    `json:"output_tokens"`
+	CacheCreationInputTokens int    `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int    `json:"cache_read_input_tokens"`
+	ServiceTier              string `json:"service_tier,omitempty"`
 }

@@ -82,3 +82,92 @@ listView := lipgloss.NewStyle().Height(listHeight).Render(m.list.View())
 
 - Bubbles list: https://github.com/charmbracelet/bubbles/tree/master/list
 - Bubbles viewport: https://github.com/charmbracelet/bubbles/tree/master/viewport
+
+---
+
+## Viewport-Based ListViewport Solution
+
+**Date**: 2026-01-13
+**Project**: claude-code-log-viewer-cli
+
+### Problem
+
+The manual truncation approach (Option 1 above) caused navigation issues: the cursor position in the list component would desync from the visible truncated output, making navigation appear "stuck" when scrolling large lists.
+
+### Solution: ListViewport Component
+
+We replaced `bubbles/list` entirely with a custom `ListViewport[T]` generic component that wraps `bubbles/viewport`:
+
+```go
+// ListItem interface for renderable items
+type ListItem interface {
+    Render(width int, selected bool) string
+    FilterValue() string
+}
+
+// ListViewport wraps viewport for strict height control
+type ListViewport[T ListItem] struct {
+    viewport   viewport.Model
+    items      []T
+    cursor     int
+    itemHeight int // Lines per item (typically 2)
+    // ...
+}
+```
+
+### Benefits
+
+1. **Strict height control**: Viewport respects `SetSize()` exactly
+2. **Explicit cursor management**: No hidden state desync
+3. **Full navigation control**: j/k/G/gg all work correctly
+4. **Generic**: Works with any item type implementing `ListItem`
+
+### Implementation Pattern
+
+```go
+// In your model
+type MyModel struct {
+    listViewport ListViewport[MyItem]
+}
+
+// SetSize
+func (m *MyModel) SetSize(width, height int) {
+    listHeight := height - 4 // header + footer + borders
+    m.listViewport.SetSize(width-4, listHeight)
+}
+
+// Update delegates navigation
+func (m MyModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+    m.listViewport, cmd = m.listViewport.Update(msg)
+    return m, cmd
+}
+
+// View uses viewport directly
+func (m MyModel) View() string {
+    listView := m.listViewport.View()
+    return header + addBorder(listView, width) + footer
+}
+```
+
+### CJK Character Width
+
+Additionally, we created `stringwidth.go` utilities to handle CJK character width correctly:
+
+```go
+// VisualWidth returns display columns (not bytes)
+func VisualWidth(s string) int {
+    return lipgloss.Width(s)  // Uses go-runewidth internally
+}
+
+// TruncateToWidth truncates to visual columns
+func TruncateToWidth(s string, maxWidth int) string
+```
+
+Key insight: Korean characters are 3 bytes in UTF-8 but only 2 display columns. Using `len()` for display calculations causes border misalignment.
+
+### Files Changed
+
+- `internal/tui/stringwidth.go` (NEW)
+- `internal/tui/listviewport.go` (NEW)
+- `internal/tui/conversation.go` (refactored to use ListViewport)
+- `internal/tui/project.go` (refactored to use ListViewport)

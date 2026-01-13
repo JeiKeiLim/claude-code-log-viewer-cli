@@ -156,10 +156,73 @@ var Styles = struct {
 		Padding(0, 1),
 }
 
-// Icons for different message types
+// Icons for different message types (text-based, no emoji per FR-017)
 const (
-	UserIcon      = "👤"
-	AssistantIcon = "🤖"
-	ThinkingIcon  = "💭"
-	ToolIcon      = "🔧"
+	UserIcon      = "[U]"
+	AssistantIcon = "[A]"
+	ThinkingIcon  = "[T]"
+	ToolIcon      = "[>]"
 )
+
+// Box-drawing characters for list decoration
+const (
+	HorizontalLine = "────────────────────────────────────────────────────────────────────────────────"
+	VerticalLine   = "│"
+	TopLeft        = "┌"
+	TopRight       = "┐"
+	BottomLeft     = "└"
+	BottomRight    = "┘"
+)
+
+// LoadingState represents the state of lazy loading.
+type LoadingState int
+
+const (
+	LoadingStateIdle LoadingState = iota
+	LoadingStateLoading
+	LoadingStateComplete
+	LoadingStateError
+)
+
+// LazyLoadConfig contains configuration for lazy loading.
+type LazyLoadConfig struct {
+	BatchSize             int // Number of items to load per batch
+	ConversationThreshold int // Threshold for lazy loading conversations (50)
+	MessageThreshold      int // Threshold for lazy loading messages (100)
+}
+
+// DefaultLazyLoadConfig returns the default lazy loading configuration.
+func DefaultLazyLoadConfig() LazyLoadConfig {
+	return LazyLoadConfig{
+		BatchSize:             20,
+		ConversationThreshold: 50,
+		MessageThreshold:      100,
+	}
+}
+
+// ListStyles contains styles for decorated lists.
+var ListStyles = struct {
+	Header    lipgloss.Style
+	Separator lipgloss.Style
+	Counter   lipgloss.Style
+	Loading   lipgloss.Style
+}{
+	Header: lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderBottom(true).
+		BorderForeground(dimColor).
+		PaddingBottom(0).
+		MarginBottom(0),
+
+	Separator: lipgloss.NewStyle().
+		Foreground(dimColor),
+
+	Counter: lipgloss.NewStyle().
+		Foreground(mutedColor),
+
+	Loading: lipgloss.NewStyle().
+		Foreground(accentColor).
+		Italic(true),
+}

@@ -43,6 +43,11 @@ type ViewerModel struct {
 	// gg key detection
 	lastKeyG     bool
 	lastKeyGTime time.Time
+
+	// Lazy loading state
+	lazyLoadState LoadingState
+	loadedCount   int  // Number of entries rendered
+	lazyEnabled   bool // Whether lazy loading is enabled (>100 entries)
 }
 
 // NewViewerModel creates a new viewer model with the given entries.
@@ -50,6 +55,19 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string) Vie
 	ti := textinput.New()
 	ti.Placeholder = "Search..."
 	ti.CharLimit = 100
+
+	config := DefaultLazyLoadConfig()
+	lazyEnabled := len(entries) > config.MessageThreshold
+
+	// For lazy loading, initially render only the first batch
+	loadedCount := len(entries)
+	state := LoadingStateComplete
+	if lazyEnabled {
+		loadedCount = min(config.BatchSize*2, len(entries)) // Load 2 batches initially (40 entries)
+		if loadedCount < len(entries) {
+			state = LoadingStateIdle
+		}
+	}
 
 	return ViewerModel{
 		entries:        entries,
@@ -59,6 +77,9 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string) Vie
 		showToolInputs: false, // Collapsed by default
 		canGoBack:      false,
 		searchInput:    ti,
+		lazyEnabled:    lazyEnabled,
+		loadedCount:    loadedCount,
+		lazyLoadState:  state,
 	}
 }
 
@@ -227,14 +248,56 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.Height = msg.Height - verticalMargins
 			m.updateContent()
 		}
+
+	case viewerMessagesLoadedMsg:
+		// Update loaded count and refresh content
+		m.loadedCount = msg.loadedCount
+		if m.loadedCount >= len(m.entries) {
+			m.lazyLoadState = LoadingStateComplete
+		} else {
+			m.lazyLoadState = LoadingStateIdle
+		}
+		m.updateContent()
+		return m, nil
 	}
 
 	m.viewport, cmd = m.viewport.Update(msg)
+
+	// Check if we need to load more messages (when scrolling near bottom)
+	if m.lazyEnabled && m.lazyLoadState == LoadingStateIdle {
+		// Check if we're near the bottom of the currently rendered content
+		scrollPercent := m.viewport.ScrollPercent()
+		if scrollPercent > 0.8 && m.loadedCount < len(m.entries) {
+			m.lazyLoadState = LoadingStateLoading
+			return m, m.loadMoreMessages()
+		}
+	}
+
 	return m, cmd
+}
+
+// loadMoreMessages loads the next batch of messages.
+func (m *ViewerModel) loadMoreMessages() tea.Cmd {
+	config := DefaultLazyLoadConfig()
+	newLoadedCount := m.loadedCount + config.BatchSize
+	if newLoadedCount > len(m.entries) {
+		newLoadedCount = len(m.entries)
+	}
+
+	return func() tea.Msg {
+		return viewerMessagesLoadedMsg{
+			loadedCount: newLoadedCount,
+		}
+	}
 }
 
 // GoBackMsg signals the parent to go back to the previous view.
 type GoBackMsg struct{}
+
+// viewerMessagesLoadedMsg is sent when more messages are rendered.
+type viewerMessagesLoadedMsg struct {
+	loadedCount int
+}
 
 // View implements tea.Model.
 func (m ViewerModel) View() string {
@@ -268,7 +331,7 @@ func (m ViewerModel) View() string {
 
 	helpText := Styles.HelpText.Render(strings.Join(footerParts, " • "))
 
-	// Status with search info
+	// Status with search info and lazy loading status
 	var statusText string
 	if m.noResults && m.searchQuery != "" {
 		statusText = fmt.Sprintf("No results for '%s'", m.searchQuery)
@@ -276,6 +339,9 @@ func (m ViewerModel) View() string {
 		statusText = fmt.Sprintf("Match %d/%d for '%s'", m.currentMatch+1, len(m.searchMatches), m.searchQuery)
 	} else {
 		statusText = fmt.Sprintf("%d entries", len(m.entries))
+		if m.lazyEnabled && m.loadedCount < len(m.entries) {
+			statusText = fmt.Sprintf("%d/%d entries", m.loadedCount, len(m.entries))
+		}
 		if m.parseErrors > 0 {
 			statusText += fmt.Sprintf(" (%d lines skipped)", m.parseErrors)
 		}
@@ -292,13 +358,30 @@ func (m ViewerModel) View() string {
 	return fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), footer)
 }
 
-// updateContent renders all entries and updates the viewport content.
+// updateContent renders entries and updates the viewport content.
+// With lazy loading, only renders up to loadedCount entries.
 func (m *ViewerModel) updateContent() {
 	var content strings.Builder
 
-	for _, entry := range m.entries {
-		rendered := m.renderEntry(entry)
+	// Render only loadedCount entries for lazy loading
+	renderCount := m.loadedCount
+	if renderCount > len(m.entries) {
+		renderCount = len(m.entries)
+	}
+
+	for i := 0; i < renderCount; i++ {
+		rendered := m.renderEntry(m.entries[i])
 		content.WriteString(rendered)
+		content.WriteString("\n")
+	}
+
+	// Add loading indicator at the bottom if more content is available
+	if m.lazyEnabled && renderCount < len(m.entries) {
+		if m.lazyLoadState == LoadingStateLoading {
+			content.WriteString(ListStyles.Loading.Render("Loading more messages..."))
+		} else {
+			content.WriteString(Styles.Muted.Render(fmt.Sprintf("-- %d more entries (scroll down to load) --", len(m.entries)-renderCount)))
+		}
 		content.WriteString("\n")
 	}
 
@@ -326,7 +409,13 @@ func (m *ViewerModel) renderUserMessage(entry types.LogEntry) string {
 		Styles.Timestamp.Render(timestamp),
 	)
 
-	content := Styles.MessageContent.Render(entry.Message.TextContent)
+	// Wrap content to fit viewport width (with margin for styling)
+	wrapWidth := m.width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	wrappedText := WrapText(entry.Message.TextContent, wrapWidth)
+	content := Styles.MessageContent.Render(wrappedText)
 
 	return Styles.UserMessage.Render(header + "\n" + content)
 }
@@ -340,6 +429,12 @@ func (m *ViewerModel) renderAssistantMessage(entry types.LogEntry) string {
 		Styles.Timestamp.Render(timestamp),
 	)
 
+	// Calculate wrap width for content
+	wrapWidth := m.width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+
 	var parts []string
 	parts = append(parts, header)
 
@@ -347,7 +442,8 @@ func (m *ViewerModel) renderAssistantMessage(entry types.LogEntry) string {
 		switch content.Type {
 		case types.ContentTypeText:
 			if content.Text != "" {
-				parts = append(parts, Styles.MessageContent.Render(content.Text))
+				wrappedText := WrapText(content.Text, wrapWidth)
+				parts = append(parts, Styles.MessageContent.Render(wrappedText))
 			}
 
 		case types.ContentTypeThinking:
@@ -369,8 +465,15 @@ func (m *ViewerModel) renderThinkingBlock(content types.MessageContent) string {
 		)
 	}
 
+	// Wrap thinking content to viewport width
+	wrapWidth := m.width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	wrappedThinking := WrapText(content.Thinking, wrapWidth)
+
 	header := fmt.Sprintf("%s %s", ThinkingIcon, Styles.ThinkingHeader.Render("Thinking"))
-	return Styles.ThinkingBlock.Render(header + "\n" + content.Thinking)
+	return Styles.ThinkingBlock.Render(header + "\n" + wrappedThinking)
 }
 
 // renderToolUseBlock renders a tool use content block.
@@ -387,13 +490,17 @@ func (m *ViewerModel) renderToolUseBlock(content types.MessageContent) string {
 		)
 	}
 
-	// Render tool inputs with truncation
-	inputStr := formatToolInput(content.ToolInput)
-	if len(inputStr) > 200 {
-		inputStr = inputStr[:200] + fmt.Sprintf("... (%d chars total)", len(inputStr))
+	// Calculate wrap width for tool input content
+	wrapWidth := m.width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
 	}
 
-	return Styles.ToolBlock.Render(header + "\n" + inputStr)
+	// Render tool inputs with wrapping
+	inputStr := formatToolInput(content.ToolInput)
+	wrappedInput := WrapText(inputStr, wrapWidth)
+
+	return Styles.ToolBlock.Render(header + "\n" + wrappedInput)
 }
 
 // formatToolInput formats tool input as a readable string.

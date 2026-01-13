@@ -14,6 +14,7 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/tui"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version"
 )
 
 // Output mode for display
@@ -28,7 +29,15 @@ func main() {
 	// Parse command-line flags
 	plainFlag := flag.Bool("plain", false, "Output plain text without TUI")
 	tuiFlag := flag.Bool("tui", false, "Force TUI mode even when stdout is piped")
+	versionFlag := flag.Bool("version", false, "Print version information and exit")
+	versionShortFlag := flag.Bool("v", false, "Print version information and exit (shorthand)")
 	flag.Parse()
+
+	// Handle version flag - print and exit before any other processing
+	if *versionFlag || *versionShortFlag {
+		fmt.Println(version.String())
+		os.Exit(0)
+	}
 
 	// Get remaining args after flag parsing
 	args := flag.Args()

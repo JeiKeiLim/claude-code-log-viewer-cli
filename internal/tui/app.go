@@ -98,8 +98,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Show conversation list
-		m.conversationModel = NewConversationModel(msg.conversations, m.selectedProject.DisplayName)
+		// Show conversation list with lazy loading info
+		m.conversationModel = NewConversationModelWithLazyLoad(
+			msg.conversations,
+			m.selectedProject.DisplayName,
+			msg.lazyEnabled,
+			msg.loadedCount,
+		)
 		m.conversationModel.SetSize(m.width, m.height)
 		m.state = viewConversations
 		return m, nil
@@ -115,8 +120,26 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Handle error - stay on conversation list
 			return m, nil
 		}
-		// Build title: "project-name - 2026-01-12 09:00"
+		// Build title: "project-name - 2026-01-12 09:00 (model)"
 		title := fmt.Sprintf("%s - %s", m.selectedProject.DisplayName, formatTimestamp(m.selectedConversation.LastModified))
+		if m.selectedConversation.Model != "" {
+			// Shorten model name for display (e.g., "claude-3-5-sonnet-20241022" -> "sonnet-20241022")
+			modelShort := m.selectedConversation.Model
+			if VisualWidth(modelShort) > 20 {
+				// Find last hyphen-separated segment that starts with the model version
+				parts := []string{}
+				for i := len(modelShort) - 1; i >= 0; i-- {
+					if modelShort[i] == '-' {
+						parts = append([]string{modelShort[i+1:]}, parts...)
+						if len(parts) >= 2 {
+							modelShort = parts[0] + "-" + parts[1]
+							break
+						}
+					}
+				}
+			}
+			title = fmt.Sprintf("%s (%s)", title, modelShort)
+		}
 		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title)
 		m.viewerModel.SetSize(m.width, m.height)
 		m.state = viewViewer
@@ -176,6 +199,8 @@ func (m AppModel) View() string {
 type conversationsLoadedMsg struct {
 	conversations []types.Conversation
 	err           error
+	lazyEnabled   bool
+	loadedCount   int
 }
 
 type conversationLoadedMsg struct {
@@ -185,12 +210,37 @@ type conversationLoadedMsg struct {
 }
 
 // loadConversations loads conversations for the selected project.
+// Uses lazy loading for projects with >50 conversations.
 func (m AppModel) loadConversations() tea.Cmd {
 	return func() tea.Msg {
-		conversations, err := scanner.ScanConversations(m.selectedProject.DirPath)
+		config := DefaultLazyLoadConfig()
+
+		// First, scan without metadata (fast)
+		conversations, err := scanner.ScanConversationsLazy(m.selectedProject.DirPath)
+		if err != nil {
+			return conversationsLoadedMsg{err: err}
+		}
+
+		// If small number of conversations, load all metadata immediately
+		if len(conversations) <= config.ConversationThreshold {
+			for i := range conversations {
+				scanner.ExtractConversationMetadataBatch(conversations, i, 1)
+			}
+			return conversationsLoadedMsg{
+				conversations: conversations,
+				lazyEnabled:   false,
+				loadedCount:   len(conversations),
+			}
+		}
+
+		// Large project: load first batch of metadata
+		batchSize := config.BatchSize
+		scanner.ExtractConversationMetadataBatch(conversations, 0, batchSize)
+
 		return conversationsLoadedMsg{
 			conversations: conversations,
-			err:           err,
+			lazyEnabled:   true,
+			loadedCount:   min(batchSize, len(conversations)),
 		}
 	}
 }
