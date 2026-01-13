@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+
+    runs-on: ${{ matrix.os }}
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Build
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          COMMIT=$(git rev-parse --short HEAD)
+          DATE=$(date -u +%Y-%m-%d)
+
+          go build -ldflags "-s -w \
+            -X github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version.Version=${VERSION} \
+            -X github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version.Commit=${COMMIT} \
+            -X github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version.BuildDate=${DATE}" \
+            -o cclv ./cmd/cclv
+
+          # Create archive (no version in filename for /latest/download/ URL compatibility)
+          tar -czvf cclv_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz cclv README.md
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cclv_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: cclv_*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags (for annotated tag messages)
+        run: git fetch --tags --force
+
+      - name: Get tag message
+        id: tag
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          # Get the tag message (empty for lightweight tags)
+          TAG_MESSAGE=$(git tag -l --format='%(contents)' "$TAG_NAME" | head -c 10000)
+
+          # Check if we have a meaningful message
+          if [ -n "$TAG_MESSAGE" ] && [ "$TAG_MESSAGE" != "$TAG_NAME" ]; then
+            echo "has_message=true" >> $GITHUB_OUTPUT
+            echo "message<<EOF" >> $GITHUB_OUTPUT
+            echo "$TAG_MESSAGE" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "has_message=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > checksums.txt
+          cat checksums.txt
+
+      - name: Create Release (with custom notes)
+        if: steps.tag.outputs.has_message == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          body: ${{ steps.tag.outputs.message }}
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          draft: false
+          prerelease: ${{ contains(github.ref, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release (auto-generated notes)
+        if: steps.tag.outputs.has_message != 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
