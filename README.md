@@ -108,6 +108,21 @@ cclv --plain conversation.jsonl | grep "error"
 cat file.jsonl | cclv --tui
 ```
 
+### Color Output
+
+By default, colors are disabled when output is piped. Use `--color` to control this:
+
+```bash
+# Auto-detect (default) - colors when TTY, no colors when piped
+cclv --plain conversation.jsonl
+
+# Force colors even when piping
+cclv --plain --color=always conversation.jsonl | cat
+
+# Disable colors completely
+cclv --plain --color=never conversation.jsonl
+```
+
 ### Version Information
 
 ```bash

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
@@ -29,6 +31,7 @@ func main() {
 	// Parse command-line flags
 	plainFlag := flag.Bool("plain", false, "Output plain text without TUI")
 	tuiFlag := flag.Bool("tui", false, "Force TUI mode even when stdout is piped")
+	colorFlag := flag.String("color", "auto", "Color output: auto, always, never")
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
 	versionShortFlag := flag.Bool("v", false, "Print version information and exit (shorthand)")
 	flag.Parse()
@@ -38,6 +41,9 @@ func main() {
 		fmt.Println(version.String())
 		os.Exit(0)
 	}
+
+	// Configure color output based on --color flag
+	configureColorOutput(*colorFlag)
 
 	// Get remaining args after flag parsing
 	args := flag.Args()
@@ -128,6 +134,24 @@ func runPipelineMode(args []string, mode outputMode) error {
 	}
 
 	return nil
+}
+
+// configureColorOutput sets the Lipgloss color profile based on the --color flag.
+func configureColorOutput(colorMode string) {
+	switch colorMode {
+	case "always":
+		// Force colors even when not a TTY
+		lipgloss.SetColorProfile(termenv.TrueColor)
+	case "never":
+		// Disable colors completely
+		lipgloss.SetColorProfile(termenv.Ascii)
+	case "auto":
+		// Default behavior - Lipgloss auto-detects
+		// No action needed, Lipgloss handles this automatically
+	default:
+		// Invalid option, treat as auto
+		fmt.Fprintf(os.Stderr, "Warning: invalid --color value '%s', using 'auto'\n", colorMode)
+	}
 }
 
 // runInteractiveMode launches the interactive project browser.
