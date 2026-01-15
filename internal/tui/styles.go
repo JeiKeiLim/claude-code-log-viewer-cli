@@ -119,31 +119,27 @@ var Styles = struct {
 }{
 	// Message container styles
 	UserMessage: lipgloss.NewStyle().
-		BorderLeft(true).
-		BorderStyle(lipgloss.NormalBorder()).
+		Border(lipgloss.RoundedBorder()).
 		BorderForeground(userColor).
-		PaddingLeft(1).
+		Padding(0, 1).
 		MarginBottom(1),
 
 	AssistantMessage: lipgloss.NewStyle().
-		BorderLeft(true).
-		BorderStyle(lipgloss.NormalBorder()).
+		Border(lipgloss.RoundedBorder()).
 		BorderForeground(assistantColor).
-		PaddingLeft(1).
+		Padding(0, 1).
 		MarginBottom(1),
 
 	ThinkingBlock: lipgloss.NewStyle().
-		BorderLeft(true).
-		BorderStyle(lipgloss.NormalBorder()).
+		Border(lipgloss.RoundedBorder()).
 		BorderForeground(thinkingColor).
-		PaddingLeft(1).
+		Padding(0, 1).
 		Foreground(mutedColor),
 
 	ToolBlock: lipgloss.NewStyle().
-		BorderLeft(true).
-		BorderStyle(lipgloss.NormalBorder()).
+		Border(lipgloss.RoundedBorder()).
 		BorderForeground(toolColor).
-		PaddingLeft(1),
+		Padding(0, 1),
 
 	// Header styles
 	UserHeader: lipgloss.NewStyle().
@@ -208,7 +204,7 @@ var Styles = struct {
 		Foreground(blackColor),
 
 	SearchInput: lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
+		Border(lipgloss.RoundedBorder()).
 		BorderForeground(primaryColor).
 		Padding(0, 1),
 }
