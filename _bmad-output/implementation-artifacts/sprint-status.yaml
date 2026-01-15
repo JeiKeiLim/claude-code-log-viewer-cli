@@ -44,7 +44,7 @@ development_status:
   epic-1: in-progress
   1-1-implement-adaptive-color-system: in-progress
   1-2-apply-rounded-border-styling: done
-  1-3-create-segmented-status-bar: backlog
+  1-3-create-segmented-status-bar: done
   1-4-add-spinner-animation: backlog
   epic-1-retrospective: optional
 

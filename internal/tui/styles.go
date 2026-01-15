@@ -116,6 +116,13 @@ var Styles = struct {
 	// Search
 	SearchMatch lipgloss.Style
 	SearchInput lipgloss.Style
+
+	// Status bar segments
+	StatusBarSegment struct {
+		Mode      lipgloss.Style
+		Position  lipgloss.Style
+		Shortcuts lipgloss.Style
+	}
 }{
 	// Message container styles
 	UserMessage: lipgloss.NewStyle().
@@ -207,6 +214,26 @@ var Styles = struct {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(primaryColor).
 		Padding(0, 1),
+
+	StatusBarSegment: struct {
+		Mode      lipgloss.Style
+		Position  lipgloss.Style
+		Shortcuts lipgloss.Style
+	}{
+		Mode: lipgloss.NewStyle().
+			Background(accentColor).
+			Foreground(whiteColor).
+			Padding(0, 1).
+			Bold(true),
+		Position: lipgloss.NewStyle().
+			Background(primaryColor).
+			Foreground(whiteColor).
+			Padding(0, 1),
+		Shortcuts: lipgloss.NewStyle().
+			Background(bgAltColor).
+			Foreground(textColor).
+			Padding(0, 1),
+	},
 }
 
 // Icons for different message types (text-based, no emoji per FR-017)

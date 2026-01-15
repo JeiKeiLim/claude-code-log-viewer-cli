@@ -48,6 +48,9 @@ type ViewerModel struct {
 	lazyLoadState LoadingState
 	loadedCount   int  // Number of entries rendered
 	lazyEnabled   bool // Whether lazy loading is enabled (>100 entries)
+
+	// Watch mode (for future Story 2.1)
+	watchMode bool
 }
 
 // NewViewerModel creates a new viewer model with the given entries.
@@ -299,6 +302,41 @@ type viewerMessagesLoadedMsg struct {
 	loadedCount int
 }
 
+// buildModeSegment returns the mode indicator segment (for watch mode).
+func (m ViewerModel) buildModeSegment() string {
+	if !m.watchMode {
+		return "" // Empty when not in watch mode
+	}
+	return Styles.StatusBarSegment.Mode.Render("LIVE")
+}
+
+// buildPositionSegment returns the position indicator segment.
+func (m ViewerModel) buildPositionSegment() string {
+	total := len(m.entries)
+	if total == 0 {
+		return Styles.StatusBarSegment.Position.Render("0/0")
+	}
+	// Approximate position from scroll percentage
+	// scrollPct=0.0 → pos 1, scrollPct=1.0 → pos total
+	scrollPct := m.viewport.ScrollPercent()
+	pos := int(float64(total-1)*scrollPct) + 1
+	return Styles.StatusBarSegment.Position.Render(fmt.Sprintf("Entry %d/%d", pos, total))
+}
+
+// buildShortcutsSegment returns the keyboard shortcuts segment.
+func (m ViewerModel) buildShortcutsSegment() string {
+	var parts []string
+	parts = append(parts, "j/k:scroll", "gg/G:top/bottom", "/:search")
+	if len(m.searchMatches) > 0 {
+		parts = append(parts, "n/N:next/prev")
+	}
+	if m.canGoBack {
+		parts = append(parts, "h/esc:back")
+	}
+	parts = append(parts, "t:thinking", "i:inputs", "q:quit")
+	return strings.Join(parts, " • ")
+}
+
 // View implements tea.Model.
 func (m ViewerModel) View() string {
 	if !m.ready {
@@ -318,42 +356,37 @@ func (m ViewerModel) View() string {
 		return fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), searchBar)
 	}
 
-	// Footer with help and status
-	var footerParts []string
-	footerParts = append(footerParts, "j/k:scroll", "gg/G:top/bottom", "/:search")
-	if len(m.searchMatches) > 0 {
-		footerParts = append(footerParts, "n/N:next/prev")
-	}
-	if m.canGoBack {
-		footerParts = append(footerParts, "h/esc:back")
-	}
-	footerParts = append(footerParts, "t:thinking", "i:inputs", "q:quit")
+	// Build segmented footer
+	modeSegment := m.buildModeSegment()
+	posSegment := m.buildPositionSegment()
+	shortcutsText := m.buildShortcutsSegment()
 
-	helpText := Styles.HelpText.Render(strings.Join(footerParts, " • "))
-
-	// Status with search info and lazy loading status
-	var statusText string
+	// Add search/status info to shortcuts text if applicable
+	var statusSuffix string
 	if m.noResults && m.searchQuery != "" {
-		statusText = fmt.Sprintf("No results for '%s'", m.searchQuery)
+		statusSuffix = fmt.Sprintf(" | No results for '%s'", m.searchQuery)
 	} else if len(m.searchMatches) > 0 {
-		statusText = fmt.Sprintf("Match %d/%d for '%s'", m.currentMatch+1, len(m.searchMatches), m.searchQuery)
-	} else {
-		statusText = fmt.Sprintf("%d entries", len(m.entries))
-		if m.lazyEnabled && m.loadedCount < len(m.entries) {
-			statusText = fmt.Sprintf("%d/%d entries", m.loadedCount, len(m.entries))
-		}
-		if m.parseErrors > 0 {
-			statusText += fmt.Sprintf(" (%d lines skipped)", m.parseErrors)
-		}
+		statusSuffix = fmt.Sprintf(" | Match %d/%d for '%s'", m.currentMatch+1, len(m.searchMatches), m.searchQuery)
+	} else if m.lazyEnabled && m.loadedCount < len(m.entries) {
+		statusSuffix = fmt.Sprintf(" | %d/%d loaded", m.loadedCount, len(m.entries))
 	}
-	status := Styles.Muted.Render(statusText)
+	if m.parseErrors > 0 {
+		statusSuffix += fmt.Sprintf(" (%d skipped)", m.parseErrors)
+	}
 
-	footer := lipgloss.JoinHorizontal(
-		lipgloss.Left,
-		helpText,
-		strings.Repeat(" ", max(0, m.width-lipgloss.Width(helpText)-lipgloss.Width(status))),
-		status,
-	)
+	// Calculate width for shortcuts segment (fills remaining space)
+	modeWidth := lipgloss.Width(modeSegment)
+	posWidth := lipgloss.Width(posSegment)
+	shortcutsWidth := m.width - modeWidth - posWidth
+	if shortcutsWidth < 0 {
+		shortcutsWidth = 0
+	}
+
+	shortcutsSegment := Styles.StatusBarSegment.Shortcuts.
+		Width(shortcutsWidth).
+		Render(shortcutsText + statusSuffix)
+
+	footer := lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, posSegment, shortcutsSegment)
 
 	return fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), footer)
 }
