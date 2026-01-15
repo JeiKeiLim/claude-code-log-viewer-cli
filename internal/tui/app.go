@@ -4,10 +4,13 @@ package tui
 import (
 	"fmt"
 
+	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // viewState represents the current view in the application.
@@ -29,21 +32,35 @@ type AppModel struct {
 	selectedConversation types.Conversation
 	width                int
 	height               int
+	spinner              spinner.Model
+	loading              bool
 }
 
 // NewAppModel creates a new application model with the project browser.
 func NewAppModel(projects []types.Project) AppModel {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = ListStyles.Loading
+
 	return AppModel{
 		state:        viewProjects,
 		projectModel: NewProjectModel(projects),
+		spinner:      s,
+		loading:      false,
 	}
 }
 
 // NewAppModelWithError creates an app model showing an error.
 func NewAppModelWithError(err error) AppModel {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = ListStyles.Loading
+
 	return AppModel{
 		state:        viewProjects,
 		projectModel: NewProjectModelWithError(err),
+		spinner:      s,
+		loading:      false,
 	}
 }
 
@@ -56,6 +73,15 @@ func (m AppModel) Init() tea.Cmd {
 // Update implements tea.Model.
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		// Only return tick command if actually loading
+		if m.loading {
+			return m, cmd
+		}
+		return m, nil // Stop ticking when not loading
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -80,11 +106,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ProjectSelectedMsg:
 		// User selected a project, load its conversations
+		m.loading = true
 		m.selectedProject = msg.Project
-		return m, m.loadConversations()
+		return m, tea.Batch(m.spinner.Tick, m.loadConversations())
 
 	case conversationsLoadedMsg:
 		// Conversations loaded, show the conversation list
+		m.loading = false // Stop spinner
 		if msg.err != nil {
 			// Handle error - go back to projects
 			return m, nil
@@ -111,11 +139,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ConversationSelectedMsg:
 		// User selected a conversation, load it
+		m.loading = true
 		m.selectedConversation = msg.Conversation
-		return m, m.loadConversation(msg.Conversation.FilePath)
+		return m, tea.Batch(m.spinner.Tick, m.loadConversation(msg.Conversation.FilePath))
 
 	case conversationLoadedMsg:
 		// Conversation loaded, switch to viewer
+		m.loading = false // Stop spinner
 		if msg.err != nil {
 			// Handle error - stay on conversation list
 			return m, nil
@@ -182,6 +212,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View implements tea.Model.
 func (m AppModel) View() string {
+	if m.loading {
+		return m.loadingView()
+	}
 	switch m.state {
 	case viewProjects:
 		return m.projectModel.View()
@@ -192,6 +225,20 @@ func (m AppModel) View() string {
 	default:
 		return m.projectModel.View()
 	}
+}
+
+// loadingView renders the spinner during loading operations.
+func (m AppModel) loadingView() string {
+	loadingText := m.spinner.View() + " " + ListStyles.Loading.Render("Loading...")
+	// Guard against uninitialized dimensions (before WindowSizeMsg)
+	if m.width == 0 || m.height == 0 {
+		return loadingText
+	}
+	return lipgloss.Place(
+		m.width, m.height,
+		lipgloss.Center, lipgloss.Center,
+		loadingText,
+	)
 }
 
 // Message types for async operations
