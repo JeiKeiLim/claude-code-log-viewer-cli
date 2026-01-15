@@ -40,13 +40,21 @@ tracking_system: file-system
 story_location: _bmad-output/implementation-artifacts
 
 development_status:
-  # Epic 1: Visual Polish
-  epic-1: in-progress
-  1-1-implement-adaptive-color-system: in-progress
+  # Epic 1: Visual Polish (DONE)
+  epic-1: done
+  1-1-implement-adaptive-color-system: done
   1-2-apply-rounded-border-styling: done
   1-3-create-segmented-status-bar: done
   1-4-add-spinner-animation: done
-  epic-1-retrospective: optional
+  epic-1-retrospective: done
+
+  # Epic 1.5: Visual Consistency (NEW - from Epic 1 Retrospective)
+  epic-1.5: backlog
+  1-5-research-list-view-polish-options: backlog
+  1-6-implement-list-view-polish: backlog
+  1-7-adjust-spacing-and-margins: backlog
+  1-8-implement-overlay-spinner: backlog
+  epic-1.5-retrospective: optional
 
   # Epic 2: Real-time File Watching
   epic-2: backlog

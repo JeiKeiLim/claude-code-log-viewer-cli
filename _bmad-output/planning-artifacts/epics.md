@@ -50,11 +50,12 @@ This document provides the complete epic and story breakdown for cclv Phase 2, d
 
 ## Epic List
 
-| Epic | Title | Stories | Priority |
-|------|-------|---------|----------|
-| 1 | Visual Polish | 4 | High |
-| 2 | Real-time File Watching | 3 | High |
-| 3 | Markdown Rendering | 3 | Medium |
+| Epic | Title | Stories | Priority | Status |
+|------|-------|---------|----------|--------|
+| 1 | Visual Polish | 4 | High | Done |
+| 1.5 | Visual Consistency | 4 | High | Backlog |
+| 2 | Real-time File Watching | 3 | High | Backlog |
+| 3 | Markdown Rendering | 3 | Medium | Backlog |
 
 ---
 
@@ -261,6 +262,184 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     // ...
 }
 ```
+
+---
+
+## Epic 1.5: Visual Consistency
+
+**Goal:** Complete the visual polish across all views (project list, conversation list) and refine spacing for a cohesive, polished UI experience.
+
+**Requirements Covered:** Retrospective finding - visual consistency gap identified in Epic 1 retro
+
+**Dependencies:** Epic 1 (uses Theme, AdaptiveColors, styling patterns)
+
+**Risk:** Low
+
+**Origin:** Added from Epic 1 Retrospective (2026-01-15)
+
+---
+
+### Story 1.5: Research List View Polish Options
+
+**As a** developer improving cclv's UI,
+**I want** to research and prototype list view styling options,
+**So that** we can make an informed decision on how to polish the project and conversation lists.
+
+**Requirements:** Retrospective finding
+
+**Acceptance Criteria:**
+
+**AC 1.5.1: Research TUI patterns**
+- **Given** the need to polish list views
+- **When** I research other Bubbletea/Charm applications
+- **Then** I document at least 3 different styling approaches
+- **And** include screenshots or descriptions of each
+
+**AC 1.5.2: Prototype options**
+- **Given** the research findings
+- **When** I create quick prototypes
+- **Then** at least 2 viable options are demonstrated
+- **And** each shows how it would look in cclv
+
+**AC 1.5.3: Recommendation**
+- **Given** the prototypes
+- **When** research is complete
+- **Then** a recommended approach is documented
+- **And** rationale explains why it fits cclv best
+
+**Technical Notes:**
+- This is a research spike - output is a recommendation, not production code
+- Look at: charm/glow, charm/soft-serve, other bubbles/list implementations
+- Consider: rounded borders on items, alternating row colors, selection highlighting
+
+---
+
+### Story 1.6: Implement List View Polish
+
+**As a** developer using cclv,
+**I want** the project and conversation list views to match the polished viewer styling,
+**So that** the entire UI feels cohesive and modern.
+
+**Requirements:** Retrospective finding
+
+**Acceptance Criteria:**
+
+**AC 1.6.1: Project list styling**
+- **Given** the project list view
+- **When** it renders
+- **Then** it uses the Theme's adaptive colors
+- **And** visual styling matches the polished viewer
+
+**AC 1.6.2: Conversation list styling**
+- **Given** the conversation list view
+- **When** it renders
+- **Then** it uses the Theme's adaptive colors
+- **And** visual styling matches the polished viewer
+
+**AC 1.6.3: Selection highlighting**
+- **Given** a list with items
+- **When** an item is selected
+- **Then** it has clear visual distinction
+- **And** uses Theme colors for highlighting
+
+**AC 1.6.4: Consistent with viewer**
+- **Given** the polished lists
+- **When** navigating from list to viewer
+- **Then** the visual transition feels seamless
+- **And** no jarring style changes occur
+
+**Technical Notes:**
+- Modify `internal/tui/project.go` and `internal/tui/conversation.go`
+- Use existing Theme and Styles from styles.go
+- May need to customize bubbles/list delegate styling
+
+---
+
+### Story 1.7: Adjust Spacing and Margins
+
+**As a** developer viewing conversation logs,
+**I want** tighter spacing between message cards,
+**So that** screen space is used efficiently while maintaining readability.
+
+**Requirements:** Retrospective finding
+
+**Acceptance Criteria:**
+
+**AC 1.7.1: Reduced message margins**
+- **Given** the viewer with message cards
+- **When** messages render
+- **Then** MarginBottom is reduced from 1 to 0
+- **And** rounded borders provide sufficient visual separation
+
+**AC 1.7.2: Visual separation maintained**
+- **Given** reduced margins
+- **When** viewing consecutive messages
+- **Then** each message is still clearly distinct
+- **And** readability is not compromised
+
+**AC 1.7.3: Consistent spacing**
+- **Given** all message types (User, Assistant, Thinking, Tool)
+- **When** they render
+- **Then** spacing is consistent across all types
+- **And** the layout feels balanced
+
+**Technical Notes:**
+- Modify `internal/tui/styles.go`
+- Change `MarginBottom(1)` to `MarginBottom(0)` for message styles
+- Test with various message combinations to ensure readability
+
+---
+
+### Story 1.8: Implement Overlay Spinner
+
+**As a** developer navigating large lists,
+**I want** a spinner overlay during bulk loading operations,
+**So that** I get visual feedback without losing context of the current view.
+
+**Requirements:** Retrospective finding
+
+**Acceptance Criteria:**
+
+**AC 1.8.1: Overlay rendering**
+- **Given** a bulk loading operation (e.g., pressing 'G' on large list)
+- **When** loading is in progress
+- **Then** a spinner displays overlaid on the current view
+- **And** the underlying list remains visible
+
+**AC 1.8.2: Non-blocking display**
+- **Given** the overlay spinner
+- **When** it renders
+- **Then** it appears centered over the list
+- **And** does NOT replace the entire view
+
+**AC 1.8.3: Clean disappearance**
+- **Given** loading completes
+- **When** data is ready
+- **Then** spinner overlay disappears
+- **And** no visual artifacts remain
+
+**AC 1.8.4: Consistent styling**
+- **Given** the overlay spinner
+- **When** it displays
+- **Then** it uses the same spinner style as Story 1.4
+- **And** matches the Theme's accent colors
+
+**Technical Notes:**
+```go
+// Conceptual approach for overlay
+func (m Model) View() string {
+    listView := m.list.View()
+    if m.bulkLoading {
+        overlay := lipgloss.Place(m.width, m.height,
+            lipgloss.Center, lipgloss.Center,
+            m.spinner.View() + " Loading...")
+        return overlayViews(listView, overlay)
+    }
+    return listView
+}
+```
+- May need to implement `overlayViews()` helper or use lipgloss compositing
+- Trigger on 'G' key when list has many items and needs to load metadata
 
 ---
 
@@ -617,10 +796,14 @@ func (m *model) getRenderedContent(idx int, content string) string {
 
 | Requirement | Epic | Story | Status |
 |-------------|------|-------|--------|
-| FR-101 | 1 | 1.1 | Planned |
-| FR-102 | 1 | 1.2 | Planned |
-| FR-103 | 1 | 1.3 | Planned |
-| FR-104 | 1 | 1.4 | Planned |
+| FR-101 | 1 | 1.1 | Done |
+| FR-102 | 1 | 1.2 | Done |
+| FR-103 | 1 | 1.3 | Done |
+| FR-104 | 1 | 1.4 | Done |
+| Retro-001 | 1.5 | 1.5 | Planned |
+| Retro-002 | 1.5 | 1.6 | Planned |
+| Retro-003 | 1.5 | 1.7 | Planned |
+| Retro-004 | 1.5 | 1.8 | Planned |
 | FR-201 | 2 | 2.1 | Planned |
 | FR-202 | 2 | 2.2 | Planned |
 | FR-203 | 2 | 2.3 | Planned |
@@ -634,25 +817,37 @@ func (m *model) getRenderedContent(idx int, content string) string {
 
 **Recommended sequence:**
 
-1. **Story 1.1** - Adaptive Color System (foundation for all styling)
-2. **Story 1.2** - Rounded Border Styling (depends on 1.1)
-3. **Story 1.3** - Segmented Status Bar (depends on 1.1)
-4. **Story 1.4** - Spinner Animation (independent, but nice to have early)
-5. **Story 3.1** - Glamour Integration (can start after 1.1)
-6. **Story 3.2** - Dynamic Word Wrap (depends on 3.1)
-7. **Story 3.3** - Render Caching (depends on 3.1, 3.2)
-8. **Story 2.1** - Watch Mode CLI Flag (independent)
-9. **Story 2.2** - fsnotify Integration (depends on 2.1, uses 1.4 spinner)
-10. **Story 2.3** - Smart Auto-scroll (depends on 2.2, uses 1.3 status bar)
+### Epic 1: Visual Polish (DONE)
+1. ~~**Story 1.1** - Adaptive Color System~~ ✅
+2. ~~**Story 1.2** - Rounded Border Styling~~ ✅
+3. ~~**Story 1.3** - Segmented Status Bar~~ ✅
+4. ~~**Story 1.4** - Spinner Animation~~ ✅
+
+### Epic 1.5: Visual Consistency (NEXT)
+5. **Story 1.5** - Research List View Polish Options (spike)
+6. **Story 1.6** - Implement List View Polish (depends on 1.5)
+7. **Story 1.7** - Adjust Spacing and Margins (independent)
+8. **Story 1.8** - Implement Overlay Spinner (depends on 1.4 spinner patterns)
+
+### Epic 2: Real-time File Watching
+9. **Story 2.1** - Watch Mode CLI Flag (independent)
+10. **Story 2.2** - fsnotify Integration (depends on 2.1, uses 1.4/1.8 spinner)
+11. **Story 2.3** - Smart Auto-scroll (depends on 2.2, uses 1.3 status bar)
+
+### Epic 3: Markdown Rendering
+12. **Story 3.1** - Glamour Integration (can parallelize with Epic 2)
+13. **Story 3.2** - Dynamic Word Wrap (depends on 3.1)
+14. **Story 3.3** - Render Caching (depends on 3.1, 3.2)
 
 ---
 
 ## Next Steps
 
-1. **Sprint Planning** - `/bmad:bmm:workflows:sprint-planning` - Generate sprint-status.yaml
-2. **Create Story** - `/bmad:bmm:agents:sm` then `[CS]` - Prepare individual stories for development
-3. **Dev Story** - `/bmad:bmm:workflows:dev-story` - Implement stories
+1. **Sprint Planning** - `/bmad:bmm:workflows:sprint-planning` - Regenerate sprint-status.yaml with Epic 1.5
+2. **Create Story 1.5** - `/bmad:bmm:agents:sm` then `[CS]` - Prepare research spike for list view polish
+3. **Execute Epic 1.5** - Complete all 4 stories for visual consistency
+4. **Then Epic 2** - Real-time File Watching
 
 ---
 
-*Epics & Stories Complete - 2026-01-15*
+*Epics & Stories - Initial: 2026-01-15 | Updated: 2026-01-15 (Epic 1.5 added from retrospective)*
