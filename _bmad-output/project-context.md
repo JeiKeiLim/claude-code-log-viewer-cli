@@ -28,9 +28,14 @@ _This file contains critical rules and patterns that AI agents must follow when 
 ### Version Constraints
 
 - **Charm Stack Coupling**: Bubbletea, Lipgloss, Bubbles must be updated together
-- **No New Dependencies**: Constitution V prohibits adding deps beyond Charm stack
-- **No Glamour**: Markdown rendering explicitly out of scope
+- **Approved Dependencies**: Charm stack + Glamour (markdown rendering)
 - **No Direct x/ Imports**: Never import `charmbracelet/x/*` packages directly
+
+### Approved Additional Dependencies
+
+| Package | Purpose | Added |
+|---------|---------|-------|
+| `github.com/charmbracelet/glamour` | Markdown rendering for assistant text | 2026-01-15 |
 
 ### Build System Rules
 
