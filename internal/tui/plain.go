@@ -11,7 +11,7 @@ import (
 
 // RenderPlain renders log entries as plain text with ANSI colors for terminal output.
 // This is used for pipeline mode when stdout is not a TTY or --plain flag is used.
-func RenderPlain(entries []types.LogEntry, source string) string {
+func RenderPlain(entries []types.LogEntry, source string, opts RenderOptions) string {
 	var b strings.Builder
 
 	// Header showing source
@@ -19,7 +19,7 @@ func RenderPlain(entries []types.LogEntry, source string) string {
 	b.WriteString(Styles.Title.Render(header))
 
 	for _, entry := range entries {
-		rendered := renderEntryPlain(entry)
+		rendered := renderEntryPlain(entry, opts)
 		b.WriteString(rendered)
 		b.WriteString("\n")
 	}
@@ -28,12 +28,12 @@ func RenderPlain(entries []types.LogEntry, source string) string {
 }
 
 // renderEntryPlain renders a single log entry for plain text output.
-func renderEntryPlain(entry types.LogEntry) string {
+func renderEntryPlain(entry types.LogEntry, opts RenderOptions) string {
 	switch entry.Type {
 	case types.EntryTypeUser:
 		return renderUserMessagePlain(entry)
 	case types.EntryTypeAssistant:
-		return renderAssistantMessagePlain(entry)
+		return renderAssistantMessagePlain(entry, opts)
 	default:
 		return ""
 	}
@@ -54,7 +54,7 @@ func renderUserMessagePlain(entry types.LogEntry) string {
 }
 
 // renderAssistantMessagePlain renders an assistant message entry for plain text output.
-func renderAssistantMessagePlain(entry types.LogEntry) string {
+func renderAssistantMessagePlain(entry types.LogEntry, opts RenderOptions) string {
 	timestamp := formatTimestamp(entry.Timestamp)
 	header := fmt.Sprintf("%s %s  %s",
 		AssistantIcon,
@@ -73,11 +73,17 @@ func renderAssistantMessagePlain(entry types.LogEntry) string {
 			}
 
 		case types.ContentTypeThinking:
+			if opts.HideThoughts {
+				continue // Skip thinking blocks when hidden
+			}
 			// Show thinking content expanded in plain mode
 			thinkingHeader := fmt.Sprintf("%s %s", ThinkingIcon, Styles.ThinkingHeader.Render("Thinking"))
 			parts = append(parts, Styles.ThinkingBlock.Render(thinkingHeader+"\n"+content.Thinking))
 
 		case types.ContentTypeToolUse:
+			if opts.HideTools {
+				continue // Skip tool blocks when hidden
+			}
 			// Show tool use with inputs in plain mode
 			toolHeader := fmt.Sprintf("%s %s: %s",
 				ToolIcon,

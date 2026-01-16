@@ -4,6 +4,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,6 +16,20 @@ import (
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
+
+// RenderOptions controls visibility of content types during rendering.
+type RenderOptions struct {
+	HideThoughts bool // Hide thinking blocks
+	HideTools    bool // Hide tool use blocks
+}
+
+// DefaultRenderOptions returns options that show all content types.
+func DefaultRenderOptions() RenderOptions {
+	return RenderOptions{
+		HideThoughts: false,
+		HideTools:    false,
+	}
+}
 
 // ViewerModel is the Bubbletea model for viewing log entries.
 type ViewerModel struct {
@@ -56,10 +71,13 @@ type ViewerModel struct {
 
 	// Watch mode (for future Story 2.1)
 	watchMode bool
+
+	// Render options for visibility control
+	renderOpts RenderOptions
 }
 
 // NewViewerModel creates a new viewer model with the given entries.
-func NewViewerModel(entries []types.LogEntry, parseErrors int, title string) ViewerModel {
+func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opts RenderOptions) ViewerModel {
 	ti := textinput.New()
 	ti.Placeholder = "Search..."
 	ti.CharLimit = 100
@@ -94,19 +112,20 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string) Vie
 		loadedCount:    loadedCount,
 		lazyLoadState:  state,
 		overlaySpinner: s,
+		renderOpts:     opts,
 	}
 }
 
 // NewViewerModelWithBack creates a new viewer that can return to a previous view.
-func NewViewerModelWithBack(entries []types.LogEntry, parseErrors int, title string) ViewerModel {
-	m := NewViewerModel(entries, parseErrors, title)
+func NewViewerModelWithBack(entries []types.LogEntry, parseErrors int, title string, opts RenderOptions) ViewerModel {
+	m := NewViewerModel(entries, parseErrors, title, opts)
 	m.canGoBack = true
 	return m
 }
 
 // NewViewerModelWithBackNavigation is an alias for NewViewerModelWithBack.
-func NewViewerModelWithBackNavigation(entries []types.LogEntry, parseErrors int, title string) ViewerModel {
-	return NewViewerModelWithBack(entries, parseErrors, title)
+func NewViewerModelWithBackNavigation(entries []types.LogEntry, parseErrors int, title string, opts RenderOptions) ViewerModel {
+	return NewViewerModelWithBack(entries, parseErrors, title, opts)
 }
 
 // SetSize sets the viewport size.
@@ -339,12 +358,13 @@ func (m *ViewerModel) markAllMessagesLoadedCmd() tea.Cmd {
 	width := m.width
 	showThinking := m.showThinking
 	showToolInputs := m.showToolInputs
+	opts := m.renderOpts
 
 	return func() tea.Msg {
 		// Pre-render all content in the goroutine (expensive operation)
 		var content strings.Builder
 		for i := 0; i < total; i++ {
-			rendered := renderEntryStatic(entries[i], width, showThinking, showToolInputs)
+			rendered := renderEntryStatic(entries[i], width, showThinking, showToolInputs, opts)
 			content.WriteString(rendered)
 			content.WriteString("\n")
 		}
@@ -549,9 +569,15 @@ func (m *ViewerModel) renderAssistantMessage(entry types.LogEntry) string {
 			}
 
 		case types.ContentTypeThinking:
+			if m.renderOpts.HideThoughts {
+				continue // Skip thinking blocks when hidden
+			}
 			parts = append(parts, m.renderThinkingBlock(content))
 
 		case types.ContentTypeToolUse:
+			if m.renderOpts.HideTools {
+				continue // Skip tool blocks when hidden
+			}
 			parts = append(parts, m.renderToolUseBlock(content))
 		}
 	}
@@ -587,8 +613,9 @@ func (m *ViewerModel) renderToolUseBlock(content types.MessageContent) string {
 	)
 
 	if !m.showToolInputs {
+		summary := formatToolSummary(content.ToolName, content.ToolInput)
 		return Styles.ToolBlock.Render(
-			header + " " + Styles.CollapsedIndicator.Render("[inputs - press 'i' to expand]"),
+			header + " " + Styles.CollapsedIndicator.Render(summary),
 		)
 	}
 
@@ -620,12 +647,12 @@ func formatToolInput(input map[string]any) string {
 }
 
 // renderEntryStatic renders a single log entry without model state (for async rendering).
-func renderEntryStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool) string {
+func renderEntryStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions) string {
 	switch entry.Type {
 	case types.EntryTypeUser:
 		return renderUserMessageStatic(entry, width)
 	case types.EntryTypeAssistant:
-		return renderAssistantMessageStatic(entry, width, showThinking, showToolInputs)
+		return renderAssistantMessageStatic(entry, width, showThinking, showToolInputs, opts)
 	default:
 		return ""
 	}
@@ -651,7 +678,7 @@ func renderUserMessageStatic(entry types.LogEntry, width int) string {
 }
 
 // renderAssistantMessageStatic renders an assistant message entry without model state.
-func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool) string {
+func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions) string {
 	timestamp := formatTimestamp(entry.Timestamp)
 	header := fmt.Sprintf("%s %s  %s",
 		AssistantIcon,
@@ -676,9 +703,15 @@ func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking,
 			}
 
 		case types.ContentTypeThinking:
+			if opts.HideThoughts {
+				continue // Skip thinking blocks when hidden
+			}
 			parts = append(parts, renderThinkingBlockStatic(content, width, showThinking))
 
 		case types.ContentTypeToolUse:
+			if opts.HideTools {
+				continue // Skip tool blocks when hidden
+			}
 			parts = append(parts, renderToolUseBlockStatic(content, width, showToolInputs))
 		}
 	}
@@ -713,8 +746,9 @@ func renderToolUseBlockStatic(content types.MessageContent, width int, showToolI
 	)
 
 	if !showToolInputs {
+		summary := formatToolSummary(content.ToolName, content.ToolInput)
 		return Styles.ToolBlock.Render(
-			header + " " + Styles.CollapsedIndicator.Render("[inputs - press 'i' to expand]"),
+			header + " " + Styles.CollapsedIndicator.Render(summary),
 		)
 	}
 
@@ -727,6 +761,123 @@ func renderToolUseBlockStatic(content types.MessageContent, width int, showToolI
 	wrappedInput := WrapText(inputStr, wrapWidth)
 
 	return Styles.ToolBlock.Render(header + "\n" + wrappedInput)
+}
+
+// formatToolSummary creates a brief summary of tool input for collapsed display.
+func formatToolSummary(toolName string, input map[string]any) string {
+	switch toolName {
+	case "Read":
+		filePath, _ := input["file_path"].(string)
+		if filePath == "" {
+			return "Read: [collapsed]"
+		}
+		fileName := filepath.Base(filePath)
+		if offset, ok := input["offset"].(float64); ok {
+			limit, _ := input["limit"].(float64)
+			if limit == 0 {
+				limit = 100 // default
+			}
+			return fmt.Sprintf("Read: %s (lines %d-%d)", fileName, int(offset), int(offset+limit))
+		}
+		return fmt.Sprintf("Read: %s (full file)", fileName)
+
+	case "Edit":
+		filePath, _ := input["file_path"].(string)
+		if filePath == "" {
+			return "Edit: [collapsed]"
+		}
+		fileName := filepath.Base(filePath)
+		oldStr, _ := input["old_string"].(string)
+		newStr, _ := input["new_string"].(string)
+		oldLines := strings.Count(oldStr, "\n") + 1
+		newLines := strings.Count(newStr, "\n") + 1
+		if oldLines == 1 && len(oldStr) == 0 {
+			oldLines = 0
+		}
+		if newLines == 1 && len(newStr) == 0 {
+			newLines = 0
+		}
+		return fmt.Sprintf("Edit: %s (+%d/-%d lines)", fileName, newLines, oldLines)
+
+	case "Glob":
+		pattern, _ := input["pattern"].(string)
+		if pattern == "" {
+			return "Glob: [collapsed]"
+		}
+		return fmt.Sprintf("Glob: %s", TruncateToWidth(pattern, 40))
+
+	case "Grep":
+		pattern, _ := input["pattern"].(string)
+		path, _ := input["path"].(string)
+		if pattern == "" {
+			return "Grep: [collapsed]"
+		}
+		if path == "" {
+			path = "./"
+		}
+		return fmt.Sprintf("Grep: \"%s\" in %s", TruncateToWidth(pattern, 25), path)
+
+	case "Write":
+		filePath, _ := input["file_path"].(string)
+		if filePath == "" {
+			return "Write: [collapsed]"
+		}
+		return fmt.Sprintf("Write: %s", filepath.Base(filePath))
+
+	case "Bash":
+		cmd, _ := input["command"].(string)
+		if cmd == "" {
+			return "Bash: [collapsed]"
+		}
+		return fmt.Sprintf("Bash: %s", TruncateToWidth(cmd, 40))
+
+	case "Task":
+		desc, _ := input["description"].(string)
+		subagent, _ := input["subagent_type"].(string)
+		if desc == "" {
+			return "Task: [collapsed]"
+		}
+		if subagent != "" {
+			return fmt.Sprintf("Task: %s - \"%s\"", subagent, TruncateToWidth(desc, 30))
+		}
+		return fmt.Sprintf("Task: %s", TruncateToWidth(desc, 40))
+
+	case "TodoWrite":
+		todos, ok := input["todos"].([]any)
+		if !ok {
+			return "TodoWrite: [collapsed]"
+		}
+		return fmt.Sprintf("TodoWrite: %d items", len(todos))
+
+	case "WebFetch":
+		url, _ := input["url"].(string)
+		if url == "" {
+			return "WebFetch: [collapsed]"
+		}
+		return fmt.Sprintf("WebFetch: %s", TruncateToWidth(url, 40))
+
+	case "WebSearch":
+		query, _ := input["query"].(string)
+		if query == "" {
+			return "WebSearch: [collapsed]"
+		}
+		return fmt.Sprintf("WebSearch: \"%s\"", TruncateToWidth(query, 35))
+
+	case "NotebookEdit":
+		notebookPath, _ := input["notebook_path"].(string)
+		if notebookPath == "" {
+			return "NotebookEdit: [collapsed]"
+		}
+		fileName := filepath.Base(notebookPath)
+		editMode, _ := input["edit_mode"].(string)
+		if editMode == "" {
+			editMode = "replace"
+		}
+		return fmt.Sprintf("NotebookEdit: %s (%s)", fileName, editMode)
+
+	default:
+		return fmt.Sprintf("%s: [collapsed]", toolName)
+	}
 }
 
 // performSearch searches through the content and finds matching lines.

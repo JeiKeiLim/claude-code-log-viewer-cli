@@ -34,6 +34,8 @@ func main() {
 	colorFlag := flag.String("color", "auto", "Color output: auto, always, never")
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
 	versionShortFlag := flag.Bool("v", false, "Print version information and exit (shorthand)")
+	hideThoughtsFlag := flag.Bool("hide-thoughts", false, "Hide thinking blocks in output")
+	hideToolsFlag := flag.Bool("hide-tools", false, "Hide tool use blocks in output")
 	flag.Parse()
 
 	// Handle version flag - print and exit before any other processing
@@ -78,15 +80,21 @@ func main() {
 		}
 	}
 
+	// Create render options from flags
+	opts := tui.RenderOptions{
+		HideThoughts: *hideThoughtsFlag,
+		HideTools:    *hideToolsFlag,
+	}
+
 	// Pipeline/file mode with determined output mode
-	if err := runPipelineMode(args, mode); err != nil {
+	if err := runPipelineMode(args, mode, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
 // runPipelineMode handles viewing logs from stdin or a file argument.
-func runPipelineMode(args []string, mode outputMode) error {
+func runPipelineMode(args []string, mode outputMode, opts tui.RenderOptions) error {
 	var reader io.Reader
 	var source string
 
@@ -119,13 +127,13 @@ func runPipelineMode(args []string, mode outputMode) error {
 	// Output based on mode
 	if mode == modePlain {
 		// Plain text output to stdout
-		output := tui.RenderPlain(result.Entries, source)
+		output := tui.RenderPlain(result.Entries, source, opts)
 		fmt.Print(output)
 		return nil
 	}
 
 	// TUI mode
-	model := tui.NewViewerModel(result.Entries, result.ParseErrors, source)
+	model := tui.NewViewerModel(result.Entries, result.ParseErrors, source, opts)
 
 	// Use alternate screen buffer for TUI
 	p := tea.NewProgram(model, tea.WithAltScreen())

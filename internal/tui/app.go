@@ -181,7 +181,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			title = fmt.Sprintf("%s (%s)", title, modelShort)
 		}
-		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title)
+		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, DefaultRenderOptions())
 		m.viewerModel.SetSize(m.width, m.height)
 		m.state = viewViewer
 		return m, nil

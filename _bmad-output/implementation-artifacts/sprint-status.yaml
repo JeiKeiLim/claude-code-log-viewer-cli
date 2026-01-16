@@ -1,4 +1,4 @@
-# generated: 2026-01-15
+# generated: 2026-01-16
 # project: cclv Visual & Streaming Enhancements (Phase 2)
 # project_key: cclv-phase-2
 # tracking_system: file-system
@@ -33,7 +33,7 @@
 # - SM typically creates next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
-generated: 2026-01-15
+generated: 2026-01-16
 project: cclv Visual & Streaming Enhancements (Phase 2)
 project_key: cclv-phase-2
 tracking_system: file-system
@@ -48,13 +48,21 @@ development_status:
   1-4-add-spinner-animation: done
   epic-1-retrospective: done
 
-  # Epic 1.5: Visual Consistency (NEW - from Epic 1 Retrospective)
-  epic-1.5: in-progress
+  # Epic 1.5: Visual Consistency (DONE)
+  epic-1.5: done
   1-5-research-list-view-polish-options: done
   1-6-implement-list-view-polish: done
   1-7-adjust-spacing-and-margins: done
   1-8-implement-overlay-spinner: done
-  epic-1.5-retrospective: optional
+  epic-1.5-retrospective: done
+
+  # Epic 1.6: CLI Enhancements (IN PROGRESS)
+  epic-1.6: in-progress
+  1-9-pipeline-visibility-flags-with-richer-collapsed-info: done
+  1-10-project-conversation-count: backlog
+  1-11-pipeline-width-override: backlog
+  1-12-richer-help-output: backlog
+  epic-1.6-retrospective: optional
 
   # Epic 2: Real-time File Watching
   epic-2: backlog
