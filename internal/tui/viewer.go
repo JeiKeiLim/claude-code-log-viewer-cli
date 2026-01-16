@@ -536,19 +536,18 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err := m.loadRawJSONL(); err != nil {
 					return m, m.showToast("Cannot load raw file", ToastDuration)
 				}
-				scrollPct := m.viewport.ScrollPercent()
 				m.rawMode = true
-				// LazyInitialBatch = 40 (2 * BatchSize), LazyThreshold = 100
-				m.loadedCount = min(40, m.rawLineCount)
-				m.lazyEnabled = m.rawLineCount > 100
+				// Update gutter width for raw line count
+				m.gutterWidth = calculateGutterWidth(m.rawLineCount)
+				// Disable lazy loading for raw mode (fixes first line clipping issue)
+				// Raw JSONL lines are small, so loading all is fast
+				m.loadedCount = m.rawLineCount
+				m.lazyEnabled = false
+				m.lazyLoadState = LoadingStateComplete
+				// Recreate viewport to ensure clean state
+				m.viewport = viewport.New(m.viewport.Width, m.viewport.Height)
+				m.viewport.YPosition = 0
 				m.updateRawContent()
-				// Restore approximate scroll position
-				// Always reset to top first to avoid clipping issues, then scroll if needed
-				m.viewport.GotoTop()
-				maxOffset := m.viewport.TotalLineCount() - m.viewport.Height
-				if maxOffset > 0 && scrollPct > 0 {
-					m.viewport.SetYOffset(int(float64(maxOffset) * scrollPct))
-				}
 			}
 			return m, nil
 		}
@@ -627,6 +626,11 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if wasOverlayShown {
 			m.viewport.GotoBottom()
 		}
+		return m, nil
+
+	case gotoTopMsg:
+		// Handle deferred go-to-top after content change (fixes viewport clipping)
+		m.viewport.SetYOffset(0)
 		return m, nil
 
 	case rawLinesLoadedMsg:
@@ -848,6 +852,9 @@ func (m *ViewerModel) markAllRawLinesLoadedCmd() tea.Cmd {
 
 // GoBackMsg signals the parent to go back to the previous view.
 type GoBackMsg struct{}
+
+// gotoTopMsg signals the viewport to go to top (used after content changes)
+type gotoTopMsg struct{}
 
 // viewerMessagesLoadedMsg is sent when more messages are rendered.
 type viewerMessagesLoadedMsg struct {
