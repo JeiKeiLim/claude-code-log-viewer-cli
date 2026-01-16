@@ -36,22 +36,19 @@ func (i ProjectItem) Render(width int, selected bool) string {
 	// Calculate available width using shared helper
 	availWidth := listItemAvailWidth(width)
 
-	title := titleStyle.Render(i.project.DisplayName)
-
 	// Build count string with singular/plural handling
 	countStr := fmt.Sprintf("%d conversations", i.project.ConversationCount)
 	if i.project.ConversationCount == 1 {
 		countStr = "1 conversation"
 	}
 
-	// Path truncation needs to account for count prefix
-	countWidth := lipgloss.Width(countStr)
-	pathWidth := availWidth - countWidth - 3 // 3 = len(" • ")
-	if pathWidth < 10 {
-		pathWidth = 10 // Minimum path width
-	}
-	path := TruncateFromLeftToWidth(i.project.DecodedPath, pathWidth)
-	descContent := fmt.Sprintf("%s • %s", countStr, path)
+	// Title includes project name and count
+	titleContent := fmt.Sprintf("%s (%s)", i.project.DisplayName, countStr)
+	title := titleStyle.Render(titleContent)
+
+	// Description shows just the path (full width available)
+	path := TruncateFromLeftToWidth(i.project.DecodedPath, availWidth)
+	descContent := path
 
 	// Pad description to fill width for consistent selection background
 	paddedDesc := PadToWidth(descContent, availWidth)
