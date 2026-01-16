@@ -66,6 +66,7 @@ KEYBOARD SHORTCUTS (TUI mode):
 
   Toggles:      t               Toggle thinking blocks
                 i               Toggle tool inputs
+                w               Toggle watch mode
 
   Search:       /               Start search
                 n/N             Next/previous match

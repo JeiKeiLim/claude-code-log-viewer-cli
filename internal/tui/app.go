@@ -154,6 +154,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedConversation = msg.Conversation
 		return m, tea.Batch(m.spinner.Tick, m.loadConversation(msg.Conversation.FilePath))
 
+	case ConversationSelectedWithWatchMsg:
+		// User selected a conversation with watch mode enabled
+		m.loading = true
+		m.selectedConversation = msg.Conversation
+		return m, tea.Batch(m.spinner.Tick, m.loadConversationWithWatch(msg.Conversation.FilePath))
+
 	case conversationLoadedMsg:
 		// Conversation loaded, switch to viewer
 		m.loading = false // Stop spinner
@@ -161,30 +167,26 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Handle error - stay on conversation list
 			return m, nil
 		}
-		// Build title: "project-name - 2026-01-12 09:00 (model)"
-		title := fmt.Sprintf("%s - %s", m.selectedProject.DisplayName, formatTimestamp(m.selectedConversation.LastModified))
-		if m.selectedConversation.Model != "" {
-			// Shorten model name for display (e.g., "claude-3-5-sonnet-20241022" -> "sonnet-20241022")
-			modelShort := m.selectedConversation.Model
-			if VisualWidth(modelShort) > 20 {
-				// Find last hyphen-separated segment that starts with the model version
-				parts := []string{}
-				for i := len(modelShort) - 1; i >= 0; i-- {
-					if modelShort[i] == '-' {
-						parts = append([]string{modelShort[i+1:]}, parts...)
-						if len(parts) >= 2 {
-							modelShort = parts[0] + "-" + parts[1]
-							break
-						}
-					}
-				}
-			}
-			title = fmt.Sprintf("%s (%s)", title, modelShort)
-		}
-		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, DefaultRenderOptions())
+		title := m.buildConversationTitle()
+		opts := RenderOptions{FilePath: msg.filePath}
+		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, opts)
 		m.viewerModel.SetSize(m.width, m.height)
 		m.state = viewViewer
 		return m, nil
+
+	case conversationLoadedWithWatchMsg:
+		// Conversation loaded with watch mode, switch to viewer
+		m.loading = false // Stop spinner
+		if msg.err != nil {
+			// Handle error - stay on conversation list
+			return m, nil
+		}
+		title := m.buildConversationTitle()
+		opts := RenderOptions{WatchMode: true, FilePath: msg.filePath}
+		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, opts)
+		m.viewerModel.SetSize(m.width, m.height)
+		m.state = viewViewer
+		return m, m.viewerModel.Init() // Return Init() to start watcher
 
 	case BackToProjectsFromConversationsMsg:
 		// User pressed escape in conversation list, go back to projects
@@ -265,6 +267,14 @@ type conversationLoadedMsg struct {
 	entries     []types.LogEntry
 	parseErrors int
 	err         error
+	filePath    string // File path for watch mode toggle
+}
+
+type conversationLoadedWithWatchMsg struct {
+	entries     []types.LogEntry
+	parseErrors int
+	err         error
+	filePath    string
 }
 
 // loadConversations loads conversations for the selected project.
@@ -313,6 +323,45 @@ func (m AppModel) loadConversation(filePath string) tea.Cmd {
 		return conversationLoadedMsg{
 			entries:     result.Entries,
 			parseErrors: result.ParseErrors,
+			filePath:    filePath,
+		}
+	}
+}
+
+// buildConversationTitle builds a display title for the viewer.
+// Format: "project-name - timestamp (model-short)" where model is truncated if >20 chars.
+func (m AppModel) buildConversationTitle() string {
+	title := fmt.Sprintf("%s - %s", m.selectedProject.DisplayName, formatTimestamp(m.selectedConversation.LastModified))
+	if m.selectedConversation.Model != "" {
+		modelShort := m.selectedConversation.Model
+		if VisualWidth(modelShort) > 20 {
+			parts := []string{}
+			for i := len(modelShort) - 1; i >= 0; i-- {
+				if modelShort[i] == '-' {
+					parts = append([]string{modelShort[i+1:]}, parts...)
+					if len(parts) >= 2 {
+						modelShort = parts[0] + "-" + parts[1]
+						break
+					}
+				}
+			}
+		}
+		title = fmt.Sprintf("%s (%s)", title, modelShort)
+	}
+	return title
+}
+
+// loadConversationWithWatch loads a conversation file with watch mode enabled.
+func (m AppModel) loadConversationWithWatch(filePath string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := parser.ParseJSONLFile(filePath)
+		if err != nil {
+			return conversationLoadedWithWatchMsg{err: err}
+		}
+		return conversationLoadedWithWatchMsg{
+			entries:     result.Entries,
+			parseErrors: result.ParseErrors,
+			filePath:    filePath,
 		}
 	}
 }

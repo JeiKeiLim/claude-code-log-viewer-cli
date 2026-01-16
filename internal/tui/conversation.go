@@ -162,6 +162,11 @@ type ConversationSelectedMsg struct {
 // BackToProjectsFromConversationsMsg is sent when the user wants to go back to projects.
 type BackToProjectsFromConversationsMsg struct{}
 
+// ConversationSelectedWithWatchMsg is sent when a conversation is selected with watch mode enabled.
+type ConversationSelectedWithWatchMsg struct {
+	Conversation types.Conversation
+}
+
 // conversationMetadataLoadedMsg is sent when a batch of conversation metadata is loaded.
 type conversationMetadataLoadedMsg struct {
 	loadedCount int
@@ -205,6 +210,14 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// If all metadata loaded, just go to bottom
 			m.listViewport.GoToBottom()
 			return m, nil
+
+		case "w":
+			// Open selected conversation with watch mode enabled
+			if item, ok := m.listViewport.SelectedItem(); ok {
+				return m, func() tea.Msg {
+					return ConversationSelectedWithWatchMsg{Conversation: item.conversation}
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -301,7 +314,7 @@ func (m ConversationModel) View() string {
 	header := Styles.Title.Render(headerText)
 
 	// Footer
-	help := "j/k:nav • enter/l:open • h/esc:back • g/G:top/bottom • q:quit"
+	help := "j/k:nav • enter/l:open • w:watch • h/esc:back • g/G:top/bottom • q:quit"
 	footer := Styles.HelpText.Render(help)
 
 	// Viewport already respects height strictly

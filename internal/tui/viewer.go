@@ -284,6 +284,10 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "h", "esc":
 			if m.canGoBack {
+				// Close watcher before navigating back to prevent resource leak
+				if m.watcher != nil {
+					_ = m.watcher.Close()
+				}
 				// Signal to go back - handled by parent
 				return m, func() tea.Msg { return GoBackMsg{} }
 			}
@@ -309,6 +313,29 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "i":
 			m.showToolInputs = !m.showToolInputs
 			m.updateContent()
+
+		case "w":
+			// Toggle watch mode
+			if m.watchMode {
+				// Disable watch mode
+				if m.watcher != nil {
+					_ = m.watcher.Close()
+					m.watcher = nil
+				}
+				m.watchMode = false
+				m.newEntriesCount = 0
+				return m, nil
+			}
+			// Enable watch mode if file path is available
+			if m.renderOpts.FilePath != "" {
+				w, err := watcher.New(m.renderOpts.FilePath)
+				if err == nil {
+					m.watcher = w
+					m.watchMode = true
+					return m, m.watcher.WaitForEvent()
+				}
+			}
+			return m, nil
 		}
 
 		// Clear new entries indicator when user manually scrolls to bottom
@@ -517,7 +544,7 @@ func (m ViewerModel) buildShortcutsSegment() string {
 	if m.canGoBack {
 		parts = append(parts, "h/esc:back")
 	}
-	parts = append(parts, "t:thinking", "i:inputs", "q:quit")
+	parts = append(parts, "t:thinking", "i:inputs", "w:watch", "q:quit")
 	return strings.Join(parts, " • ")
 }
 

@@ -64,12 +64,12 @@ development_status:
   1-12-richer-help-output: done
   epic-1.6-retrospective: done
 
-  # Epic 2: Real-time File Watching
-  epic-2: in-progress
+  # Epic 2: Real-time File Watching (DONE)
+  epic-2: done
   2-1-add-watch-mode-cli-flag: done
   2-2-implement-fsnotify-file-watching: done
   2-3-implement-smart-auto-scroll: done
-  2-4-enable-watch-mode-from-interactive-browse: backlog
+  2-4-enable-watch-mode-from-interactive-browse: done
   epic-2-retrospective: done
 
   # Epic 3: Markdown Rendering
