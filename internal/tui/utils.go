@@ -118,12 +118,11 @@ func addBorder(content string, width int) string {
 // Background lines above/below the spinner remain visible; spinner lines replace center rows.
 // This approach avoids corrupting ANSI escape sequences by replacing entire lines.
 func overlaySpinnerView(background string, spinnerView string, spinnerText string, width, height int) string {
-	// Create a styled box for the spinner
+	// Create a styled box for the spinner (no background, just centered text)
 	spinnerContent := spinnerView + " " + ListStyles.Loading.Render(spinnerText)
 	spinnerBox := lipgloss.NewStyle().
-		Background(DefaultTheme.BgAlt).
 		Foreground(accentColor).
-		Padding(1, 3).
+		Padding(0, 1).
 		Render(spinnerContent)
 
 	// Split background into lines

@@ -74,13 +74,24 @@ func (m AppModel) Init() tea.Cmd {
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		// Only return tick command if actually loading
+		// If app is loading, update app's spinner
 		if m.loading {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
 		}
-		return m, nil // Stop ticking when not loading
+		// Otherwise, forward to active child model for their overlay spinners
+		switch m.state {
+		case viewConversations:
+			newModel, cmd := m.conversationModel.Update(msg)
+			m.conversationModel = newModel.(ConversationModel)
+			return m, cmd
+		case viewViewer:
+			newModel, cmd := m.viewerModel.Update(msg)
+			m.viewerModel = newModel.(ViewerModel)
+			return m, cmd
+		}
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
