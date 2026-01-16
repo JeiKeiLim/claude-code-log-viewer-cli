@@ -2,8 +2,11 @@
 package tui
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -115,6 +118,12 @@ type ViewerModel struct {
 	// Line numbers display (Story 4.1)
 	showLineNumbers bool // default true
 	gutterWidth     int  // calculated from entry count
+
+	// Raw JSONL mode (Story 4.3)
+	rawMode          bool     // Toggle between parsed and raw view (default: false)
+	rawLines         []string // Cached raw JSONL lines
+	rawLineCount     int      // Total raw lines for gutter width
+	rawLinePositions []int    // Y offset for each raw line for navigation
 }
 
 // calculateGutterWidth returns the width needed for line numbers.
@@ -210,8 +219,8 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 		showThinking:       false, // Collapsed by default
 		showToolInputs:     false, // Collapsed by default
 		canGoBack:          false,
-		inputMode:          InputNone,           // Story 4.2: default to no input mode
-		inputBuffer:        "",                  // Story 4.2: empty command buffer
+		inputMode:          InputNone, // Story 4.2: default to no input mode
+		inputBuffer:        "",        // Story 4.2: empty command buffer
 		searchInput:        ti,
 		lazyEnabled:        lazyEnabled,
 		loadedCount:        loadedCount,
@@ -226,6 +235,11 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 		showLineNumbers:    true, // Default true (Story 4.1)
 		gutterWidth:        gutterWidth,
 		entryLinePositions: make([]int, 0, len(entries)), // Story 4.2: navigation tracking
+		// Raw JSONL mode (Story 4.3)
+		rawMode:          false,
+		rawLines:         nil,
+		rawLineCount:     0,
+		rawLinePositions: nil,
 	}
 
 	// Apply width override if specified
@@ -311,12 +325,17 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// Handle command mode FIRST (Story 4.2)
+		// Handle command mode FIRST (Story 4.2, 4.3)
 		if m.inputMode == InputCommand {
 			switch msg.String() {
 			case "enter":
 				num, err := strconv.Atoi(m.inputBuffer)
-				if err != nil || num < 1 || num > len(m.entries) {
+				// Validate against rawLineCount in raw mode, entries count otherwise (Story 4.3)
+				maxNum := len(m.entries)
+				if m.rawMode {
+					maxNum = m.rawLineCount
+				}
+				if err != nil || num < 1 || num > maxNum {
 					m.inputMode = InputNone
 					m.inputBuffer = ""
 					return m, m.showToast("Invalid line number", ToastDuration)
@@ -489,6 +508,37 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+
+		case "r":
+			// Toggle raw JSONL mode (Story 4.3)
+			if m.rawMode {
+				// Exit raw mode - restore scroll position best-effort
+				scrollPct := m.viewport.ScrollPercent()
+				m.rawMode = false
+				m.updateContent()
+				// Restore approximate scroll position
+				maxOffset := m.viewport.TotalLineCount() - m.viewport.Height
+				if maxOffset > 0 {
+					m.viewport.SetYOffset(int(float64(maxOffset) * scrollPct))
+				}
+			} else {
+				// Enter raw mode
+				if err := m.loadRawJSONL(); err != nil {
+					return m, m.showToast("Cannot load raw file", ToastDuration)
+				}
+				scrollPct := m.viewport.ScrollPercent()
+				m.rawMode = true
+				// LazyInitialBatch = 40 (2 * BatchSize), LazyThreshold = 100
+				m.loadedCount = min(40, m.rawLineCount)
+				m.lazyEnabled = m.rawLineCount > 100
+				m.updateRawContent()
+				// Restore approximate scroll position
+				maxOffset := m.viewport.TotalLineCount() - m.viewport.Height
+				if maxOffset > 0 {
+					m.viewport.SetYOffset(int(float64(maxOffset) * scrollPct))
+				}
+			}
+			return m, nil
 		}
 
 		// Clear new entries indicator when user manually scrolls to bottom
@@ -567,7 +617,23 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case rawLinesLoadedMsg:
+		// Update loaded count for raw mode lazy loading (Story 4.3)
+		m.loadedCount = msg.loadedCount
+		if m.loadedCount >= m.rawLineCount {
+			m.lazyLoadState = LoadingStateComplete
+		} else {
+			m.lazyLoadState = LoadingStateIdle
+		}
+		m.updateRawContent()
+		return m, nil
+
 	case watcher.NewEntriesMsg:
+		// Exit raw mode on file change (Story 4.3)
+		if m.rawMode {
+			m.rawMode = false
+		}
+
 		// Capture scroll position BEFORE modifying state
 		wasAtBottom := m.isAtBottom()
 
@@ -598,9 +664,14 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case watcher.FileResetMsg:
+		// Exit raw mode on file reset (Story 4.3)
+		if m.rawMode {
+			m.rawMode = false
+		}
+
 		// File was truncated - reset everything
-		m.newEntriesCount = 0            // Clear indicator
-		m.invalidateRenderCache()        // Clear cache on file reset
+		m.newEntriesCount = 0     // Clear indicator
+		m.invalidateRenderCache() // Clear cache on file reset
 
 		// Reload from beginning
 		if m.renderOpts.FilePath != "" {
@@ -631,11 +702,18 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Check if we need to load more messages (when scrolling near bottom)
 	if m.lazyEnabled && m.lazyLoadState == LoadingStateIdle {
-		// Check if we're near the bottom of the currently rendered content
 		scrollPercent := m.viewport.ScrollPercent()
-		if scrollPercent > 0.8 && m.loadedCount < len(m.entries) {
-			m.lazyLoadState = LoadingStateLoading
-			return m, m.loadMoreMessages()
+		if scrollPercent > 0.8 {
+			// Raw mode: check against rawLineCount (Story 4.3)
+			if m.rawMode && m.loadedCount < m.rawLineCount {
+				m.lazyLoadState = LoadingStateLoading
+				return m, m.loadMoreRawLines()
+			}
+			// Normal mode: check against entries count
+			if !m.rawMode && m.loadedCount < len(m.entries) {
+				m.lazyLoadState = LoadingStateLoading
+				return m, m.loadMoreMessages()
+			}
 		}
 	}
 
@@ -655,6 +733,26 @@ func (m *ViewerModel) loadMoreMessages() tea.Cmd {
 			loadedCount: newLoadedCount,
 		}
 	}
+}
+
+// loadMoreRawLines loads the next batch of raw JSONL lines (Story 4.3).
+func (m *ViewerModel) loadMoreRawLines() tea.Cmd {
+	config := DefaultLazyLoadConfig()
+	newLoadedCount := m.loadedCount + config.BatchSize
+	if newLoadedCount > m.rawLineCount {
+		newLoadedCount = m.rawLineCount
+	}
+
+	return func() tea.Msg {
+		return rawLinesLoadedMsg{
+			loadedCount: newLoadedCount,
+		}
+	}
+}
+
+// rawLinesLoadedMsg is sent when more raw JSONL lines are loaded (Story 4.3).
+type rawLinesLoadedMsg struct {
+	loadedCount int
 }
 
 // markAllMessagesLoadedCmd returns a command that pre-renders all messages.
@@ -704,12 +802,19 @@ type toastExpiredMsg struct {
 	id int // ID to match against current toast to prevent race conditions
 }
 
-// buildModeSegment returns the mode indicator segment (for watch mode).
+// buildModeSegment returns the mode indicator segment (Story 4.3: RAW + LIVE).
 func (m ViewerModel) buildModeSegment() string {
-	if !m.watchMode {
-		return "" // Empty when not in watch mode
+	var modes []string
+	if m.rawMode {
+		modes = append(modes, "RAW")
 	}
-	return Styles.StatusBarSegment.Mode.Render("LIVE")
+	if m.watchMode && m.watcher != nil {
+		modes = append(modes, "LIVE")
+	}
+	if len(modes) == 0 {
+		return ""
+	}
+	return Styles.StatusBarSegment.Mode.Render(strings.Join(modes, " "))
 }
 
 // buildNewEntriesSegment returns the new entries indicator segment (watch mode only).
@@ -721,8 +826,20 @@ func (m ViewerModel) buildNewEntriesSegment() string {
 	return Styles.StatusBarSegment.Mode.Render(indicator) // Reuse accent style
 }
 
-// buildPositionSegment returns the position indicator segment.
+// buildPositionSegment returns the position indicator segment (Story 4.3: raw mode support).
 func (m ViewerModel) buildPositionSegment() string {
+	// In raw mode, show line position (Story 4.3)
+	if m.rawMode {
+		total := m.rawLineCount
+		if total == 0 {
+			return Styles.StatusBarSegment.Position.Render("Line 0/0")
+		}
+		scrollPct := m.viewport.ScrollPercent()
+		pos := int(float64(total-1)*scrollPct) + 1
+		return Styles.StatusBarSegment.Position.Render(fmt.Sprintf("Line %d/%d", pos, total))
+	}
+
+	// Normal mode: show entry position
 	total := len(m.entries)
 	if total == 0 {
 		return Styles.StatusBarSegment.Position.Render("0/0")
@@ -734,7 +851,7 @@ func (m ViewerModel) buildPositionSegment() string {
 	return Styles.StatusBarSegment.Position.Render(fmt.Sprintf("Entry %d/%d", pos, total))
 }
 
-// buildShortcutsSegment returns the keyboard shortcuts segment.
+// buildShortcutsSegment returns the keyboard shortcuts segment (Story 4.3: r toggle).
 func (m ViewerModel) buildShortcutsSegment() string {
 	var parts []string
 	parts = append(parts, "j/k:scroll", "gg/G:top/bottom", ":N:goto", "/:search")
@@ -743,6 +860,12 @@ func (m ViewerModel) buildShortcutsSegment() string {
 	}
 	if m.canGoBack {
 		parts = append(parts, "h/esc:back")
+	}
+	// Raw mode toggle hint (Story 4.3)
+	if m.rawMode {
+		parts = append(parts, "r:normal")
+	} else {
+		parts = append(parts, "r:raw")
 	}
 	parts = append(parts, "t:thinking", "i:inputs", "w:watch", "q:quit")
 	return strings.Join(parts, " • ")
@@ -920,20 +1043,114 @@ func (m *ViewerModel) syncEntryLinePositions() {
 	}
 }
 
-// navigateToEntry jumps viewport to the specified entry (1-indexed) (Story 4.2).
+// navigateToEntry jumps viewport to the specified entry (1-indexed) (Story 4.2, 4.3).
+// In raw mode, navigates to raw JSONL line number instead of entry number.
+// If target line is not yet loaded (lazy loading), loads all content first.
 func (m *ViewerModel) navigateToEntry(entryNum int) error {
-	if len(m.entries) == 0 {
-		return fmt.Errorf("invalid line number")
-	}
-	if entryNum < 1 || entryNum > len(m.entries) {
-		return fmt.Errorf("invalid line number")
-	}
-
-	// Use entryLinePositions to find Y offset for entry
-	if entryNum <= len(m.entryLinePositions) {
-		m.viewport.SetYOffset(m.entryLinePositions[entryNum-1])
+	if m.rawMode {
+		// Raw mode: navigate to raw line (Story 4.3)
+		if m.rawLineCount == 0 || entryNum < 1 || entryNum > m.rawLineCount {
+			return fmt.Errorf("invalid line number")
+		}
+		// If target line not yet loaded, load all (lazy loading case)
+		if entryNum > m.loadedCount {
+			m.loadedCount = m.rawLineCount
+			m.lazyLoadState = LoadingStateComplete
+			m.updateRawContent()
+		}
+		if entryNum <= len(m.rawLinePositions) {
+			m.viewport.SetYOffset(m.rawLinePositions[entryNum-1])
+		}
+	} else {
+		// Normal mode: navigate to entry (Story 4.2)
+		if len(m.entries) == 0 || entryNum < 1 || entryNum > len(m.entries) {
+			return fmt.Errorf("invalid line number")
+		}
+		// If target entry not yet loaded, load all (lazy loading case)
+		if entryNum > m.loadedCount {
+			m.loadedCount = len(m.entries)
+			m.lazyLoadState = LoadingStateComplete
+			m.updateContent()
+		}
+		if entryNum <= len(m.entryLinePositions) {
+			m.viewport.SetYOffset(m.entryLinePositions[entryNum-1])
+		}
 	}
 	return nil
+}
+
+// loadRawJSONL reads the JSONL file and stores raw lines (Story 4.3).
+// Uses same 1MB buffer as parser (project-context.md).
+func (m *ViewerModel) loadRawJSONL() error {
+	if m.renderOpts.FilePath == "" {
+		return fmt.Errorf("no file path available")
+	}
+	file, err := os.Open(m.renderOpts.FilePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+
+	m.rawLines = make([]string, 0)
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024) // Max 1MB per line (matches parser)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) > 0 { // Skip empty lines
+			m.rawLines = append(m.rawLines, line)
+		}
+	}
+	m.rawLineCount = len(m.rawLines)
+	return scanner.Err()
+}
+
+// formatJSONLine pretty-prints a JSON line with 2-space indentation (Story 4.3).
+// Handles both JSON objects and arrays. Invalid JSON is returned as-is (graceful degradation).
+func formatJSONLine(line string) string {
+	// Use json.Indent for direct byte transformation (handles any valid JSON type)
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, []byte(line), "", "  "); err != nil {
+		return line // Not valid JSON, return as-is
+	}
+	return buf.String()
+}
+
+// updateRawContent renders raw JSONL with pretty-print formatting (Story 4.3).
+// Mirrors updateContent() pattern with lazy loading support.
+func (m *ViewerModel) updateRawContent() {
+	var content strings.Builder
+	gutterWidth := calculateGutterWidth(m.rawLineCount)
+
+	m.rawLinePositions = make([]int, 0, m.rawLineCount)
+	currentLine := 0
+
+	// LazyThreshold = 100 per project-context.md lazy loading rules
+	renderCount := m.loadedCount
+	if renderCount > m.rawLineCount {
+		renderCount = m.rawLineCount
+	}
+
+	for i := 0; i < renderCount; i++ {
+		m.rawLinePositions = append(m.rawLinePositions, currentLine)
+		formatted := formatJSONLine(m.rawLines[i])
+
+		if m.showLineNumbers {
+			formatted = prependGutter(i+1, formatted, gutterWidth)
+		}
+		content.WriteString(formatted)
+		content.WriteString("\n")
+		currentLine += strings.Count(formatted, "\n") + 1
+	}
+
+	if m.lazyEnabled && renderCount < m.rawLineCount {
+		content.WriteString(Styles.Muted.Render(
+			fmt.Sprintf("-- %d more lines (scroll down to load) --",
+				m.rawLineCount-renderCount)))
+		content.WriteString("\n")
+	}
+	m.viewport.SetContent(content.String())
 }
 
 // showToast displays a temporary toast message (Story 4.2).
