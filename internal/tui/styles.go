@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 	"time"
 
@@ -369,6 +370,15 @@ var ListStyles = struct {
 		Italic(true),
 }
 
+// multipleNewlinesRe matches 3+ consecutive newlines for normalization (Story 4.5).
+var multipleNewlinesRe = regexp.MustCompile(`\n{3,}`)
+
+// NormalizeNewlines reduces 3+ consecutive newlines to exactly 2.
+// This prevents awkward spacing in markdown output.
+func NormalizeNewlines(s string) string {
+	return multipleNewlinesRe.ReplaceAllString(s, "\n\n")
+}
+
 // MarkdownRenderer handles markdown-to-styled-text conversion.
 type MarkdownRenderer struct {
 	renderer *glamour.TermRenderer
@@ -400,7 +410,9 @@ func (m *MarkdownRenderer) Render(content string) string {
 	if err != nil {
 		return content // Graceful fallback
 	}
-	return strings.TrimRight(rendered, "\n")
+	// Normalize excessive newlines (Story 4.5)
+	normalized := NormalizeNewlines(rendered)
+	return strings.TrimRight(normalized, "\n")
 }
 
 // Width returns the current width of the renderer.

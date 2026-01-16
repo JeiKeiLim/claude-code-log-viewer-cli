@@ -526,3 +526,58 @@ func TestMarkdownRendererBoundaryWidths(t *testing.T) {
 		})
 	}
 }
+
+// TestNormalizeNewlines tests newline normalization (Story 4.5, AC 4.5.1, 4.5.2)
+func TestNormalizeNewlines(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"single newline preserved", "a\nb", "a\nb"},
+		{"double newline preserved", "a\n\nb", "a\n\nb"},
+		{"triple newline normalized", "a\n\n\nb", "a\n\nb"},
+		{"quadruple newline normalized", "a\n\n\n\nb", "a\n\nb"},
+		{"ten newlines normalized", "a\n\n\n\n\n\n\n\n\n\nb", "a\n\nb"},
+		{"empty string", "", ""},
+		{"only newlines", "\n\n\n\n", "\n\n"},
+		{"mixed patterns", "a\nb\n\nc\n\n\nd\n\n\n\n\ne", "a\nb\n\nc\n\nd\n\ne"},
+		{"with ANSI codes", "hello\x1b[31m\n\n\n\x1b[0mworld", "hello\x1b[31m\n\n\x1b[0mworld"},
+		{"with complex ANSI codes", "text\x1b[1;31;40mbold\x1b[0m\n\n\nmore", "text\x1b[1;31;40mbold\x1b[0m\n\nmore"},
+		{"CRLF unchanged", "a\r\n\r\n\r\nb", "a\r\n\r\n\r\nb"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeNewlines(tt.input)
+			if got != tt.want {
+				t.Errorf("NormalizeNewlines() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMarkdownRendererNormalizesNewlines tests that MarkdownRenderer.Render() normalizes output (Story 4.5, AC 4.5.4)
+func TestMarkdownRendererNormalizesNewlines(t *testing.T) {
+	r, err := NewMarkdownRenderer(80)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer(80) error = %v", err)
+	}
+
+	// Markdown that typically produces multiple newlines after rendering
+	// Glamour adds extra newlines between block elements
+	input := "# Header\n\nParagraph 1\n\nParagraph 2"
+	output := r.Render(input)
+
+	// Verify no excessive newlines (3+ consecutive) exist in output
+	if strings.Contains(output, "\n\n\n") {
+		t.Errorf("Rendered output should not contain 3+ consecutive newlines, got: %q", output)
+	}
+
+	// Verify content is still present
+	if !strings.Contains(output, "Header") {
+		t.Error("Rendered output should contain 'Header'")
+	}
+	if !strings.Contains(output, "Paragraph 1") {
+		t.Error("Rendered output should contain 'Paragraph 1'")
+	}
+}

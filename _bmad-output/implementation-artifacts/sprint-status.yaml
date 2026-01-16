@@ -84,12 +84,12 @@ development_status:
   # ============================================
 
   # Epic 4: Developer Power Tools
-  epic-4: in-progress
+  epic-4: done
   4-1-line-numbers-display: done
   4-2-command-mode-line-navigation: done
   4-3-raw-jsonl-mode-toggle: done
   4-4-toast-path-display: done
-  4-5-newline-normalization-fix: backlog
+  4-5-newline-normalization-fix: done
   epic-4-retrospective: optional
 
   # Epic 5: Dashboard Mode
