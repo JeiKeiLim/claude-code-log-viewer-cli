@@ -550,6 +550,13 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateRawContent()
 			}
 			return m, nil
+
+		case "p":
+			// Show file path as toast (Story 4.4)
+			if m.renderOpts.FilePath != "" {
+				return m, m.showToast(m.renderOpts.FilePath, ToastDuration)
+			}
+			return m, m.showToast("No path available", ToastDuration)
 		}
 
 		// Clear new entries indicator when user manually scrolls to bottom
@@ -932,7 +939,7 @@ func (m ViewerModel) buildShortcutsSegment() string {
 	} else {
 		parts = append(parts, "r:raw")
 	}
-	parts = append(parts, "t:thinking", "i:inputs", "w:watch", "q:quit")
+	parts = append(parts, "p:path", "t:thinking", "i:inputs", "w:watch", "q:quit")
 	return strings.Join(parts, " • ")
 }
 

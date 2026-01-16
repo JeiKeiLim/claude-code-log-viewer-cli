@@ -2206,11 +2206,9 @@ func TestGKeyInRawModeStaysInRawMode(t *testing.T) {
 		t.Error("After 'G' key with lazy loading, should show overlay spinner")
 	}
 
-	// Command should produce rawLinesLoadedMsg, not viewerMessagesLoadedMsg
-	if cmd != nil {
-		// Execute the batch command - it returns multiple commands
-		// We just verify the model state is correct
-	}
+	// Command should be returned (batch command for lazy loading)
+	// We just verify the model state is correct - command execution is implicit
+	_ = cmd
 }
 
 func TestGKeyInRawModeAllLoadedGoesToBottom(t *testing.T) {
@@ -2241,5 +2239,175 @@ func TestGKeyInRawModeAllLoadedGoesToBottom(t *testing.T) {
 	// Should NOT show overlay spinner (all content already loaded)
 	if m.showOverlaySpinner {
 		t.Error("After 'G' key when all loaded, should NOT show overlay spinner")
+	}
+}
+
+// --- Path Display Toast Tests (Story 4.4) ---
+
+func TestPKeyWithValidFilePathShowsPathToast(t *testing.T) {
+	// Test AC 4.4.1: 'p' key with valid FilePath shows path in toast
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80, FilePath: "/path/to/conversation.jsonl"}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Press 'p' key
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}
+	updatedModel, cmd := m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+
+	// Toast should show the file path
+	if m.toast != "/path/to/conversation.jsonl" {
+		t.Errorf("After 'p' key with FilePath, toast = %q, want '/path/to/conversation.jsonl'", m.toast)
+	}
+
+	// Toast command should be returned (non-nil)
+	if cmd == nil {
+		t.Error("After 'p' key, should return toast timer command")
+	}
+
+	// toastID should be incremented
+	if m.toastID < 1 {
+		t.Errorf("After 'p' key, toastID = %d, want >= 1", m.toastID)
+	}
+}
+
+func TestPKeyWithoutFilePathShowsNoPathAvailable(t *testing.T) {
+	// Test AC 4.4.3: 'p' key without FilePath shows "No path available"
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80, FilePath: ""} // Empty FilePath
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Press 'p' key
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}
+	updatedModel, cmd := m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+
+	// Toast should show "No path available"
+	if m.toast != "No path available" {
+		t.Errorf("After 'p' key without FilePath, toast = %q, want 'No path available'", m.toast)
+	}
+
+	// Toast command should be returned
+	if cmd == nil {
+		t.Error("After 'p' key without FilePath, should return toast timer command")
+	}
+}
+
+func TestPKeyInRawModeShowsPath(t *testing.T) {
+	// Test AC 4.4.4: 'p' key in raw mode shows path (same behavior as normal mode)
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80, FilePath: "/path/to/rawfile.jsonl"}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Enter raw mode
+	m.rawMode = true
+	m.rawLines = []string{`{"line": 1}`}
+	m.rawLineCount = 1
+
+	// Press 'p' key
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}
+	updatedModel, cmd := m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+
+	// Toast should show the file path even in raw mode
+	if m.toast != "/path/to/rawfile.jsonl" {
+		t.Errorf("After 'p' key in raw mode, toast = %q, want '/path/to/rawfile.jsonl'", m.toast)
+	}
+
+	// Should still return toast command
+	if cmd == nil {
+		t.Error("After 'p' key in raw mode, should return toast timer command")
+	}
+
+	// Should still be in raw mode
+	if !m.rawMode {
+		t.Error("After 'p' key, should still be in raw mode")
+	}
+}
+
+func TestPathToastExpiry(t *testing.T) {
+	// Test AC 4.4.2: toast expiry clears path toast after 3 seconds
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80, FilePath: "/path/to/file.jsonl"}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Press 'p' key to show path toast
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}
+	updatedModel, _ := m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+
+	// Verify toast is set
+	if m.toast != "/path/to/file.jsonl" {
+		t.Fatalf("Toast should be set before expiry test")
+	}
+	toastID := m.toastID
+
+	// Send toastExpiredMsg with matching ID
+	expiredMsg := toastExpiredMsg{id: toastID}
+	updatedModel, _ = m.Update(expiredMsg)
+	m = updatedModel.(ViewerModel)
+
+	// Toast should be cleared
+	if m.toast != "" {
+		t.Errorf("After toast expiry, toast = %q, want empty", m.toast)
+	}
+	if !m.toastExpiry.IsZero() {
+		t.Error("After toast expiry, toastExpiry should be zero")
+	}
+}
+
+func TestBuildShortcutsContainsPathHint(t *testing.T) {
+	// Test AC 4.4.5: shortcuts segment includes 'p:path' hint
+	m := ViewerModel{canGoBack: false}
+	got := m.buildShortcutsSegment()
+
+	if !strings.Contains(got, "p:path") {
+		t.Errorf("buildShortcutsSegment() = %q, should contain 'p:path'", got)
+	}
+}
+
+func TestRapidPKeyPressesUpdateToastID(t *testing.T) {
+	// Test that rapid 'p' key presses update toastID correctly (race prevention)
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80, FilePath: "/path/to/file.jsonl"}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// First 'p' key press
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}}
+	updatedModel, _ := m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+	firstToastID := m.toastID
+
+	// Second rapid 'p' key press
+	updatedModel, _ = m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+	secondToastID := m.toastID
+
+	// Third rapid 'p' key press
+	updatedModel, _ = m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+	thirdToastID := m.toastID
+
+	// Each press should increment toastID
+	if secondToastID != firstToastID+1 {
+		t.Errorf("Second toastID = %d, want %d", secondToastID, firstToastID+1)
+	}
+	if thirdToastID != secondToastID+1 {
+		t.Errorf("Third toastID = %d, want %d", thirdToastID, secondToastID+1)
+	}
+
+	// Old toastExpiredMsg should be ignored (test via ID mismatch)
+	oldExpiredMsg := toastExpiredMsg{id: firstToastID}
+	updatedModel, _ = m.Update(oldExpiredMsg)
+	m = updatedModel.(ViewerModel)
+
+	// Toast should NOT be cleared because ID doesn't match current
+	if m.toast != "/path/to/file.jsonl" {
+		t.Errorf("After old toast expiry, toast = %q, should still show path", m.toast)
 	}
 }
