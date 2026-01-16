@@ -9,6 +9,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// DefaultPlainModeWidth is the default rendering width for plain mode when no terminal is detected.
+const DefaultPlainModeWidth = 80
+
 // formatTimestamp formats a timestamp for display in local timezone.
 func formatTimestamp(t time.Time) string {
 	if t.IsZero() {

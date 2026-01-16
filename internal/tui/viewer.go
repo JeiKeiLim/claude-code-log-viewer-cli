@@ -21,13 +21,15 @@ import (
 type RenderOptions struct {
 	HideThoughts bool // Hide thinking blocks
 	HideTools    bool // Hide tool use blocks
+	Width        int  // Width override for rendering (0=auto-detect)
 }
 
-// DefaultRenderOptions returns options that show all content types.
+// DefaultRenderOptions returns options that show all content types with auto-detect width.
 func DefaultRenderOptions() RenderOptions {
 	return RenderOptions{
 		HideThoughts: false,
 		HideTools:    false,
+		Width:        0,
 	}
 }
 
@@ -100,7 +102,7 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 	s.Spinner = spinner.Dot
 	s.Style = ListStyles.Loading
 
-	return ViewerModel{
+	m := ViewerModel{
 		entries:        entries,
 		parseErrors:    parseErrors,
 		title:          title,
@@ -114,6 +116,13 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 		overlaySpinner: s,
 		renderOpts:     opts,
 	}
+
+	// Apply width override if specified
+	if opts.Width > 0 {
+		m.width = opts.Width
+	}
+
+	return m
 }
 
 // NewViewerModelWithBack creates a new viewer that can return to a previous view.
@@ -276,7 +285,10 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		// Only update width from terminal if not overridden
+		if m.renderOpts.Width == 0 {
+			m.width = msg.Width
+		}
 		m.height = msg.Height
 
 		// Header: 1 line for title
@@ -286,12 +298,12 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		verticalMargins := headerHeight + footerHeight
 
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width, msg.Height-verticalMargins)
+			m.viewport = viewport.New(m.width, msg.Height-verticalMargins)
 			m.viewport.YPosition = headerHeight
 			m.ready = true
 			m.updateContent()
 		} else {
-			m.viewport.Width = msg.Width
+			m.viewport.Width = m.width
 			m.viewport.Height = msg.Height - verticalMargins
 			m.updateContent()
 		}

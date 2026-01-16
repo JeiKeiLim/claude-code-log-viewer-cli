@@ -27,6 +27,31 @@ const (
 	modePlain
 )
 
+// Width validation constants
+const (
+	minWidth     = 40
+	maxWidth     = 500
+	defaultWidth = 80
+)
+
+// validateWidth ensures width is within reasonable bounds.
+// Returns the validated width (possibly clamped) and prints warning if clamped.
+// Negative values are treated as auto-detect (0).
+func validateWidth(w int) int {
+	if w <= 0 {
+		return 0 // Auto-detect mode (including negative values)
+	}
+	if w < minWidth {
+		fmt.Fprintf(os.Stderr, "Warning: --width %d too small, using %d\n", w, defaultWidth)
+		return defaultWidth
+	}
+	if w > maxWidth {
+		fmt.Fprintf(os.Stderr, "Warning: --width %d too large, using %d\n", w, maxWidth)
+		return maxWidth
+	}
+	return w
+}
+
 func main() {
 	// Parse command-line flags
 	plainFlag := flag.Bool("plain", false, "Output plain text without TUI")
@@ -36,6 +61,7 @@ func main() {
 	versionShortFlag := flag.Bool("v", false, "Print version information and exit (shorthand)")
 	hideThoughtsFlag := flag.Bool("hide-thoughts", false, "Hide thinking blocks in output")
 	hideToolsFlag := flag.Bool("hide-tools", false, "Hide tool use blocks in output")
+	widthFlag := flag.Int("width", 0, "Override rendering width (0=auto-detect)")
 	flag.Parse()
 
 	// Handle version flag - print and exit before any other processing
@@ -80,10 +106,14 @@ func main() {
 		}
 	}
 
+	// Validate and apply width override
+	validatedWidth := validateWidth(*widthFlag)
+
 	// Create render options from flags
 	opts := tui.RenderOptions{
 		HideThoughts: *hideThoughtsFlag,
 		HideTools:    *hideToolsFlag,
+		Width:        validatedWidth,
 	}
 
 	// Pipeline/file mode with determined output mode

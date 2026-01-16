@@ -12,6 +12,11 @@ import (
 // RenderPlain renders log entries as plain text with ANSI colors for terminal output.
 // This is used for pipeline mode when stdout is not a TTY or --plain flag is used.
 func RenderPlain(entries []types.LogEntry, source string, opts RenderOptions) string {
+	width := opts.Width
+	if width == 0 {
+		width = DefaultPlainModeWidth // Default for plain mode when no terminal
+	}
+
 	var b strings.Builder
 
 	// Header showing source
@@ -19,7 +24,7 @@ func RenderPlain(entries []types.LogEntry, source string, opts RenderOptions) st
 	b.WriteString(Styles.Title.Render(header))
 
 	for _, entry := range entries {
-		rendered := renderEntryPlain(entry, opts)
+		rendered := renderEntryPlain(entry, opts, width)
 		b.WriteString(rendered)
 		b.WriteString("\n")
 	}
@@ -28,19 +33,19 @@ func RenderPlain(entries []types.LogEntry, source string, opts RenderOptions) st
 }
 
 // renderEntryPlain renders a single log entry for plain text output.
-func renderEntryPlain(entry types.LogEntry, opts RenderOptions) string {
+func renderEntryPlain(entry types.LogEntry, opts RenderOptions, width int) string {
 	switch entry.Type {
 	case types.EntryTypeUser:
-		return renderUserMessagePlain(entry)
+		return renderUserMessagePlain(entry, width)
 	case types.EntryTypeAssistant:
-		return renderAssistantMessagePlain(entry, opts)
+		return renderAssistantMessagePlain(entry, opts, width)
 	default:
 		return ""
 	}
 }
 
 // renderUserMessagePlain renders a user message entry for plain text output.
-func renderUserMessagePlain(entry types.LogEntry) string {
+func renderUserMessagePlain(entry types.LogEntry, width int) string {
 	timestamp := formatTimestamp(entry.Timestamp)
 	header := fmt.Sprintf("%s %s  %s",
 		UserIcon,
@@ -48,19 +53,31 @@ func renderUserMessagePlain(entry types.LogEntry) string {
 		Styles.Timestamp.Render(timestamp),
 	)
 
-	content := Styles.MessageContent.Render(entry.Message.TextContent)
+	// Wrap content to fit specified width (with margin for styling)
+	wrapWidth := width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	wrappedText := WrapText(entry.Message.TextContent, wrapWidth)
+	content := Styles.MessageContent.Render(wrappedText)
 
 	return Styles.UserMessage.Render(header + "\n" + content)
 }
 
 // renderAssistantMessagePlain renders an assistant message entry for plain text output.
-func renderAssistantMessagePlain(entry types.LogEntry, opts RenderOptions) string {
+func renderAssistantMessagePlain(entry types.LogEntry, opts RenderOptions, width int) string {
 	timestamp := formatTimestamp(entry.Timestamp)
 	header := fmt.Sprintf("%s %s  %s",
 		AssistantIcon,
 		Styles.AssistantHeader.Render("Assistant"),
 		Styles.Timestamp.Render(timestamp),
 	)
+
+	// Calculate wrap width for content
+	wrapWidth := width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
 
 	var parts []string
 	parts = append(parts, header)
@@ -69,7 +86,8 @@ func renderAssistantMessagePlain(entry types.LogEntry, opts RenderOptions) strin
 		switch content.Type {
 		case types.ContentTypeText:
 			if content.Text != "" {
-				parts = append(parts, Styles.MessageContent.Render(content.Text))
+				wrappedText := WrapText(content.Text, wrapWidth)
+				parts = append(parts, Styles.MessageContent.Render(wrappedText))
 			}
 
 		case types.ContentTypeThinking:
@@ -78,7 +96,8 @@ func renderAssistantMessagePlain(entry types.LogEntry, opts RenderOptions) strin
 			}
 			// Show thinking content expanded in plain mode
 			thinkingHeader := fmt.Sprintf("%s %s", ThinkingIcon, Styles.ThinkingHeader.Render("Thinking"))
-			parts = append(parts, Styles.ThinkingBlock.Render(thinkingHeader+"\n"+content.Thinking))
+			wrappedThinking := WrapText(content.Thinking, wrapWidth)
+			parts = append(parts, Styles.ThinkingBlock.Render(thinkingHeader+"\n"+wrappedThinking))
 
 		case types.ContentTypeToolUse:
 			if opts.HideTools {
@@ -91,7 +110,8 @@ func renderAssistantMessagePlain(entry types.LogEntry, opts RenderOptions) strin
 				content.ToolName,
 			)
 			inputStr := formatToolInputPlain(content.ToolInput)
-			parts = append(parts, Styles.ToolBlock.Render(toolHeader+"\n"+inputStr))
+			wrappedInput := WrapText(inputStr, wrapWidth)
+			parts = append(parts, Styles.ToolBlock.Render(toolHeader+"\n"+wrappedInput))
 		}
 	}
 
