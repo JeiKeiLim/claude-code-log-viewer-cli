@@ -119,11 +119,7 @@ func (m ListViewport[T]) Update(msg tea.Msg) (ListViewport[T], tea.Cmd) {
 				m.ensureCursorVisible()
 			}
 		case "G":
-			if len(m.items) > 0 {
-				m.cursor = len(m.items) - 1
-				m.updateContent()
-				m.viewport.GotoBottom()
-			}
+			m.GoToBottom()
 		case "d", "ctrl+d":
 			m.viewport.HalfPageDown()
 			m.syncCursorToViewport()
@@ -212,4 +208,13 @@ func (m *ListViewport[T]) SetCursor(idx int) {
 	}
 	m.cursor = idx
 	m.ensureCursorVisible()
+}
+
+// GoToBottom moves cursor to the last item and scrolls viewport to bottom.
+func (m *ListViewport[T]) GoToBottom() {
+	if len(m.items) > 0 {
+		m.cursor = len(m.items) - 1
+		m.updateContent()
+		m.viewport.GotoBottom()
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -49,6 +50,10 @@ type ViewerModel struct {
 	loadedCount   int  // Number of entries rendered
 	lazyEnabled   bool // Whether lazy loading is enabled (>100 entries)
 
+	// Overlay spinner for bulk loading operations
+	overlaySpinner     spinner.Model
+	showOverlaySpinner bool
+
 	// Watch mode (for future Story 2.1)
 	watchMode bool
 }
@@ -72,6 +77,11 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string) Vie
 		}
 	}
 
+	// Initialize spinner with Dot style and Loading style
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = ListStyles.Loading
+
 	return ViewerModel{
 		entries:        entries,
 		parseErrors:    parseErrors,
@@ -83,6 +93,7 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string) Vie
 		lazyEnabled:    lazyEnabled,
 		loadedCount:    loadedCount,
 		lazyLoadState:  state,
+		overlaySpinner: s,
 	}
 }
 
@@ -131,6 +142,15 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var spinnerCmd tea.Cmd
+		m.overlaySpinner, spinnerCmd = m.overlaySpinner.Update(msg)
+		// Only return tick command if overlay spinner is shown
+		if m.showOverlaySpinner {
+			return m, spinnerCmd
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		// Handle search mode
 		if m.searching {
@@ -199,7 +219,12 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 
 		case "G":
-			// Go to bottom
+			// Go to bottom with async loading if lazy loading is enabled
+			if m.lazyEnabled && m.loadedCount < len(m.entries) {
+				m.showOverlaySpinner = true
+				return m, tea.Batch(m.overlaySpinner.Tick, m.markAllMessagesLoadedCmd())
+			}
+			// If all messages loaded, just go to bottom
 			m.viewport.GotoBottom()
 
 		case "h", "esc":
@@ -255,12 +280,18 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case viewerMessagesLoadedMsg:
 		// Update loaded count and refresh content
 		m.loadedCount = msg.loadedCount
+		wasOverlayShown := m.showOverlaySpinner
+		m.showOverlaySpinner = false // Clear overlay spinner
 		if m.loadedCount >= len(m.entries) {
 			m.lazyLoadState = LoadingStateComplete
 		} else {
 			m.lazyLoadState = LoadingStateIdle
 		}
 		m.updateContent()
+		// If overlay was shown (bulk load via 'G'), go to bottom after loading
+		if wasOverlayShown {
+			m.viewport.GotoBottom()
+		}
 		return m, nil
 	}
 
@@ -291,6 +322,16 @@ func (m *ViewerModel) loadMoreMessages() tea.Cmd {
 		return viewerMessagesLoadedMsg{
 			loadedCount: newLoadedCount,
 		}
+	}
+}
+
+// markAllMessagesLoadedCmd returns a command that marks all messages as loaded.
+// Unlike ConversationModel which loads metadata from disk, ViewerModel's entries
+// are already in memory - this just updates the loaded count for lazy rendering.
+func (m *ViewerModel) markAllMessagesLoadedCmd() tea.Cmd {
+	total := len(m.entries)
+	return func() tea.Msg {
+		return viewerMessagesLoadedMsg{loadedCount: total}
 	}
 }
 
@@ -388,7 +429,14 @@ func (m ViewerModel) View() string {
 
 	footer := lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, posSegment, shortcutsSegment)
 
-	return fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), footer)
+	normalView := fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), footer)
+
+	// If overlay spinner is shown, overlay it on top of the normal view
+	if m.showOverlaySpinner {
+		return overlaySpinnerView(normalView, m.overlaySpinner.View(), "Loading...", m.width, m.height)
+	}
+
+	return normalView
 }
 
 // updateContent renders entries and updates the viewport content.

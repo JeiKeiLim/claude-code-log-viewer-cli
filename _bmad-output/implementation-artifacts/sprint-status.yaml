@@ -53,7 +53,7 @@ development_status:
   1-5-research-list-view-polish-options: done
   1-6-implement-list-view-polish: done
   1-7-adjust-spacing-and-margins: done
-  1-8-implement-overlay-spinner: backlog
+  1-8-implement-overlay-spinner: done
   epic-1.5-retrospective: optional
 
   # Epic 2: Real-time File Watching

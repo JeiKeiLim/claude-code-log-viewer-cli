@@ -4,6 +4,7 @@ package tui
 import (
 	"fmt"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -88,6 +89,10 @@ type ConversationModel struct {
 	lazyLoadState LoadingState
 	loadedCount   int  // Number of conversations with metadata loaded
 	lazyEnabled   bool // Whether lazy loading is enabled (>50 conversations)
+
+	// Overlay spinner for bulk loading operations
+	overlaySpinner     spinner.Model
+	showOverlaySpinner bool
 }
 
 // NewConversationModel creates a new conversation browser model.
@@ -110,13 +115,19 @@ func NewConversationModelWithLazyLoad(conversations []types.Conversation, projec
 		state = LoadingStateIdle
 	}
 
+	// Initialize spinner with Dot style and Loading style
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = ListStyles.Loading
+
 	return ConversationModel{
-		listViewport:  listViewport,
-		conversations: conversations,
-		projectName:   projectName,
-		lazyEnabled:   lazyEnabled,
-		loadedCount:   loadedCount,
-		lazyLoadState: state,
+		listViewport:   listViewport,
+		conversations:  conversations,
+		projectName:    projectName,
+		lazyEnabled:    lazyEnabled,
+		loadedCount:    loadedCount,
+		lazyLoadState:  state,
+		overlaySpinner: s,
 	}
 }
 
@@ -159,6 +170,15 @@ type conversationMetadataLoadedMsg struct {
 // Update implements tea.Model.
 func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.overlaySpinner, cmd = m.overlaySpinner.Update(msg)
+		// Only return tick command if overlay spinner is shown
+		if m.showOverlaySpinner {
+			return m, cmd
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -175,6 +195,16 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				return BackToProjectsFromConversationsMsg{}
 			}
+
+		case "G":
+			// Jump to bottom with async loading if lazy loading is enabled
+			if m.lazyEnabled && m.loadedCount < len(m.conversations) {
+				m.showOverlaySpinner = true
+				return m, tea.Batch(m.overlaySpinner.Tick, m.loadAllMetadataCmd())
+			}
+			// If all metadata loaded, just go to bottom
+			m.listViewport.GoToBottom()
+			return m, nil
 		}
 
 	case tea.WindowSizeMsg:
@@ -184,6 +214,7 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case conversationMetadataLoadedMsg:
 		// Update the loaded count and refresh the list items
 		m.loadedCount = msg.loadedCount
+		m.showOverlaySpinner = false // Clear overlay spinner
 		if m.loadedCount >= len(m.conversations) {
 			m.lazyLoadState = LoadingStateComplete
 		} else {
@@ -191,6 +222,8 @@ func (m ConversationModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Refresh list items with updated metadata
 		m.refreshListItems()
+		// After loading completes, go to bottom as user originally intended
+		m.listViewport.GoToBottom()
 		return m, nil
 	}
 
@@ -232,6 +265,21 @@ func (m *ConversationModel) refreshListItems() {
 	m.listViewport.SetCursor(currentIndex)
 }
 
+// loadAllMetadataCmd returns a command that loads all remaining conversation metadata.
+func (m *ConversationModel) loadAllMetadataCmd() tea.Cmd {
+	conversations := m.conversations
+	loadedCount := m.loadedCount
+	total := len(conversations)
+
+	return func() tea.Msg {
+		// Load all remaining metadata
+		if loadedCount < total {
+			scanner.ExtractConversationMetadataBatch(conversations, loadedCount, total-loadedCount)
+		}
+		return conversationMetadataLoadedMsg{loadedCount: total}
+	}
+}
+
 // View implements tea.Model.
 func (m ConversationModel) View() string {
 	if len(m.conversations) == 0 {
@@ -262,7 +310,14 @@ func (m ConversationModel) View() string {
 	// Add manual border
 	boxed := addBorder(listView, m.width-2)
 
-	return fmt.Sprintf("%s\n%s\n%s", header, boxed, footer)
+	normalView := fmt.Sprintf("%s\n%s\n%s", header, boxed, footer)
+
+	// If overlay spinner is shown, overlay it on top of the normal view
+	if m.showOverlaySpinner {
+		return overlaySpinnerView(normalView, m.overlaySpinner.View(), "Loading...", m.width, m.height)
+	}
+
+	return normalView
 }
 
 // renderEmpty renders the empty state when no conversations exist.
