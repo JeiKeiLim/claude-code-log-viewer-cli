@@ -77,4 +77,4 @@ development_status:
   3-1-integrate-glamour-markdown-renderer: done
   3-2-implement-dynamic-word-wrap: done
   3-3-implement-render-caching: done
-  epic-3-retrospective: optional
+  epic-3-retrospective: done
