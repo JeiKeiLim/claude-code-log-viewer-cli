@@ -90,6 +90,58 @@ type ViewerModel struct {
 	// Render cache - keyed by entry index for O(1) lookup
 	renderCache map[int]string // entry index -> rendered markdown string
 	cacheWidth  int            // width when cache was built
+
+	// Line numbers display (Story 4.1)
+	showLineNumbers bool // default true
+	gutterWidth     int  // calculated from entry count
+}
+
+// calculateGutterWidth returns the width needed for line numbers.
+// Minimum width is 3 (for numbers 1-99), increases for larger counts.
+func calculateGutterWidth(entryCount int) int {
+	if entryCount == 0 {
+		return 3
+	}
+	width := len(fmt.Sprintf("%d", entryCount))
+	if width < 3 {
+		width = 3
+	}
+	return width
+}
+
+// prependGutter adds line number to first line, padding to subsequent lines.
+func prependGutter(entryNum int, content string, gutterWidth int) string {
+	lines := strings.Split(content, "\n")
+	var result strings.Builder
+
+	// Format the line number with right-alignment
+	numStr := fmt.Sprintf("%*d", gutterWidth, entryNum)
+	gutterFormatted := Styles.Gutter.Render(numStr) + GutterSeparator
+	result.WriteString(gutterFormatted + lines[0])
+
+	// Add padding to continuation lines
+	padding := strings.Repeat(" ", gutterWidth+len(GutterSeparator))
+	for i := 1; i < len(lines); i++ {
+		result.WriteString("\n" + padding + lines[i])
+	}
+	return result.String()
+}
+
+// prependGutterStatic adds line number without lipgloss styling (for async rendering).
+func prependGutterStatic(entryNum int, content string, gutterWidth int) string {
+	lines := strings.Split(content, "\n")
+	var result strings.Builder
+
+	// Format the line number with right-alignment (no styling for static version)
+	numStr := fmt.Sprintf("%*d", gutterWidth, entryNum)
+	result.WriteString(numStr + GutterSeparator + lines[0])
+
+	// Add padding to continuation lines
+	padding := strings.Repeat(" ", gutterWidth+len(GutterSeparator))
+	for i := 1; i < len(lines); i++ {
+		result.WriteString("\n" + padding + lines[i])
+	}
+	return result.String()
 }
 
 // NewViewerModel creates a new viewer model with the given entries.
@@ -121,7 +173,14 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 	if initialWidth <= 0 {
 		initialWidth = 80
 	}
-	mdRenderer, _ := NewMarkdownRenderer(initialWidth - 4) // Account for padding
+	// Account for gutter width in markdown renderer (Story 4.1)
+	gutterWidth := calculateGutterWidth(len(entries))
+	gutterSpace := gutterWidth + len(GutterSeparator) // showLineNumbers defaults to true
+	mdRenderWidth := initialWidth - 4 - gutterSpace
+	if mdRenderWidth < 20 {
+		mdRenderWidth = 20
+	}
+	mdRenderer, _ := NewMarkdownRenderer(mdRenderWidth)
 
 	m := ViewerModel{
 		entries:          entries,
@@ -140,7 +199,9 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 		renderOpts:       opts,
 		markdownRenderer: mdRenderer,
 		renderCache:      make(map[int]string),
-		cacheWidth:       initialWidth - 4,
+		cacheWidth:       mdRenderWidth,
+		showLineNumbers:  true, // Default true (Story 4.1)
+		gutterWidth:      gutterWidth,
 	}
 
 	// Apply width override if specified
@@ -370,7 +431,15 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 		// Recreate markdown renderer if nil or width changed significantly
-		newRenderWidth := m.width - 4
+		// Account for gutter width (Story 4.1)
+		gutterSpace := 0
+		if m.showLineNumbers {
+			gutterSpace = m.gutterWidth + len(GutterSeparator)
+		}
+		newRenderWidth := m.width - 4 - gutterSpace
+		if newRenderWidth < 20 {
+			newRenderWidth = 20
+		}
 		if m.markdownRenderer == nil {
 			m.markdownRenderer, _ = NewMarkdownRenderer(newRenderWidth)
 		} else {
@@ -430,6 +499,14 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Append new entries from file watcher
 		m.entries = append(m.entries, msg.Entries...)
 		m.loadedCount = len(m.entries)
+
+		// Recalculate gutterWidth if digit threshold crossed (Story 4.1)
+		newGutterWidth := calculateGutterWidth(len(m.entries))
+		if newGutterWidth != m.gutterWidth {
+			m.gutterWidth = newGutterWidth
+			m.invalidateRenderCache() // Width change affects all rendered content
+		}
+
 		m.updateContent()
 
 		// Smart scroll decision
@@ -457,6 +534,7 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entries = result.Entries
 				m.loadedCount = len(m.entries)
 				m.parseErrors = result.ParseErrors
+				m.gutterWidth = calculateGutterWidth(len(m.entries)) // Recalculate gutter width (Story 4.1)
 				m.updateContent()
 			}
 		}
@@ -515,12 +593,18 @@ func (m *ViewerModel) markAllMessagesLoadedCmd() tea.Cmd {
 	showToolInputs := m.showToolInputs
 	opts := m.renderOpts
 	mdRenderer := m.markdownRenderer // Capture for async rendering
+	showLineNumbers := m.showLineNumbers
+	gutterWidth := m.gutterWidth
 
 	return func() tea.Msg {
 		// Pre-render all content in the goroutine (expensive operation)
 		var content strings.Builder
 		for i := 0; i < total; i++ {
-			rendered := renderEntryStatic(entries[i], width, showThinking, showToolInputs, opts, mdRenderer)
+			rendered := renderEntryStatic(entries[i], width, showThinking, showToolInputs, opts, mdRenderer, gutterWidth)
+			// Prepend line numbers if enabled (Story 4.1)
+			if showLineNumbers {
+				rendered = prependGutterStatic(i+1, rendered, gutterWidth) // 1-indexed line numbers
+			}
 			content.WriteString(rendered)
 			content.WriteString("\n")
 		}
@@ -660,11 +744,16 @@ func (m *ViewerModel) updateContent() {
 
 	for i := 0; i < renderCount; i++ {
 		rendered := m.getCachedRender(i, m.entries[i])
+		// Prepend line numbers if enabled (Story 4.1)
+		if m.showLineNumbers {
+			rendered = prependGutter(i+1, rendered, m.gutterWidth) // 1-indexed line numbers
+		}
 		content.WriteString(rendered)
 		content.WriteString("\n")
 	}
 
 	// Add loading indicator at the bottom if more content is available
+	// Note: Lazy loading indicator is NOT a real entry, so no line number prepended
 	if m.lazyEnabled && renderCount < len(m.entries) {
 		if m.lazyLoadState == LoadingStateLoading {
 			content.WriteString(ListStyles.Loading.Render("Loading more messages..."))
@@ -698,8 +787,12 @@ func (m *ViewerModel) renderUserMessage(entry types.LogEntry) string {
 		Styles.Timestamp.Render(timestamp),
 	)
 
-	// Wrap content to fit viewport width (with margin for styling)
-	wrapWidth := m.width - 4
+	// Wrap content to fit viewport width (with margin for styling and gutter)
+	gutterSpace := 0
+	if m.showLineNumbers {
+		gutterSpace = m.gutterWidth + len(GutterSeparator) // Story 4.1
+	}
+	wrapWidth := m.width - 4 - gutterSpace
 	if wrapWidth < 20 {
 		wrapWidth = 20
 	}
@@ -755,8 +848,12 @@ func (m *ViewerModel) renderThinkingBlock(content types.MessageContent) string {
 		)
 	}
 
-	// Wrap thinking content to viewport width
-	wrapWidth := m.width - 4
+	// Wrap thinking content to viewport width (account for gutter)
+	gutterSpace := 0
+	if m.showLineNumbers {
+		gutterSpace = m.gutterWidth + len(GutterSeparator) // Story 4.1
+	}
+	wrapWidth := m.width - 4 - gutterSpace
 	if wrapWidth < 20 {
 		wrapWidth = 20
 	}
@@ -781,8 +878,12 @@ func (m *ViewerModel) renderToolUseBlock(content types.MessageContent) string {
 		)
 	}
 
-	// Calculate wrap width for tool input content
-	wrapWidth := m.width - 4
+	// Calculate wrap width for tool input content (account for gutter)
+	gutterSpace := 0
+	if m.showLineNumbers {
+		gutterSpace = m.gutterWidth + len(GutterSeparator) // Story 4.1
+	}
+	wrapWidth := m.width - 4 - gutterSpace
 	if wrapWidth < 20 {
 		wrapWidth = 20
 	}
@@ -809,19 +910,21 @@ func formatToolInput(input map[string]any) string {
 }
 
 // renderEntryStatic renders a single log entry without model state (for async rendering).
-func renderEntryStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions, mdRenderer *MarkdownRenderer) string {
+// gutterWidth parameter accounts for line number gutter space (Story 4.1).
+func renderEntryStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions, mdRenderer *MarkdownRenderer, gutterWidth int) string {
 	switch entry.Type {
 	case types.EntryTypeUser:
-		return renderUserMessageStatic(entry, width)
+		return renderUserMessageStatic(entry, width, gutterWidth)
 	case types.EntryTypeAssistant:
-		return renderAssistantMessageStatic(entry, width, showThinking, showToolInputs, opts, mdRenderer)
+		return renderAssistantMessageStatic(entry, width, showThinking, showToolInputs, opts, mdRenderer, gutterWidth)
 	default:
 		return ""
 	}
 }
 
 // renderUserMessageStatic renders a user message entry without model state.
-func renderUserMessageStatic(entry types.LogEntry, width int) string {
+// gutterWidth parameter accounts for line number gutter space (Story 4.1).
+func renderUserMessageStatic(entry types.LogEntry, width int, gutterWidth int) string {
 	timestamp := formatTimestamp(entry.Timestamp)
 	header := fmt.Sprintf("%s %s  %s",
 		UserIcon,
@@ -829,7 +932,9 @@ func renderUserMessageStatic(entry types.LogEntry, width int) string {
 		Styles.Timestamp.Render(timestamp),
 	)
 
-	wrapWidth := width - 4
+	// Account for gutter width (Story 4.1)
+	gutterSpace := gutterWidth + len(GutterSeparator)
+	wrapWidth := width - 4 - gutterSpace
 	if wrapWidth < 20 {
 		wrapWidth = 20
 	}
@@ -840,7 +945,8 @@ func renderUserMessageStatic(entry types.LogEntry, width int) string {
 }
 
 // renderAssistantMessageStatic renders an assistant message entry without model state.
-func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions, mdRenderer *MarkdownRenderer) string {
+// gutterWidth parameter accounts for line number gutter space (Story 4.1).
+func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions, mdRenderer *MarkdownRenderer, gutterWidth int) string {
 	timestamp := formatTimestamp(entry.Timestamp)
 	header := fmt.Sprintf("%s %s  %s",
 		AssistantIcon,
@@ -864,13 +970,13 @@ func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking,
 			if opts.HideThoughts {
 				continue // Skip thinking blocks when hidden
 			}
-			parts = append(parts, renderThinkingBlockStatic(content, width, showThinking))
+			parts = append(parts, renderThinkingBlockStatic(content, width, showThinking, gutterWidth))
 
 		case types.ContentTypeToolUse:
 			if opts.HideTools {
 				continue // Skip tool blocks when hidden
 			}
-			parts = append(parts, renderToolUseBlockStatic(content, width, showToolInputs))
+			parts = append(parts, renderToolUseBlockStatic(content, width, showToolInputs, gutterWidth))
 		}
 	}
 
@@ -878,14 +984,17 @@ func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking,
 }
 
 // renderThinkingBlockStatic renders a thinking content block without model state.
-func renderThinkingBlockStatic(content types.MessageContent, width int, showThinking bool) string {
+// gutterWidth parameter accounts for line number gutter space (Story 4.1).
+func renderThinkingBlockStatic(content types.MessageContent, width int, showThinking bool, gutterWidth int) string {
 	if !showThinking {
 		return Styles.CollapsedIndicator.Render(
 			fmt.Sprintf("%s [thinking - press 't' to expand]", ThinkingIcon),
 		)
 	}
 
-	wrapWidth := width - 4
+	// Account for gutter width (Story 4.1)
+	gutterSpace := gutterWidth + len(GutterSeparator)
+	wrapWidth := width - 4 - gutterSpace
 	if wrapWidth < 20 {
 		wrapWidth = 20
 	}
@@ -896,7 +1005,8 @@ func renderThinkingBlockStatic(content types.MessageContent, width int, showThin
 }
 
 // renderToolUseBlockStatic renders a tool use content block without model state.
-func renderToolUseBlockStatic(content types.MessageContent, width int, showToolInputs bool) string {
+// gutterWidth parameter accounts for line number gutter space (Story 4.1).
+func renderToolUseBlockStatic(content types.MessageContent, width int, showToolInputs bool, gutterWidth int) string {
 	header := fmt.Sprintf("%s %s: %s",
 		ToolIcon,
 		Styles.ToolHeader.Render("Tool"),
@@ -910,7 +1020,9 @@ func renderToolUseBlockStatic(content types.MessageContent, width int, showToolI
 		)
 	}
 
-	wrapWidth := width - 4
+	// Account for gutter width (Story 4.1)
+	gutterSpace := gutterWidth + len(GutterSeparator)
+	wrapWidth := width - 4 - gutterSpace
 	if wrapWidth < 20 {
 		wrapWidth = 20
 	}

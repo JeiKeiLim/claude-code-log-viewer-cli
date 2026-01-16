@@ -1,6 +1,6 @@
 # generated: 2026-01-16
-# project: cclv Visual & Streaming Enhancements (Phase 2)
-# project_key: cclv-phase-2
+# project: cclv (Phase 2 + Phase 3)
+# project_key: cclv
 # tracking_system: file-system
 # story_location: _bmad-output/implementation-artifacts
 
@@ -34,8 +34,8 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-01-16
-project: cclv Visual & Streaming Enhancements (Phase 2)
-project_key: cclv-phase-2
+project: cclv (Phase 2 + Phase 3)
+project_key: cclv
 tracking_system: file-system
 story_location: _bmad-output/implementation-artifacts
 
@@ -78,3 +78,33 @@ development_status:
   3-2-implement-dynamic-word-wrap: done
   3-3-implement-render-caching: done
   epic-3-retrospective: done
+
+  # ============================================
+  # PHASE 3: Power Tools & Dashboard
+  # ============================================
+
+  # Epic 4: Developer Power Tools
+  epic-4: in-progress
+  4-1-line-numbers-display: done
+  4-2-command-mode-line-navigation: backlog
+  4-3-raw-jsonl-mode-toggle: backlog
+  4-4-toast-path-display: backlog
+  4-5-newline-normalization-fix: backlog
+  epic-4-retrospective: optional
+
+  # Epic 5: Dashboard Mode
+  epic-5: backlog
+  5-1-multi-project-selection: backlog
+  5-2-grid-layout-component: backlog
+  5-3-dashboard-pane-content-display: backlog
+  5-4-new-conversation-detection: backlog
+  5-5-pane-focus-navigation: backlog
+  5-6-dashboard-navigation-hierarchy: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: Statistics View
+  epic-6: backlog
+  6-1-tiktoken-go-integration: backlog
+  6-2-token-calculation-service: backlog
+  6-3-statistics-display: backlog
+  epic-6-retrospective: optional

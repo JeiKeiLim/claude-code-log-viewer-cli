@@ -126,6 +126,9 @@ var Styles = struct {
 	SearchMatch lipgloss.Style
 	SearchInput lipgloss.Style
 
+	// Line number gutter (Story 4.1)
+	Gutter lipgloss.Style
+
 	// Status bar segments
 	StatusBarSegment struct {
 		Mode      lipgloss.Style
@@ -231,6 +234,10 @@ var Styles = struct {
 		BorderForeground(primaryColor).
 		Padding(0, 1),
 
+	// Line number gutter style (Story 4.1) - dimmed, right-aligned
+	Gutter: lipgloss.NewStyle().
+		Foreground(dimColor),
+
 	StatusBarSegment: struct {
 		Mode      lipgloss.Style
 		Position  lipgloss.Style
@@ -274,6 +281,9 @@ var Styles = struct {
 			Foreground(mutedColor),
 	},
 }
+
+// GutterSeparator is the string between gutter numbers and content (Story 4.1).
+const GutterSeparator = " "
 
 // Icons for different message types (text-based, no emoji per FR-017)
 const (

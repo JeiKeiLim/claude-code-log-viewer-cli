@@ -527,8 +527,10 @@ func TestRenderCacheInitialization(t *testing.T) {
 	if len(m.renderCache) != 0 {
 		t.Errorf("renderCache should be empty on init, got %d entries", len(m.renderCache))
 	}
-	// cacheWidth should be initialWidth - 4
-	expectedWidth := 80 - 4
+	// cacheWidth should be initialWidth - 4 - gutterSpace (Story 4.1)
+	// gutterWidth for 1 entry = 3, GutterSeparator = " " (1 char), so gutterSpace = 4
+	gutterSpace := m.gutterWidth + len(GutterSeparator)
+	expectedWidth := 80 - 4 - gutterSpace
 	if m.cacheWidth != expectedWidth {
 		t.Errorf("cacheWidth = %d, want %d", m.cacheWidth, expectedWidth)
 	}
@@ -837,6 +839,222 @@ func TestUpdateContentUsesCachedRender(t *testing.T) {
 	// but the words should be present
 	if !strings.Contains(cached, "Cached") || !strings.Contains(cached, "content") || !strings.Contains(cached, "test") {
 		t.Errorf("Cached content should contain rendered text, got: %s", cached)
+	}
+}
+
+// --- Gutter / Line Numbers Tests (Story 4.1) ---
+
+func TestCalculateGutterWidth(t *testing.T) {
+	tests := []struct {
+		name       string
+		entryCount int
+		want       int
+	}{
+		{"zero entries returns minimum 3", 0, 3},
+		{"1 entry returns 3", 1, 3},
+		{"9 entries returns 3", 9, 3},
+		{"10 entries returns 3", 10, 3},
+		{"99 entries returns 3", 99, 3},
+		{"100 entries returns 3", 100, 3},
+		{"999 entries returns 3", 999, 3},
+		{"1000 entries returns 4", 1000, 4},
+		{"9999 entries returns 4", 9999, 4},
+		{"10000 entries returns 5", 10000, 5},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := calculateGutterWidth(tt.entryCount)
+			if got != tt.want {
+				t.Errorf("calculateGutterWidth(%d) = %d, want %d", tt.entryCount, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPrependGutter(t *testing.T) {
+	tests := []struct {
+		name        string
+		entryNum    int
+		content     string
+		gutterWidth int
+		wantPrefix  string
+		wantPadding string
+	}{
+		{
+			name:        "single line with 3 char gutter",
+			entryNum:    1,
+			content:     "Hello",
+			gutterWidth: 3,
+			wantPrefix:  "  1",
+			wantPadding: "",
+		},
+		{
+			name:        "multi-line with 3 char gutter",
+			entryNum:    42,
+			content:     "Line1\nLine2\nLine3",
+			gutterWidth: 3,
+			wantPrefix:  " 42",
+			wantPadding: "    ", // 3 + 1 (separator space)
+		},
+		{
+			name:        "4 char gutter for large numbers",
+			entryNum:    1234,
+			content:     "Content",
+			gutterWidth: 4,
+			wantPrefix:  "1234",
+			wantPadding: "",
+		},
+		{
+			name:        "multi-line with 4 char gutter",
+			entryNum:    1000,
+			content:     "First\nSecond",
+			gutterWidth: 4,
+			wantPrefix:  "1000",
+			wantPadding: "     ", // 4 + 1 (separator space)
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := prependGutter(tt.entryNum, tt.content, tt.gutterWidth)
+
+			// Check that the first line has the correct number prefix
+			if !strings.Contains(got, tt.wantPrefix) {
+				t.Errorf("prependGutter() should contain prefix %q, got %q", tt.wantPrefix, got)
+			}
+
+			// Check that continuation lines have padding (if multi-line)
+			if tt.wantPadding != "" {
+				lines := strings.Split(got, "\n")
+				if len(lines) > 1 {
+					// Second line should start with padding
+					if !strings.HasPrefix(lines[1], tt.wantPadding) {
+						t.Errorf("Continuation line should start with %q padding, got %q", tt.wantPadding, lines[1])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPrependGutterStatic(t *testing.T) {
+	tests := []struct {
+		name        string
+		entryNum    int
+		content     string
+		gutterWidth int
+		wantPrefix  string
+		wantPadding string
+	}{
+		{
+			name:        "single line with 3 char gutter (no styling)",
+			entryNum:    1,
+			content:     "Hello",
+			gutterWidth: 3,
+			wantPrefix:  "  1 ", // right-aligned "  1" + separator " "
+			wantPadding: "",
+		},
+		{
+			name:        "multi-line with 3 char gutter (no styling)",
+			entryNum:    42,
+			content:     "Line1\nLine2\nLine3",
+			gutterWidth: 3,
+			wantPrefix:  " 42 ", // right-aligned " 42" + separator " "
+			wantPadding: "    ", // 3 + 1 (separator space)
+		},
+		{
+			name:        "4 char gutter for large numbers (no styling)",
+			entryNum:    1234,
+			content:     "Content",
+			gutterWidth: 4,
+			wantPrefix:  "1234 ", // "1234" + separator " "
+			wantPadding: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := prependGutterStatic(tt.entryNum, tt.content, tt.gutterWidth)
+
+			// Static version should NOT contain ANSI escape codes (no lipgloss styling)
+			if strings.Contains(got, "\x1b[") {
+				t.Errorf("prependGutterStatic() should NOT contain ANSI escape codes, got %q", got)
+			}
+
+			// Check that the first line starts with the correct number prefix
+			if !strings.HasPrefix(got, tt.wantPrefix) {
+				t.Errorf("prependGutterStatic() should start with prefix %q, got %q", tt.wantPrefix, got)
+			}
+
+			// Check that continuation lines have padding (if multi-line)
+			if tt.wantPadding != "" {
+				lines := strings.Split(got, "\n")
+				if len(lines) > 1 {
+					// Second line should start with padding
+					if !strings.HasPrefix(lines[1], tt.wantPadding) {
+						t.Errorf("Continuation line should start with %q padding, got %q", tt.wantPadding, lines[1])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestGutterWidthRecalculationOnDigitThreshold(t *testing.T) {
+	// Test that gutter width increases when crossing from 999 to 1000 entries
+	entries := make([]types.LogEntry, 999)
+	for i := range entries {
+		entries[i] = types.LogEntry{Type: types.EntryTypeUser}
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+
+	initialWidth := m.gutterWidth
+	if initialWidth != 3 {
+		t.Errorf("Initial gutterWidth for 999 entries = %d, want 3", initialWidth)
+	}
+
+	// Simulate adding entry that crosses threshold
+	m.entries = append(m.entries, types.LogEntry{Type: types.EntryTypeUser})
+	newWidth := calculateGutterWidth(len(m.entries))
+	if newWidth != 4 {
+		t.Errorf("New gutterWidth for 1000 entries = %d, want 4", newWidth)
+	}
+}
+
+func TestNewViewerModelGutterWidthInitialization(t *testing.T) {
+	tests := []struct {
+		name       string
+		entryCount int
+		wantWidth  int
+	}{
+		{"empty entries", 0, 3},
+		{"few entries", 10, 3},
+		{"99 entries", 99, 3},
+		{"1000 entries", 1000, 4},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entries := make([]types.LogEntry, tt.entryCount)
+			opts := RenderOptions{Width: 80}
+			m := NewViewerModel(entries, 0, "Test", opts)
+
+			if m.gutterWidth != tt.wantWidth {
+				t.Errorf("NewViewerModel() gutterWidth = %d, want %d", m.gutterWidth, tt.wantWidth)
+			}
+		})
+	}
+}
+
+func TestShowLineNumbersDefaultTrue(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+
+	if m.showLineNumbers != true {
+		t.Errorf("NewViewerModel() showLineNumbers = %v, want true", m.showLineNumbers)
 	}
 }
 
