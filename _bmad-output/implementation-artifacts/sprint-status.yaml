@@ -62,11 +62,11 @@ development_status:
   1-10-project-conversation-count: done
   1-11-pipeline-width-override: done
   1-12-richer-help-output: done
-  epic-1.6-retrospective: optional
+  epic-1.6-retrospective: done
 
   # Epic 2: Real-time File Watching
-  epic-2: backlog
-  2-1-add-watch-mode-cli-flag: backlog
+  epic-2: in-progress
+  2-1-add-watch-mode-cli-flag: done
   2-2-implement-fsnotify-file-watching: backlog
   2-3-implement-smart-auto-scroll: backlog
   epic-2-retrospective: optional

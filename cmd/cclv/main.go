@@ -39,6 +39,8 @@ OPTIONS:
   --hide-thoughts   Hide Claude's thinking blocks
   --hide-tools      Hide tool use/result blocks
   --width=N         Set rendering width (40-500, 0=auto)
+  --watch           Watch file for changes (real-time monitoring)
+  --live            Alias for --watch
   -v, --version     Print version information
   -h, --help        Show this help message
 
@@ -50,6 +52,7 @@ EXAMPLES:
   cclv --hide-thoughts --hide-tools file.jsonl  Show only messages
   cclv --width=100 file.jsonl             Fixed 100-char width
   cclv --color=always file.jsonl | less -R  Force colors in pipe
+  cclv --watch conversation.jsonl           Monitor live session
 
 KEYBOARD SHORTCUTS (TUI mode):
   Navigation:   j/k             Move up/down
@@ -115,7 +118,12 @@ func main() {
 	hideThoughtsFlag := flag.Bool("hide-thoughts", false, "Hide thinking blocks in output")
 	hideToolsFlag := flag.Bool("hide-tools", false, "Hide tool use blocks in output")
 	widthFlag := flag.Int("width", 0, "Override rendering width (0=auto-detect)")
+	watchFlag := flag.Bool("watch", false, "Watch file for changes (real-time monitoring)")
+	liveFlag := flag.Bool("live", false, "Alias for --watch")
 	flag.Parse()
+
+	// Combine watch flags
+	watchMode := *watchFlag || *liveFlag
 
 	// Handle version flag - print and exit before any other processing
 	if *versionFlag || *versionShortFlag {
@@ -132,6 +140,12 @@ func main() {
 	// Detect TTY status
 	stdinTTY := term.IsTerminal(int(os.Stdin.Fd()))
 	stdoutTTY := term.IsTerminal(int(os.Stdout.Fd()))
+
+	// Validate watch mode requires a file argument (cannot watch stdin or interactive mode)
+	if watchMode && len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "Error: --watch requires a file path argument (cannot watch stdin)\n")
+		os.Exit(1)
+	}
 
 	// Determine output mode per data-model.md flow:
 	// 1. --plain flag? → Plain Mode
@@ -167,6 +181,7 @@ func main() {
 		HideThoughts: *hideThoughtsFlag,
 		HideTools:    *hideToolsFlag,
 		Width:        validatedWidth,
+		WatchMode:    watchMode,
 	}
 
 	// Pipeline/file mode with determined output mode

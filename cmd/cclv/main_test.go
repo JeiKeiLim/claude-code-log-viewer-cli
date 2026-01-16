@@ -55,6 +55,46 @@ func TestValidateWidth(t *testing.T) {
 	}
 }
 
+func TestWatchFlagParsing(t *testing.T) {
+	// Save original flag state and restore after test
+	origArgs := os.Args
+	t.Cleanup(func() {
+		os.Args = origArgs
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	})
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantFlag bool
+	}{
+		{"watch flag sets watch mode", []string{"cmd", "--watch", "file.jsonl"}, true},
+		{"live flag sets watch mode", []string{"cmd", "--live", "file.jsonl"}, true},
+		{"both flags set watch mode", []string{"cmd", "--watch", "--live", "file.jsonl"}, true},
+		{"no flag means no watch mode", []string{"cmd", "file.jsonl"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset flag.CommandLine for each test
+			flag.CommandLine = flag.NewFlagSet(tt.args[0], flag.ContinueOnError)
+
+			watchFlag := flag.Bool("watch", false, "Watch file for changes")
+			liveFlag := flag.Bool("live", false, "Alias for --watch")
+
+			err := flag.CommandLine.Parse(tt.args[1:])
+			if err != nil {
+				t.Fatalf("Failed to parse flags: %v", err)
+			}
+
+			watchMode := *watchFlag || *liveFlag
+			if watchMode != tt.wantFlag {
+				t.Errorf("watchMode = %v, want %v", watchMode, tt.wantFlag)
+			}
+		})
+	}
+}
+
 func TestPrintHelp(t *testing.T) {
 	// Save original output and restore after test
 	originalOutput := flag.CommandLine.Output()
@@ -77,6 +117,8 @@ func TestPrintHelp(t *testing.T) {
 		"--hide-thoughts",
 		"--hide-tools",
 		"--width",
+		"--watch",
+		"--live",
 		"--version",
 		"--help",
 	}
@@ -91,6 +133,7 @@ func TestPrintHelp(t *testing.T) {
 		"cclv conversation.jsonl",
 		"cclv --plain",
 		"--hide-thoughts",
+		"--watch",
 	}
 	for _, ex := range requiredExamples {
 		if !strings.Contains(output, ex) {

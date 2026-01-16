@@ -8,6 +8,23 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
 
+func TestDefaultRenderOptions(t *testing.T) {
+	opts := DefaultRenderOptions()
+
+	if opts.HideThoughts != false {
+		t.Errorf("DefaultRenderOptions().HideThoughts = %v, want false", opts.HideThoughts)
+	}
+	if opts.HideTools != false {
+		t.Errorf("DefaultRenderOptions().HideTools = %v, want false", opts.HideTools)
+	}
+	if opts.Width != 0 {
+		t.Errorf("DefaultRenderOptions().Width = %v, want 0", opts.Width)
+	}
+	if opts.WatchMode != false {
+		t.Errorf("DefaultRenderOptions().WatchMode = %v, want false", opts.WatchMode)
+	}
+}
+
 func TestBuildModeSegment(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -36,6 +53,29 @@ func TestBuildModeSegment(t *testing.T) {
 			}
 			if tt.want != "" && !strings.Contains(got, tt.want) {
 				t.Errorf("buildModeSegment() = %q, want to contain %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewViewerModelWatchMode(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+
+	tests := []struct {
+		name      string
+		watchMode bool
+	}{
+		{"watch mode disabled", false},
+		{"watch mode enabled", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := RenderOptions{WatchMode: tt.watchMode}
+			m := NewViewerModel(entries, 0, "Test", opts)
+
+			if m.watchMode != tt.watchMode {
+				t.Errorf("NewViewerModel() watchMode = %v, want %v", m.watchMode, tt.watchMode)
 			}
 		})
 	}

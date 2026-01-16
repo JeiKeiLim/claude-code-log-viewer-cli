@@ -22,6 +22,7 @@ type RenderOptions struct {
 	HideThoughts bool // Hide thinking blocks
 	HideTools    bool // Hide tool use blocks
 	Width        int  // Width override for rendering (0=auto-detect)
+	WatchMode    bool // Enable file watching mode
 }
 
 // DefaultRenderOptions returns options that show all content types with auto-detect width.
@@ -30,6 +31,7 @@ func DefaultRenderOptions() RenderOptions {
 		HideThoughts: false,
 		HideTools:    false,
 		Width:        0,
+		WatchMode:    false,
 	}
 }
 
@@ -114,6 +116,7 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 		loadedCount:    loadedCount,
 		lazyLoadState:  state,
 		overlaySpinner: s,
+		watchMode:      opts.WatchMode,
 		renderOpts:     opts,
 	}
 
