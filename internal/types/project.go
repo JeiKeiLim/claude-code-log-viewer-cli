@@ -11,4 +11,6 @@ type Project struct {
 	DisplayName string
 	// DirPath is the full path to the project directory under ~/.claude/projects/
 	DirPath string
+	// ConversationCount is the number of .jsonl files in the project
+	ConversationCount int
 }

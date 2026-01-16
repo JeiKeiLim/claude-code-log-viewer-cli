@@ -57,10 +57,12 @@ func ScanProjects(projectsPath string) ([]types.Project, error) {
 			continue
 		}
 
+		dirPath := filepath.Join(projectsPath, name)
 		project := types.Project{
-			EncodedName: name,
-			DecodedPath: DecodeProjectPath(name),
-			DirPath:     filepath.Join(projectsPath, name),
+			EncodedName:       name,
+			DecodedPath:       DecodeProjectPath(name),
+			DirPath:           dirPath,
+			ConversationCount: countConversations(dirPath),
 		}
 		projects = append(projects, project)
 	}
@@ -201,6 +203,24 @@ func findValidPath(currentPath string, parts []string, startIdx int) string {
 	}
 
 	return ""
+}
+
+// countConversations counts .jsonl files in a project directory.
+// Returns 0 on any error (graceful degradation).
+// Does NOT traverse subdirectories - only counts files at the top level.
+func countConversations(projectPath string) int {
+	entries, err := os.ReadDir(projectPath)
+	if err != nil {
+		return 0 // Graceful degradation per project-context.md
+	}
+
+	count := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+			count++
+		}
+	}
+	return count
 }
 
 // assignDisplayNames assigns display names to projects with collision disambiguation.

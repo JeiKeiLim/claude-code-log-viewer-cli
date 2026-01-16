@@ -59,7 +59,7 @@ development_status:
   # Epic 1.6: CLI Enhancements (IN PROGRESS)
   epic-1.6: in-progress
   1-9-pipeline-visibility-flags-with-richer-collapsed-info: done
-  1-10-project-conversation-count: backlog
+  1-10-project-conversation-count: done
   1-11-pipeline-width-override: backlog
   1-12-richer-help-output: backlog
   epic-1.6-retrospective: optional

@@ -38,11 +38,24 @@ func (i ProjectItem) Render(width int, selected bool) string {
 
 	title := titleStyle.Render(i.project.DisplayName)
 
-	// Truncate path from left if too long (keeps the meaningful end)
-	path := TruncateFromLeftToWidth(i.project.DecodedPath, availWidth)
+	// Build count string with singular/plural handling
+	countStr := fmt.Sprintf("%d conversations", i.project.ConversationCount)
+	if i.project.ConversationCount == 1 {
+		countStr = "1 conversation"
+	}
+
+	// Path truncation needs to account for count prefix
+	countWidth := lipgloss.Width(countStr)
+	pathWidth := availWidth - countWidth - 3 // 3 = len(" • ")
+	if pathWidth < 10 {
+		pathWidth = 10 // Minimum path width
+	}
+	path := TruncateFromLeftToWidth(i.project.DecodedPath, pathWidth)
+	descContent := fmt.Sprintf("%s • %s", countStr, path)
+
 	// Pad description to fill width for consistent selection background
-	paddedPath := PadToWidth(path, availWidth)
-	desc := descStyle.Render(paddedPath)
+	paddedDesc := PadToWidth(descContent, availWidth)
+	desc := descStyle.Render(paddedDesc)
 
 	// Description line also gets gutter alignment (normal gutter for visual alignment)
 	return fmt.Sprintf("%s%s\n%s%s", prefixStyled, title, GutterNormal, desc)
