@@ -543,8 +543,10 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.lazyEnabled = m.rawLineCount > 100
 				m.updateRawContent()
 				// Restore approximate scroll position
+				// Always reset to top first to avoid clipping issues, then scroll if needed
+				m.viewport.GotoTop()
 				maxOffset := m.viewport.TotalLineCount() - m.viewport.Height
-				if maxOffset > 0 {
+				if maxOffset > 0 && scrollPct > 0 {
 					m.viewport.SetYOffset(int(float64(maxOffset) * scrollPct))
 				}
 			}
