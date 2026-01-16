@@ -77,8 +77,9 @@ type ViewerModel struct {
 	showOverlaySpinner bool
 
 	// Watch mode and watcher
-	watchMode bool
-	watcher   *watcher.Watcher
+	watchMode       bool
+	watcher         *watcher.Watcher
+	newEntriesCount int // Track unseen entries when scrolled up in watch mode
 
 	// Render options for visibility control (includes FilePath for reload on truncation)
 	renderOpts RenderOptions
@@ -109,19 +110,20 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 	s.Style = ListStyles.Loading
 
 	m := ViewerModel{
-		entries:        entries,
-		parseErrors:    parseErrors,
-		title:          title,
-		showThinking:   false, // Collapsed by default
-		showToolInputs: false, // Collapsed by default
-		canGoBack:      false,
-		searchInput:    ti,
-		lazyEnabled:    lazyEnabled,
-		loadedCount:    loadedCount,
-		lazyLoadState:  state,
-		overlaySpinner: s,
-		watchMode:      opts.WatchMode,
-		renderOpts:     opts,
+		entries:         entries,
+		parseErrors:     parseErrors,
+		title:           title,
+		showThinking:    false, // Collapsed by default
+		showToolInputs:  false, // Collapsed by default
+		canGoBack:       false,
+		searchInput:     ti,
+		lazyEnabled:     lazyEnabled,
+		loadedCount:     loadedCount,
+		lazyLoadState:   state,
+		overlaySpinner:  s,
+		watchMode:       opts.WatchMode,
+		newEntriesCount: 0, // Explicitly initialize for watch mode tracking
+		renderOpts:      opts,
 	}
 
 	// Apply width override if specified
@@ -269,6 +271,9 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 
 		case "G":
+			// Clear new entries indicator when jumping to bottom
+			m.newEntriesCount = 0
+
 			// Go to bottom with async loading if lazy loading is enabled
 			if m.lazyEnabled && m.loadedCount < len(m.entries) {
 				m.showOverlaySpinner = true
@@ -304,6 +309,11 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "i":
 			m.showToolInputs = !m.showToolInputs
 			m.updateContent()
+		}
+
+		// Clear new entries indicator when user manually scrolls to bottom
+		if m.isAtBottom() && m.newEntriesCount > 0 {
+			m.newEntriesCount = 0
 		}
 
 	case tea.WindowSizeMsg:
@@ -353,12 +363,21 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case watcher.NewEntriesMsg:
+		// Capture scroll position BEFORE modifying state
+		wasAtBottom := m.isAtBottom()
+
 		// Append new entries from file watcher
 		m.entries = append(m.entries, msg.Entries...)
 		m.loadedCount = len(m.entries)
 		m.updateContent()
-		// Scroll to bottom to show new entries
-		m.viewport.GotoBottom()
+
+		// Smart scroll decision
+		if wasAtBottom {
+			m.viewport.GotoBottom() // Auto-scroll
+		} else {
+			m.newEntriesCount += len(msg.Entries) // Track for indicator
+		}
+
 		// Chain next wait
 		if m.watcher != nil {
 			return m, m.watcher.WaitForEvent()
@@ -366,7 +385,10 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case watcher.FileResetMsg:
-		// File was truncated - reload from beginning
+		// File was truncated - reset everything
+		m.newEntriesCount = 0 // Clear indicator
+
+		// Reload from beginning
 		if m.renderOpts.FilePath != "" {
 			result, err := parser.ParseJSONLFile(m.renderOpts.FilePath)
 			if err == nil {
@@ -463,6 +485,15 @@ func (m ViewerModel) buildModeSegment() string {
 	return Styles.StatusBarSegment.Mode.Render("LIVE")
 }
 
+// buildNewEntriesSegment returns the new entries indicator segment (watch mode only).
+func (m ViewerModel) buildNewEntriesSegment() string {
+	if m.newEntriesCount == 0 {
+		return "" // Empty when no new entries pending
+	}
+	indicator := fmt.Sprintf("+%d new", m.newEntriesCount)
+	return Styles.StatusBarSegment.Mode.Render(indicator) // Reuse accent style
+}
+
 // buildPositionSegment returns the position indicator segment.
 func (m ViewerModel) buildPositionSegment() string {
 	total := len(m.entries)
@@ -511,6 +542,7 @@ func (m ViewerModel) View() string {
 
 	// Build segmented footer
 	modeSegment := m.buildModeSegment()
+	newEntriesSegment := m.buildNewEntriesSegment()
 	posSegment := m.buildPositionSegment()
 	shortcutsText := m.buildShortcutsSegment()
 
@@ -529,8 +561,9 @@ func (m ViewerModel) View() string {
 
 	// Calculate width for shortcuts segment (fills remaining space)
 	modeWidth := lipgloss.Width(modeSegment)
+	newEntriesWidth := lipgloss.Width(newEntriesSegment)
 	posWidth := lipgloss.Width(posSegment)
-	shortcutsWidth := m.width - modeWidth - posWidth
+	shortcutsWidth := m.width - modeWidth - newEntriesWidth - posWidth
 	if shortcutsWidth < 0 {
 		shortcutsWidth = 0
 	}
@@ -539,7 +572,7 @@ func (m ViewerModel) View() string {
 		Width(shortcutsWidth).
 		Render(shortcutsText + statusSuffix)
 
-	footer := lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, posSegment, shortcutsSegment)
+	footer := lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, newEntriesSegment, posSegment, shortcutsSegment)
 
 	normalView := fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), footer)
 
@@ -949,6 +982,14 @@ func formatToolSummary(toolName string, input map[string]any) string {
 	default:
 		return fmt.Sprintf("%s: [collapsed]", toolName)
 	}
+}
+
+// isAtBottom returns true if the viewport is at or near the bottom.
+// This is used for smart auto-scroll behavior in watch mode.
+func (m *ViewerModel) isAtBottom() bool {
+	// AtBottom() returns true when scrolled to end
+	// ScrollPercent() >= 0.99 handles edge cases near bottom
+	return m.viewport.AtBottom() || m.viewport.ScrollPercent() >= 0.99
 }
 
 // performSearch searches through the content and finds matching lines.

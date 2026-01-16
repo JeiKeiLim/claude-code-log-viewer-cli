@@ -68,7 +68,7 @@ development_status:
   epic-2: in-progress
   2-1-add-watch-mode-cli-flag: done
   2-2-implement-fsnotify-file-watching: done
-  2-3-implement-smart-auto-scroll: backlog
+  2-3-implement-smart-auto-scroll: done
   epic-2-retrospective: optional
 
   # Epic 3: Markdown Rendering
