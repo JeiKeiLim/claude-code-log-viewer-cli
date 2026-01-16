@@ -56,12 +56,12 @@ development_status:
   1-8-implement-overlay-spinner: done
   epic-1.5-retrospective: done
 
-  # Epic 1.6: CLI Enhancements (IN PROGRESS)
-  epic-1.6: in-progress
+  # Epic 1.6: CLI Enhancements (DONE)
+  epic-1.6: done
   1-9-pipeline-visibility-flags-with-richer-collapsed-info: done
   1-10-project-conversation-count: done
   1-11-pipeline-width-override: done
-  1-12-richer-help-output: backlog
+  1-12-richer-help-output: done
   epic-1.6-retrospective: optional
 
   # Epic 2: Real-time File Watching

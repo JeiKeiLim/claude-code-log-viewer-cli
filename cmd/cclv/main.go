@@ -19,6 +19,59 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version"
 )
 
+func init() {
+	flag.Usage = printHelp
+}
+
+func printHelp() {
+	w := flag.CommandLine.Output()
+	_, _ = fmt.Fprint(w, `cclv - Claude Code Log Viewer
+
+USAGE:
+  cclv                          Interactive mode - browse all projects
+  cclv [options] <file>         View a specific conversation file
+  cat file.jsonl | cclv         Read from stdin
+
+OPTIONS:
+  --plain           Output plain text without TUI (for piping)
+  --tui             Force interactive TUI mode even when piped
+  --color=MODE      Color mode: auto (default), always, never
+  --hide-thoughts   Hide Claude's thinking blocks
+  --hide-tools      Hide tool use/result blocks
+  --width=N         Set rendering width (40-500, 0=auto)
+  -v, --version     Print version information
+  -h, --help        Show this help message
+
+EXAMPLES:
+  cclv                                    Browse all Claude projects
+  cclv conversation.jsonl                 View a conversation file
+  cat file.jsonl | cclv                   Read from stdin
+  cclv --plain file.jsonl | less          Pipeline with pager
+  cclv --hide-thoughts --hide-tools file.jsonl  Show only messages
+  cclv --width=100 file.jsonl             Fixed 100-char width
+  cclv --color=always file.jsonl | less -R  Force colors in pipe
+
+KEYBOARD SHORTCUTS (TUI mode):
+  Navigation:   j/k             Move up/down
+                gg/G            Jump to top/bottom
+                h/esc           Go back
+                l/enter         Select / go forward
+
+  Scrolling:    d/u, Ctrl+d/u   Half-page down/up
+                PgDn/PgUp/Space Page down/up
+                Home/End        Jump to start/end
+
+  Toggles:      t               Toggle thinking blocks
+                i               Toggle tool inputs
+
+  Search:       /               Start search
+                n/N             Next/previous match
+
+  Actions:      enter           Select item
+                q, Ctrl+c       Quit
+`)
+}
+
 // Output mode for display
 type outputMode int
 
