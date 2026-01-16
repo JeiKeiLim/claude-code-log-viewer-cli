@@ -471,3 +471,58 @@ func TestMarkdownRenderEmptyContent(t *testing.T) {
 		t.Errorf("Render(\"\") should return empty/whitespace, got %q", output)
 	}
 }
+
+// TestMarkdownRendererDifferentWidths tests that different widths produce different wrap behavior (AC 3.2.1, 3.2.3, 3.2.4)
+func TestMarkdownRendererDifferentWidths(t *testing.T) {
+	longText := "This is a very long line that should wrap differently at different terminal widths because it exceeds typical terminal boundaries and forces word wrapping to occur."
+
+	r80, err := NewMarkdownRenderer(80)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer(80) error = %v", err)
+	}
+	r40, err := NewMarkdownRenderer(40)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer(40) error = %v", err)
+	}
+
+	out80 := r80.Render(longText)
+	out40 := r40.Render(longText)
+
+	// Different widths should produce different line counts
+	lines80 := strings.Count(out80, "\n")
+	lines40 := strings.Count(out40, "\n")
+
+	// Narrower width (40) should wrap to more lines than wider width (80)
+	if lines40 <= lines80 {
+		t.Errorf("40-width should wrap to more lines than 80-width: got %d vs %d", lines40, lines80)
+	}
+}
+
+// TestMarkdownRendererBoundaryWidths tests renderer at typical terminal widths (AC 3.2.1, 3.2.4)
+func TestMarkdownRendererBoundaryWidths(t *testing.T) {
+	tests := []struct {
+		name  string
+		width int
+	}{
+		{"MinWidth40", 40},
+		{"StandardWidth80", 80},
+		{"WideWidth120", 120},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := NewMarkdownRenderer(tt.width)
+			if err != nil {
+				t.Fatalf("NewMarkdownRenderer(%d) error = %v", tt.width, err)
+			}
+			if r.Width() != tt.width {
+				t.Errorf("Width() = %d, want %d", r.Width(), tt.width)
+			}
+			// Verify it can render without error
+			output := r.Render("# Test header\n\nSome content")
+			if !strings.Contains(output, "Test header") {
+				t.Error("Rendered output should contain header text")
+			}
+		})
+	}
+}

@@ -86,6 +86,10 @@ type ViewerModel struct {
 
 	// Markdown renderer for assistant text
 	markdownRenderer *MarkdownRenderer
+
+	// Render cache - keyed by entry index for O(1) lookup
+	renderCache map[int]string // entry index -> rendered markdown string
+	cacheWidth  int            // width when cache was built
 }
 
 // NewViewerModel creates a new viewer model with the given entries.
@@ -135,6 +139,8 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 		newEntriesCount:  0, // Explicitly initialize for watch mode tracking
 		renderOpts:       opts,
 		markdownRenderer: mdRenderer,
+		renderCache:      make(map[int]string),
+		cacheWidth:       initialWidth - 4,
 	}
 
 	// Apply width override if specified
@@ -319,10 +325,12 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "t":
 			m.showThinking = !m.showThinking
+			m.invalidateRenderCache() // Toggle affects rendering, clear cache
 			m.updateContent()
 
 		case "i":
 			m.showToolInputs = !m.showToolInputs
+			m.invalidateRenderCache() // Toggle affects rendering, clear cache
 			m.updateContent()
 
 		case "w":
@@ -361,14 +369,19 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.height = msg.Height
 
-		// Recreate markdown renderer if width changed significantly
+		// Recreate markdown renderer if nil or width changed significantly
 		newRenderWidth := m.width - 4
-		widthDiff := m.markdownRenderer.Width() - newRenderWidth
-		if widthDiff < 0 {
-			widthDiff = -widthDiff
-		}
-		if m.markdownRenderer == nil || widthDiff > 5 {
+		if m.markdownRenderer == nil {
 			m.markdownRenderer, _ = NewMarkdownRenderer(newRenderWidth)
+		} else {
+			widthDiff := m.markdownRenderer.Width() - newRenderWidth
+			if widthDiff < 0 {
+				widthDiff = -widthDiff
+			}
+			if widthDiff > 5 {
+				m.markdownRenderer, _ = NewMarkdownRenderer(newRenderWidth)
+				m.invalidateRenderCache() // Clear cache when width changes significantly
+			}
 		}
 
 		// Header: 1 line for title
@@ -434,7 +447,8 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case watcher.FileResetMsg:
 		// File was truncated - reset everything
-		m.newEntriesCount = 0 // Clear indicator
+		m.newEntriesCount = 0            // Clear indicator
+		m.invalidateRenderCache()        // Clear cache on file reset
 
 		// Reload from beginning
 		if m.renderOpts.FilePath != "" {
@@ -645,7 +659,7 @@ func (m *ViewerModel) updateContent() {
 	}
 
 	for i := 0; i < renderCount; i++ {
-		rendered := m.renderEntry(m.entries[i])
+		rendered := m.getCachedRender(i, m.entries[i])
 		content.WriteString(rendered)
 		content.WriteString("\n")
 	}
@@ -1022,6 +1036,33 @@ func formatToolSummary(toolName string, input map[string]any) string {
 	default:
 		return fmt.Sprintf("%s: [collapsed]", toolName)
 	}
+}
+
+// invalidateRenderCache clears the render cache and updates the cache width.
+// Called on resize, toggle changes, and file reset.
+func (m *ViewerModel) invalidateRenderCache() {
+	m.renderCache = make(map[int]string)
+	m.cacheWidth = m.width - 4
+}
+
+// getCachedRender returns cached rendered content for an entry, or renders and caches it.
+// Only assistant entries are cached since markdown rendering via Glamour is expensive.
+// User/tool/thinking entries render fast without caching.
+func (m *ViewerModel) getCachedRender(idx int, entry types.LogEntry) string {
+	// Only cache assistant entries (markdown rendering is expensive)
+	if entry.Type != types.EntryTypeAssistant {
+		return m.renderEntry(entry)
+	}
+
+	// Check cache hit
+	if cached, ok := m.renderCache[idx]; ok {
+		return cached
+	}
+
+	// Cache miss - render and store
+	rendered := m.renderEntry(entry)
+	m.renderCache[idx] = rendered
+	return rendered
 }
 
 // isAtBottom returns true if the viewport is at or near the bottom.

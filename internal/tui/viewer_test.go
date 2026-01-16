@@ -513,6 +513,333 @@ func TestConversationSelectedWithWatchMsgType(t *testing.T) {
 	}
 }
 
+// --- Render Cache Tests (Story 3.3) ---
+
+func TestRenderCacheInitialization(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+
+	// Cache should be initialized
+	if m.renderCache == nil {
+		t.Error("renderCache should be initialized, got nil")
+	}
+	if len(m.renderCache) != 0 {
+		t.Errorf("renderCache should be empty on init, got %d entries", len(m.renderCache))
+	}
+	// cacheWidth should be initialWidth - 4
+	expectedWidth := 80 - 4
+	if m.cacheWidth != expectedWidth {
+		t.Errorf("cacheWidth = %d, want %d", m.cacheWidth, expectedWidth)
+	}
+}
+
+func TestInvalidateRenderCache(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeAssistant}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+
+	// Manually add some cache entries
+	m.renderCache[0] = "cached content"
+	m.renderCache[1] = "more cached content"
+	m.width = 100 // Simulate width change
+
+	// Invalidate
+	m.invalidateRenderCache()
+
+	// Cache should be cleared
+	if len(m.renderCache) != 0 {
+		t.Errorf("renderCache should be empty after invalidate, got %d entries", len(m.renderCache))
+	}
+	// cacheWidth should be updated
+	expectedWidth := 100 - 4
+	if m.cacheWidth != expectedWidth {
+		t.Errorf("cacheWidth after invalidate = %d, want %d", m.cacheWidth, expectedWidth)
+	}
+}
+
+func TestGetCachedRenderCacheHit(t *testing.T) {
+	entries := []types.LogEntry{
+		{
+			Type: types.EntryTypeAssistant,
+			Message: types.Message{
+				Content: []types.MessageContent{
+					{Type: types.ContentTypeText, Text: "Hello world"},
+				},
+			},
+		},
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24) // Initialize viewport
+
+	// First call - cache miss, should render and cache
+	first := m.getCachedRender(0, entries[0])
+	if first == "" {
+		t.Error("getCachedRender should return non-empty content")
+	}
+
+	// Verify cache entry exists
+	if _, ok := m.renderCache[0]; !ok {
+		t.Error("Entry should be cached after first getCachedRender call")
+	}
+
+	// Second call - cache hit, should return same content
+	second := m.getCachedRender(0, entries[0])
+	if first != second {
+		t.Errorf("getCachedRender cache hit should return same content\nfirst:  %q\nsecond: %q", first, second)
+	}
+}
+
+func TestGetCachedRenderKeyByIndex(t *testing.T) {
+	entries := []types.LogEntry{
+		{Type: types.EntryTypeAssistant, Message: types.Message{Content: []types.MessageContent{{Type: types.ContentTypeText, Text: "Entry 0"}}}},
+		{Type: types.EntryTypeUser, Message: types.Message{TextContent: "User entry"}}, // Won't be cached
+		{Type: types.EntryTypeAssistant, Message: types.Message{Content: []types.MessageContent{{Type: types.ContentTypeText, Text: "Entry 2"}}}},
+		{Type: types.EntryTypeAssistant, Message: types.Message{Content: []types.MessageContent{{Type: types.ContentTypeText, Text: "Entry 3"}}}},
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	// Don't call SetSize yet to avoid automatic updateContent() populating cache
+
+	// Clear any cache from initialization and manually call getCachedRender
+	m.renderCache = make(map[int]string)
+
+	// Render entries 0, 2 only (skip 1 which is user entry, skip 3 to test non-rendered)
+	m.getCachedRender(0, entries[0])
+	m.getCachedRender(1, entries[1]) // User entry - not cached
+	m.getCachedRender(2, entries[2])
+	// Don't call for index 3
+
+	// Check cache has correct keys
+	if _, ok := m.renderCache[0]; !ok {
+		t.Error("Index 0 should be in cache")
+	}
+	if _, ok := m.renderCache[1]; ok {
+		t.Error("Index 1 (user entry) should NOT be in cache")
+	}
+	if _, ok := m.renderCache[2]; !ok {
+		t.Error("Index 2 should be in cache")
+	}
+	if _, ok := m.renderCache[3]; ok {
+		t.Error("Index 3 should NOT be in cache (not rendered)")
+	}
+}
+
+func TestGetCachedRenderOnlyAssistant(t *testing.T) {
+	tests := []struct {
+		name       string
+		entryType  types.EntryType
+		shouldCache bool
+	}{
+		{"assistant cached", types.EntryTypeAssistant, true},
+		{"user not cached", types.EntryTypeUser, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var entry types.LogEntry
+			if tt.entryType == types.EntryTypeAssistant {
+				entry = types.LogEntry{
+					Type: types.EntryTypeAssistant,
+					Message: types.Message{
+						Content: []types.MessageContent{
+							{Type: types.ContentTypeText, Text: "Content"},
+						},
+					},
+				}
+			} else {
+				entry = types.LogEntry{
+					Type:    types.EntryTypeUser,
+					Message: types.Message{TextContent: "User content"},
+				}
+			}
+
+			entries := []types.LogEntry{entry}
+			opts := RenderOptions{Width: 80}
+			m := NewViewerModel(entries, 0, "Test", opts)
+			m.SetSize(80, 24)
+
+			// Render
+			m.getCachedRender(0, entry)
+
+			// Check cache
+			_, cached := m.renderCache[0]
+			if cached != tt.shouldCache {
+				t.Errorf("Entry type %v cached = %v, want %v", tt.entryType, cached, tt.shouldCache)
+			}
+		})
+	}
+}
+
+func TestCacheInvalidationOnToggle(t *testing.T) {
+	entries := []types.LogEntry{
+		{
+			Type: types.EntryTypeAssistant,
+			Message: types.Message{
+				Content: []types.MessageContent{
+					{Type: types.ContentTypeText, Text: "Content"},
+					{Type: types.ContentTypeThinking, Thinking: "Thinking content"},
+				},
+			},
+		},
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Populate cache
+	m.getCachedRender(0, entries[0])
+	if len(m.renderCache) == 0 {
+		t.Fatal("Cache should have entries before toggle test")
+	}
+
+	// Simulate toggle thinking (what 't' key does)
+	m.showThinking = !m.showThinking
+	m.invalidateRenderCache()
+
+	if len(m.renderCache) != 0 {
+		t.Errorf("Cache should be empty after toggle, got %d entries", len(m.renderCache))
+	}
+}
+
+func TestCacheNotInvalidatedOnNewEntries(t *testing.T) {
+	entries := []types.LogEntry{
+		{Type: types.EntryTypeAssistant, Message: types.Message{Content: []types.MessageContent{{Type: types.ContentTypeText, Text: "Entry 0"}}}},
+	}
+	opts := RenderOptions{Width: 80, WatchMode: true}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Populate cache
+	m.getCachedRender(0, entries[0])
+	initialCacheLen := len(m.renderCache)
+
+	// Simulate NewEntriesMsg behavior - append new entry without invalidating cache
+	newEntry := types.LogEntry{
+		Type:    types.EntryTypeAssistant,
+		Message: types.Message{Content: []types.MessageContent{{Type: types.ContentTypeText, Text: "New entry"}}},
+	}
+	m.entries = append(m.entries, newEntry)
+	m.loadedCount = len(m.entries)
+	// Note: We do NOT call invalidateRenderCache() for NewEntriesMsg
+
+	// Cache should still have the original entry
+	if len(m.renderCache) != initialCacheLen {
+		t.Errorf("Cache should preserve %d entries after new entry, got %d", initialCacheLen, len(m.renderCache))
+	}
+
+	// Original entry still cached
+	if _, ok := m.renderCache[0]; !ok {
+		t.Error("Original entry (index 0) should still be cached after new entries")
+	}
+}
+
+func TestCacheInvalidationOnResize(t *testing.T) {
+	entries := []types.LogEntry{
+		{
+			Type: types.EntryTypeAssistant,
+			Message: types.Message{
+				Content: []types.MessageContent{
+					{Type: types.ContentTypeText, Text: "Content"},
+				},
+			},
+		},
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24) // Initialize viewport
+
+	// Populate cache
+	m.getCachedRender(0, entries[0])
+	if len(m.renderCache) == 0 {
+		t.Fatal("Cache should have entries before resize test")
+	}
+
+	// Simulate resize with widthDiff > 5 (threshold that triggers invalidation)
+	// The WindowSizeMsg handler checks: if widthDiff > 5 { m.invalidateRenderCache() }
+	oldWidth := m.width
+	m.width = oldWidth + 10 // Change > 5
+
+	// Recreate what WindowSizeMsg handler does
+	newRenderWidth := m.width - 4
+	widthDiff := m.markdownRenderer.Width() - newRenderWidth
+	if widthDiff < 0 {
+		widthDiff = -widthDiff
+	}
+	if widthDiff > 5 {
+		m.invalidateRenderCache()
+	}
+
+	if len(m.renderCache) != 0 {
+		t.Errorf("Cache should be empty after resize with widthDiff > 5, got %d entries", len(m.renderCache))
+	}
+}
+
+func TestCacheInvalidationOnFileReset(t *testing.T) {
+	entries := []types.LogEntry{
+		{
+			Type: types.EntryTypeAssistant,
+			Message: types.Message{
+				Content: []types.MessageContent{
+					{Type: types.ContentTypeText, Text: "Content"},
+				},
+			},
+		},
+	}
+	opts := RenderOptions{Width: 80, WatchMode: true}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Populate cache
+	m.getCachedRender(0, entries[0])
+	if len(m.renderCache) == 0 {
+		t.Fatal("Cache should have entries before FileResetMsg test")
+	}
+
+	// Simulate what FileResetMsg handler does (lines 448-452 in viewer.go)
+	m.newEntriesCount = 0
+	m.invalidateRenderCache()
+
+	if len(m.renderCache) != 0 {
+		t.Errorf("Cache should be empty after FileResetMsg, got %d entries", len(m.renderCache))
+	}
+}
+
+func TestUpdateContentUsesCachedRender(t *testing.T) {
+	entries := []types.LogEntry{
+		{
+			Type: types.EntryTypeAssistant,
+			Message: types.Message{
+				Content: []types.MessageContent{
+					{Type: types.ContentTypeText, Text: "Cached content test"},
+				},
+			},
+		},
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24) // This calls updateContent() which should populate cache
+
+	// After updateContent(), the assistant entry should be cached
+	if _, ok := m.renderCache[0]; !ok {
+		t.Error("updateContent() should populate cache for assistant entries")
+	}
+
+	// Verify cache has correct content (contains original text)
+	cached := m.renderCache[0]
+	if cached == "" {
+		t.Error("Cached content should not be empty")
+	}
+
+	// The cached content should contain the text
+	// Note: Glamour processes markdown so exact match not expected
+	// but the words should be present
+	if !strings.Contains(cached, "Cached") || !strings.Contains(cached, "content") || !strings.Contains(cached, "test") {
+		t.Errorf("Cached content should contain rendered text, got: %s", cached)
+	}
+}
+
 func TestFormatToolSummary(t *testing.T) {
 	tests := []struct {
 		name     string
