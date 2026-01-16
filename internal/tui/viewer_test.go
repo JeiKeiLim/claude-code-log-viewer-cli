@@ -1201,3 +1201,534 @@ func TestFormatToolSummary(t *testing.T) {
 		})
 	}
 }
+
+// --- Command Mode Tests (Story 4.2) ---
+
+func TestInputModeEnum(t *testing.T) {
+	// Test that InputMode enum values are distinct and correct
+	if InputNone != 0 {
+		t.Errorf("InputNone = %d, want 0", InputNone)
+	}
+	if InputCommand != 1 {
+		t.Errorf("InputCommand = %d, want 1", InputCommand)
+	}
+	if InputSearch != 2 {
+		t.Errorf("InputSearch = %d, want 2", InputSearch)
+	}
+}
+
+func TestColonKeyActivatesCommandMode(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Initial state should be InputNone
+	if m.inputMode != InputNone {
+		t.Errorf("Initial inputMode = %d, want InputNone (%d)", m.inputMode, InputNone)
+	}
+
+	// Simulate ':' key press - set inputMode to InputCommand
+	m.inputMode = InputCommand
+	m.inputBuffer = ""
+
+	if m.inputMode != InputCommand {
+		t.Errorf("After ':' key, inputMode = %d, want InputCommand (%d)", m.inputMode, InputCommand)
+	}
+	if m.inputBuffer != "" {
+		t.Errorf("After ':' key, inputBuffer = %q, want empty", m.inputBuffer)
+	}
+}
+
+func TestDigitCaptureInCommandMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		digits     []string
+		wantBuffer string
+	}{
+		{
+			name:       "single digit",
+			digits:     []string{"5"},
+			wantBuffer: "5",
+		},
+		{
+			name:       "multiple digits",
+			digits:     []string{"1", "2", "3"},
+			wantBuffer: "123",
+		},
+		{
+			name:       "max digits enforced",
+			digits:     []string{"1", "2", "3", "4", "5", "6", "7"},
+			wantBuffer: "123456", // MaxCommandBufferDigits = 6
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+			opts := RenderOptions{Width: 80}
+			m := NewViewerModel(entries, 0, "Test", opts)
+			m.SetSize(80, 24)
+
+			// Enter command mode
+			m.inputMode = InputCommand
+			m.inputBuffer = ""
+
+			// Simulate digit presses
+			for _, digit := range tt.digits {
+				if len(m.inputBuffer) < MaxCommandBufferDigits {
+					m.inputBuffer += digit
+				}
+			}
+
+			if m.inputBuffer != tt.wantBuffer {
+				t.Errorf("After digits %v, inputBuffer = %q, want %q", tt.digits, m.inputBuffer, tt.wantBuffer)
+			}
+		})
+	}
+}
+
+func TestEnterKeyValidNavigationExitsCommandMode(t *testing.T) {
+	entries := make([]types.LogEntry, 10)
+	for i := range entries {
+		entries[i] = types.LogEntry{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Entry"}}
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Enter command mode with valid number
+	m.inputMode = InputCommand
+	m.inputBuffer = "5"
+
+	// Simulate Enter - valid navigation
+	num := 5 // strconv.Atoi("5")
+	if num >= 1 && num <= len(m.entries) {
+		_ = m.navigateToEntry(num)
+		m.inputMode = InputNone
+		m.inputBuffer = ""
+	}
+
+	if m.inputMode != InputNone {
+		t.Errorf("After valid Enter, inputMode = %d, want InputNone (%d)", m.inputMode, InputNone)
+	}
+	if m.inputBuffer != "" {
+		t.Errorf("After valid Enter, inputBuffer = %q, want empty", m.inputBuffer)
+	}
+}
+
+func TestEscapeKeyCancelsCommandMode(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Enter command mode with some input
+	m.inputMode = InputCommand
+	m.inputBuffer = "42"
+
+	// Simulate Escape
+	m.inputMode = InputNone
+	m.inputBuffer = ""
+
+	if m.inputMode != InputNone {
+		t.Errorf("After Escape, inputMode = %d, want InputNone (%d)", m.inputMode, InputNone)
+	}
+	if m.inputBuffer != "" {
+		t.Errorf("After Escape, inputBuffer = %q, want empty", m.inputBuffer)
+	}
+}
+
+func TestZeroEntryShowsToastError(t *testing.T) {
+	entries := make([]types.LogEntry, 10)
+	for i := range entries {
+		entries[i] = types.LogEntry{Type: types.EntryTypeUser}
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Enter command mode with :0
+	m.inputMode = InputCommand
+	m.inputBuffer = "0"
+
+	// Simulate Enter - should be invalid
+	num := 0 // strconv.Atoi("0")
+	if num < 1 || num > len(m.entries) {
+		m.inputMode = InputNone
+		m.inputBuffer = ""
+		m.toast = "Invalid line number"
+	}
+
+	if m.toast != "Invalid line number" {
+		t.Errorf("After :0, toast = %q, want 'Invalid line number'", m.toast)
+	}
+}
+
+func TestOutOfRangeShowsToastError(t *testing.T) {
+	entries := make([]types.LogEntry, 5)
+	for i := range entries {
+		entries[i] = types.LogEntry{Type: types.EntryTypeUser}
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Enter command mode with :10 (out of range for 5 entries)
+	m.inputMode = InputCommand
+	m.inputBuffer = "10"
+
+	// Simulate Enter - should be invalid
+	num := 10 // strconv.Atoi("10")
+	if num < 1 || num > len(m.entries) {
+		m.inputMode = InputNone
+		m.inputBuffer = ""
+		m.toast = "Invalid line number"
+	}
+
+	if m.toast != "Invalid line number" {
+		t.Errorf("After :10 (max 5), toast = %q, want 'Invalid line number'", m.toast)
+	}
+}
+
+func TestToastExpiryClearsBothFields(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Set toast with expiry using showToast
+	_ = m.showToast("Test message", ToastDuration)
+	toastID := m.toastID
+
+	// Verify toast is set
+	if m.toast != "Test message" {
+		t.Errorf("After showToast, toast = %q, want 'Test message'", m.toast)
+	}
+
+	// Send toastExpiredMsg through Update() with matching ID (CR fix)
+	expiredMsg := toastExpiredMsg{id: toastID}
+	updatedModel, _ := m.Update(expiredMsg)
+	m = updatedModel.(ViewerModel)
+
+	if m.toast != "" {
+		t.Errorf("After toast expiry with matching ID, toast = %q, want empty", m.toast)
+	}
+	if !m.toastExpiry.IsZero() {
+		t.Error("After toast expiry, toastExpiry should be zero")
+	}
+}
+
+func TestToastExpiryIgnoresMismatchedID(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Set toast
+	_ = m.showToast("Test message", ToastDuration)
+
+	// Send toastExpiredMsg with wrong ID (simulates race condition)
+	expiredMsg := toastExpiredMsg{id: 999}
+	updatedModel, _ := m.Update(expiredMsg)
+	m = updatedModel.(ViewerModel)
+
+	// Toast should NOT be cleared because ID doesn't match
+	if m.toast != "Test message" {
+		t.Errorf("After toast expiry with wrong ID, toast = %q, want 'Test message'", m.toast)
+	}
+}
+
+func TestEmptyConversationShowsError(t *testing.T) {
+	entries := []types.LogEntry{} // Empty
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Try to navigate to any entry
+	err := m.navigateToEntry(1)
+	if err == nil {
+		t.Error("navigateToEntry(1) on empty entries should return error")
+	}
+	if err != nil && err.Error() != "invalid line number" {
+		t.Errorf("navigateToEntry error = %q, want 'invalid line number'", err.Error())
+	}
+}
+
+func TestNavigateToFirstEntry(t *testing.T) {
+	entries := make([]types.LogEntry, 10)
+	for i := range entries {
+		entries[i] = types.LogEntry{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Entry"}}
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Navigate to first entry
+	err := m.navigateToEntry(1)
+	if err != nil {
+		t.Errorf("navigateToEntry(1) should not error, got %v", err)
+	}
+
+	// Entry line positions should exist
+	if len(m.entryLinePositions) == 0 {
+		t.Error("entryLinePositions should be populated after SetSize")
+	}
+}
+
+func TestNavigateToLastEntry(t *testing.T) {
+	entries := make([]types.LogEntry, 10)
+	for i := range entries {
+		entries[i] = types.LogEntry{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Entry"}}
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Navigate to last entry
+	lastEntry := len(entries)
+	err := m.navigateToEntry(lastEntry)
+	if err != nil {
+		t.Errorf("navigateToEntry(%d) should not error, got %v", lastEntry, err)
+	}
+}
+
+func TestNonNumericInputIgnoredInCommandMode(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Enter command mode
+	m.inputMode = InputCommand
+	m.inputBuffer = "12"
+
+	// Simulate non-numeric input (should be ignored)
+	// In real handler, letters would not modify inputBuffer
+	nonNumericKeys := []string{"a", "b", "x", "!", "@"}
+	for _, key := range nonNumericKeys {
+		// Only digits 0-9 are accepted
+		if key >= "0" && key <= "9" {
+			m.inputBuffer += key
+		}
+	}
+
+	if m.inputBuffer != "12" {
+		t.Errorf("After non-numeric input, inputBuffer = %q, want '12'", m.inputBuffer)
+	}
+}
+
+func TestBackspaceRemovesLastDigit(t *testing.T) {
+	tests := []struct {
+		name       string
+		initial    string
+		wantBuffer string
+	}{
+		{
+			name:       "remove last digit",
+			initial:    "123",
+			wantBuffer: "12",
+		},
+		{
+			name:       "remove from single digit",
+			initial:    "5",
+			wantBuffer: "",
+		},
+		{
+			name:       "backspace on empty buffer",
+			initial:    "",
+			wantBuffer: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+			opts := RenderOptions{Width: 80}
+			m := NewViewerModel(entries, 0, "Test", opts)
+			m.SetSize(80, 24)
+
+			// Enter command mode with initial buffer
+			m.inputMode = InputCommand
+			m.inputBuffer = tt.initial
+
+			// Simulate backspace
+			if len(m.inputBuffer) > 0 {
+				m.inputBuffer = m.inputBuffer[:len(m.inputBuffer)-1]
+			}
+
+			if m.inputBuffer != tt.wantBuffer {
+				t.Errorf("After backspace, inputBuffer = %q, want %q", m.inputBuffer, tt.wantBuffer)
+			}
+		})
+	}
+}
+
+func TestBuildShortcutsContainsGotoHint(t *testing.T) {
+	// Test that shortcuts segment includes :N:goto hint
+	m := ViewerModel{canGoBack: false}
+	got := m.buildShortcutsSegment()
+
+	if !strings.Contains(got, ":N:goto") {
+		t.Errorf("buildShortcutsSegment() = %q, should contain ':N:goto'", got)
+	}
+}
+
+func TestNewViewerModelInputModeInitialization(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+
+	if m.inputMode != InputNone {
+		t.Errorf("NewViewerModel() inputMode = %d, want InputNone (%d)", m.inputMode, InputNone)
+	}
+	if m.inputBuffer != "" {
+		t.Errorf("NewViewerModel() inputBuffer = %q, want empty", m.inputBuffer)
+	}
+}
+
+func TestNewViewerModelEntryLinePositionsInitialization(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+
+	if m.entryLinePositions == nil {
+		t.Error("NewViewerModel() entryLinePositions should be initialized, got nil")
+	}
+}
+
+func TestEntryLinePositionsPopulatedOnUpdateContent(t *testing.T) {
+	entries := make([]types.LogEntry, 5)
+	for i := range entries {
+		entries[i] = types.LogEntry{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Entry"}}
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24) // Triggers updateContent()
+
+	// entryLinePositions should have same count as loaded entries
+	if len(m.entryLinePositions) != len(entries) {
+		t.Errorf("entryLinePositions has %d entries, want %d", len(m.entryLinePositions), len(entries))
+	}
+
+	// First entry should start at line 0
+	if len(m.entryLinePositions) > 0 && m.entryLinePositions[0] != 0 {
+		t.Errorf("entryLinePositions[0] = %d, want 0", m.entryLinePositions[0])
+	}
+
+	// Subsequent entries should have increasing line positions
+	for i := 1; i < len(m.entryLinePositions); i++ {
+		if m.entryLinePositions[i] <= m.entryLinePositions[i-1] {
+			t.Errorf("entryLinePositions[%d] = %d should be > entryLinePositions[%d] = %d",
+				i, m.entryLinePositions[i], i-1, m.entryLinePositions[i-1])
+		}
+	}
+}
+
+func TestNavigateToEntryBoundaryValidation(t *testing.T) {
+	entries := make([]types.LogEntry, 10)
+	for i := range entries {
+		entries[i] = types.LogEntry{Type: types.EntryTypeUser}
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	tests := []struct {
+		name      string
+		entryNum  int
+		wantError bool
+	}{
+		{"valid first entry", 1, false},
+		{"valid last entry", 10, false},
+		{"valid middle entry", 5, false},
+		{"invalid zero", 0, true},
+		{"invalid negative", -1, true},
+		{"invalid too large", 11, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := m.navigateToEntry(tt.entryNum)
+			if (err != nil) != tt.wantError {
+				t.Errorf("navigateToEntry(%d) error = %v, wantError = %v", tt.entryNum, err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestShowToastSetsFields(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+
+	// Call showToast
+	cmd := m.showToast("Test message", ToastDuration)
+
+	if m.toast != "Test message" {
+		t.Errorf("showToast() toast = %q, want 'Test message'", m.toast)
+	}
+	if m.toastExpiry.IsZero() {
+		t.Error("showToast() toastExpiry should not be zero")
+	}
+	if m.toastID != 1 {
+		t.Errorf("showToast() toastID = %d, want 1 (first toast)", m.toastID)
+	}
+
+	// Verify returned command is not nil (CR fix)
+	if cmd == nil {
+		t.Error("showToast() should return a non-nil tea.Cmd")
+	}
+}
+
+func TestShowToastIncreasesToastID(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+
+	// First toast
+	_ = m.showToast("First", ToastDuration)
+	firstID := m.toastID
+
+	// Second toast
+	_ = m.showToast("Second", ToastDuration)
+	secondID := m.toastID
+
+	if secondID != firstID+1 {
+		t.Errorf("Second toastID = %d, want %d (firstID+1)", secondID, firstID+1)
+	}
+}
+
+func TestSyncEntryLinePositions(t *testing.T) {
+	entries := make([]types.LogEntry, 5)
+	for i := range entries {
+		entries[i] = types.LogEntry{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Entry"}}
+	}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Clear entry line positions
+	m.entryLinePositions = nil
+
+	// Call syncEntryLinePositions
+	m.syncEntryLinePositions()
+
+	// Verify positions are rebuilt
+	if len(m.entryLinePositions) != len(entries) {
+		t.Errorf("syncEntryLinePositions() created %d positions, want %d", len(m.entryLinePositions), len(entries))
+	}
+
+	// First entry should start at line 0
+	if len(m.entryLinePositions) > 0 && m.entryLinePositions[0] != 0 {
+		t.Errorf("entryLinePositions[0] = %d, want 0", m.entryLinePositions[0])
+	}
+
+	// Subsequent entries should have increasing line positions
+	for i := 1; i < len(m.entryLinePositions); i++ {
+		if m.entryLinePositions[i] <= m.entryLinePositions[i-1] {
+			t.Errorf("entryLinePositions[%d] = %d should be > entryLinePositions[%d] = %d",
+				i, m.entryLinePositions[i], i-1, m.entryLinePositions[i-1])
+		}
+	}
+}

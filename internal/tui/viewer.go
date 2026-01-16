@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,15 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
+)
+
+// InputMode represents the current input mode for the viewer.
+type InputMode int
+
+const (
+	InputNone    InputMode = iota
+	InputCommand           // :N navigation
+	InputSearch            // / search
 )
 
 // RenderOptions controls visibility of content types during rendering.
@@ -55,13 +65,24 @@ type ViewerModel struct {
 	// For returning to previous view
 	canGoBack bool
 
+	// Input mode state (Story 4.2)
+	inputMode   InputMode // Current input mode: InputNone, InputCommand, InputSearch
+	inputBuffer string    // Buffer for command input (:42)
+
 	// Search state
-	searching     bool
 	searchInput   textinput.Model
 	searchQuery   string
 	searchMatches []int // Line numbers with matches
 	currentMatch  int   // Index into searchMatches
 	noResults     bool
+
+	// Toast notification state (Story 4.2)
+	toast       string    // Toast message to display
+	toastExpiry time.Time // When toast should disappear
+	toastID     int       // Unique ID for toast race condition prevention
+
+	// Line position tracking for navigation (Story 4.2)
+	entryLinePositions []int // Y offset where each entry starts in viewport
 
 	// gg key detection
 	lastKeyG     bool
@@ -183,25 +204,28 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 	mdRenderer, _ := NewMarkdownRenderer(mdRenderWidth)
 
 	m := ViewerModel{
-		entries:          entries,
-		parseErrors:      parseErrors,
-		title:            title,
-		showThinking:     false, // Collapsed by default
-		showToolInputs:   false, // Collapsed by default
-		canGoBack:        false,
-		searchInput:      ti,
-		lazyEnabled:      lazyEnabled,
-		loadedCount:      loadedCount,
-		lazyLoadState:    state,
-		overlaySpinner:   s,
-		watchMode:        opts.WatchMode,
-		newEntriesCount:  0, // Explicitly initialize for watch mode tracking
-		renderOpts:       opts,
-		markdownRenderer: mdRenderer,
-		renderCache:      make(map[int]string),
-		cacheWidth:       mdRenderWidth,
-		showLineNumbers:  true, // Default true (Story 4.1)
-		gutterWidth:      gutterWidth,
+		entries:            entries,
+		parseErrors:        parseErrors,
+		title:              title,
+		showThinking:       false, // Collapsed by default
+		showToolInputs:     false, // Collapsed by default
+		canGoBack:          false,
+		inputMode:          InputNone,           // Story 4.2: default to no input mode
+		inputBuffer:        "",                  // Story 4.2: empty command buffer
+		searchInput:        ti,
+		lazyEnabled:        lazyEnabled,
+		loadedCount:        loadedCount,
+		lazyLoadState:      state,
+		overlaySpinner:     s,
+		watchMode:          opts.WatchMode,
+		newEntriesCount:    0, // Explicitly initialize for watch mode tracking
+		renderOpts:         opts,
+		markdownRenderer:   mdRenderer,
+		renderCache:        make(map[int]string),
+		cacheWidth:         mdRenderWidth,
+		showLineNumbers:    true, // Default true (Story 4.1)
+		gutterWidth:        gutterWidth,
+		entryLinePositions: make([]int, 0, len(entries)), // Story 4.2: navigation tracking
 	}
 
 	// Apply width override if specified
@@ -278,17 +302,60 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case toastExpiredMsg:
+		// Clear toast when expired (Story 4.2) - only if ID matches to prevent race conditions
+		if msg.id == m.toastID {
+			m.toast = ""
+			m.toastExpiry = time.Time{}
+		}
+		return m, nil
+
 	case tea.KeyMsg:
-		// Handle search mode
-		if m.searching {
+		// Handle command mode FIRST (Story 4.2)
+		if m.inputMode == InputCommand {
 			switch msg.String() {
 			case "enter":
-				m.searching = false
+				num, err := strconv.Atoi(m.inputBuffer)
+				if err != nil || num < 1 || num > len(m.entries) {
+					m.inputMode = InputNone
+					m.inputBuffer = ""
+					return m, m.showToast("Invalid line number", ToastDuration)
+				}
+				_ = m.navigateToEntry(num) // Validation already done above
+				m.inputMode = InputNone
+				m.inputBuffer = ""
+				return m, nil
+			case "esc":
+				m.inputMode = InputNone
+				m.inputBuffer = ""
+				return m, nil
+			case "backspace":
+				if len(m.inputBuffer) > 0 {
+					m.inputBuffer = m.inputBuffer[:len(m.inputBuffer)-1]
+				}
+				return m, nil
+			case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
+				// Limit buffer to MaxCommandBufferDigits (supports up to 999,999 entries)
+				if len(m.inputBuffer) < MaxCommandBufferDigits {
+					m.inputBuffer += msg.String()
+				}
+				return m, nil
+			default:
+				// Ignore all other keys in command mode (letters, symbols, etc.)
+				return m, nil
+			}
+		}
+
+		// Handle search mode
+		if m.inputMode == InputSearch {
+			switch msg.String() {
+			case "enter":
+				m.inputMode = InputNone
 				m.searchQuery = m.searchInput.Value()
 				m.performSearch()
 				return m, nil
 			case "esc":
-				m.searching = false
+				m.inputMode = InputNone
 				m.searchInput.SetValue("")
 				m.searchQuery = ""
 				m.searchMatches = nil
@@ -370,9 +437,15 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg { return GoBackMsg{} }
 			}
 
+		case ":":
+			// Enter command mode (Story 4.2)
+			m.inputMode = InputCommand
+			m.inputBuffer = ""
+			return m, nil
+
 		case "/":
 			// Open search
-			m.searching = true
+			m.inputMode = InputSearch
 			m.searchInput.Focus()
 			return m, textinput.Blink
 
@@ -483,6 +556,8 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Use pre-rendered content if available (from bulk loading)
 		if msg.renderedContent != "" {
 			m.viewport.SetContent(msg.renderedContent)
+			// Sync entryLinePositions for navigation after bulk load (CR fix)
+			m.syncEntryLinePositions()
 		} else {
 			m.updateContent()
 		}
@@ -624,6 +699,11 @@ type viewerMessagesLoadedMsg struct {
 	renderedContent string // Pre-rendered content for bulk loading (optional)
 }
 
+// toastExpiredMsg signals that the toast should be cleared (Story 4.2).
+type toastExpiredMsg struct {
+	id int // ID to match against current toast to prevent race conditions
+}
+
 // buildModeSegment returns the mode indicator segment (for watch mode).
 func (m ViewerModel) buildModeSegment() string {
 	if !m.watchMode {
@@ -657,7 +737,7 @@ func (m ViewerModel) buildPositionSegment() string {
 // buildShortcutsSegment returns the keyboard shortcuts segment.
 func (m ViewerModel) buildShortcutsSegment() string {
 	var parts []string
-	parts = append(parts, "j/k:scroll", "gg/G:top/bottom", "/:search")
+	parts = append(parts, "j/k:scroll", "gg/G:top/bottom", ":N:goto", "/:search")
 	if len(m.searchMatches) > 0 {
 		parts = append(parts, "n/N:next/prev")
 	}
@@ -681,8 +761,23 @@ func (m ViewerModel) View() string {
 	}
 	header := Styles.Title.Render(headerText)
 
+	// Command mode bar (Story 4.2) - show toast alongside command bar if active
+	if m.inputMode == InputCommand {
+		commandBar := Styles.SearchInput.Render(":" + m.inputBuffer + "_")
+		// Show toast in command mode if active (CR fix)
+		if m.toast != "" && time.Now().Before(m.toastExpiry) {
+			toastStyle := lipgloss.NewStyle().
+				Background(accentColor).
+				Foreground(whiteColor).
+				Padding(0, 1)
+			toastSegment := toastStyle.Render(m.toast)
+			commandBar = lipgloss.JoinHorizontal(lipgloss.Top, commandBar, " ", toastSegment)
+		}
+		return fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), commandBar)
+	}
+
 	// Search bar (if searching)
-	if m.searching {
+	if m.inputMode == InputSearch {
 		searchBar := Styles.SearchInput.Render("/" + m.searchInput.View())
 		return fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), searchBar)
 	}
@@ -715,11 +810,30 @@ func (m ViewerModel) View() string {
 		shortcutsWidth = 0
 	}
 
-	shortcutsSegment := Styles.StatusBarSegment.Shortcuts.
-		Width(shortcutsWidth).
-		Render(shortcutsText + statusSuffix)
-
-	footer := lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, newEntriesSegment, posSegment, shortcutsSegment)
+	// Toast rendering (Story 4.2) - replaces shortcuts segment when active
+	var footer string
+	if m.toast != "" && time.Now().Before(m.toastExpiry) {
+		toastStyle := lipgloss.NewStyle().
+			Background(accentColor).
+			Foreground(whiteColor).
+			Padding(0, 1)
+		toastSegment := toastStyle.Render(m.toast)
+		// Calculate remaining width for shortcuts
+		toastWidth := lipgloss.Width(toastSegment)
+		remainingWidth := m.width - modeWidth - newEntriesWidth - posWidth - toastWidth
+		if remainingWidth < 0 {
+			remainingWidth = 0
+		}
+		shortcutsSegment := Styles.StatusBarSegment.Shortcuts.
+			Width(remainingWidth).
+			Render(shortcutsText)
+		footer = lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, newEntriesSegment, posSegment, toastSegment, shortcutsSegment)
+	} else {
+		shortcutsSegment := Styles.StatusBarSegment.Shortcuts.
+			Width(shortcutsWidth).
+			Render(shortcutsText + statusSuffix)
+		footer = lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, newEntriesSegment, posSegment, shortcutsSegment)
+	}
 
 	normalView := fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), footer)
 
@@ -742,7 +856,14 @@ func (m *ViewerModel) updateContent() {
 		renderCount = len(m.entries)
 	}
 
+	// Reset and track entry positions for navigation (Story 4.2)
+	m.entryLinePositions = make([]int, 0, renderCount)
+	currentLine := 0
+
 	for i := 0; i < renderCount; i++ {
+		// Track position BEFORE rendering this entry (Story 4.2)
+		m.entryLinePositions = append(m.entryLinePositions, currentLine)
+
 		rendered := m.getCachedRender(i, m.entries[i])
 		// Prepend line numbers if enabled (Story 4.1)
 		if m.showLineNumbers {
@@ -750,6 +871,9 @@ func (m *ViewerModel) updateContent() {
 		}
 		content.WriteString(rendered)
 		content.WriteString("\n")
+
+		// Count lines in rendered content (including the trailing newline) (Story 4.2)
+		currentLine += strings.Count(rendered, "\n") + 1
 	}
 
 	// Add loading indicator at the bottom if more content is available
@@ -764,6 +888,63 @@ func (m *ViewerModel) updateContent() {
 	}
 
 	m.viewport.SetContent(content.String())
+}
+
+// syncEntryLinePositions rebuilds entry line positions from rendered content (CR fix).
+// Called after bulk load when pre-rendered content skips updateContent().
+func (m *ViewerModel) syncEntryLinePositions() {
+	renderCount := m.loadedCount
+	if renderCount > len(m.entries) {
+		renderCount = len(m.entries)
+	}
+
+	m.entryLinePositions = make([]int, 0, renderCount)
+	currentLine := 0
+
+	for i := 0; i < renderCount; i++ {
+		m.entryLinePositions = append(m.entryLinePositions, currentLine)
+
+		// Estimate line count - get cached render if available
+		rendered := ""
+		if cached, ok := m.renderCache[i]; ok {
+			rendered = cached
+		} else {
+			rendered = m.renderEntry(m.entries[i])
+		}
+		// Prepend gutter for accurate line counting
+		if m.showLineNumbers {
+			rendered = prependGutter(i+1, rendered, m.gutterWidth)
+		}
+		// Count lines including trailing newline
+		currentLine += strings.Count(rendered, "\n") + 1
+	}
+}
+
+// navigateToEntry jumps viewport to the specified entry (1-indexed) (Story 4.2).
+func (m *ViewerModel) navigateToEntry(entryNum int) error {
+	if len(m.entries) == 0 {
+		return fmt.Errorf("invalid line number")
+	}
+	if entryNum < 1 || entryNum > len(m.entries) {
+		return fmt.Errorf("invalid line number")
+	}
+
+	// Use entryLinePositions to find Y offset for entry
+	if entryNum <= len(m.entryLinePositions) {
+		m.viewport.SetYOffset(m.entryLinePositions[entryNum-1])
+	}
+	return nil
+}
+
+// showToast displays a temporary toast message (Story 4.2).
+func (m *ViewerModel) showToast(message string, duration time.Duration) tea.Cmd {
+	m.toastID++ // Increment ID to invalidate any pending expiry timers
+	currentID := m.toastID
+	m.toast = message
+	m.toastExpiry = time.Now().Add(duration)
+	return tea.Tick(duration, func(t time.Time) tea.Msg {
+		return toastExpiredMsg{id: currentID}
+	})
 }
 
 // renderEntry renders a single log entry.

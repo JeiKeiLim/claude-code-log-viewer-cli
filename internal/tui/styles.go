@@ -3,10 +3,17 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// ToastDuration is the duration for toast notifications (Story 4.2).
+const ToastDuration = 3 * time.Second
+
+// MaxCommandBufferDigits is the maximum digits allowed in command mode input (Story 4.2).
+const MaxCommandBufferDigits = 6
 
 // Theme defines adaptive colors for light and dark terminal backgrounds.
 type Theme struct {

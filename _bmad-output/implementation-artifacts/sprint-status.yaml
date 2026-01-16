@@ -86,7 +86,7 @@ development_status:
   # Epic 4: Developer Power Tools
   epic-4: in-progress
   4-1-line-numbers-display: done
-  4-2-command-mode-line-navigation: backlog
+  4-2-command-mode-line-navigation: done
   4-3-raw-jsonl-mode-toggle: backlog
   4-4-toast-path-display: backlog
   4-5-newline-normalization-fix: backlog
