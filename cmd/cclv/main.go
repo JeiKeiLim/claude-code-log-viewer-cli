@@ -199,6 +199,13 @@ func runPipelineMode(args []string, mode outputMode, opts tui.RenderOptions) err
 	if len(args) > 0 {
 		// File argument provided
 		filePath := args[0]
+		// Make path absolute for file watching
+		absPath, err := filepath.Abs(filePath)
+		if err == nil {
+			opts.FilePath = absPath
+		} else {
+			opts.FilePath = filePath // Fall back to original path
+		}
 		file, err := os.Open(filePath)
 		if err != nil {
 			return fmt.Errorf("failed to open file: %w", err)

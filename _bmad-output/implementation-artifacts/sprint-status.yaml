@@ -67,7 +67,7 @@ development_status:
   # Epic 2: Real-time File Watching
   epic-2: in-progress
   2-1-add-watch-mode-cli-flag: done
-  2-2-implement-fsnotify-file-watching: backlog
+  2-2-implement-fsnotify-file-watching: done
   2-3-implement-smart-auto-scroll: backlog
   epic-2-retrospective: optional
 

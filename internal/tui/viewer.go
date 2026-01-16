@@ -14,15 +14,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
 )
 
 // RenderOptions controls visibility of content types during rendering.
 type RenderOptions struct {
-	HideThoughts bool // Hide thinking blocks
-	HideTools    bool // Hide tool use blocks
-	Width        int  // Width override for rendering (0=auto-detect)
-	WatchMode    bool // Enable file watching mode
+	HideThoughts bool   // Hide thinking blocks
+	HideTools    bool   // Hide tool use blocks
+	Width        int    // Width override for rendering (0=auto-detect)
+	WatchMode    bool   // Enable file watching mode
+	FilePath     string // Full path for file watching
 }
 
 // DefaultRenderOptions returns options that show all content types with auto-detect width.
@@ -73,10 +76,11 @@ type ViewerModel struct {
 	overlaySpinner     spinner.Model
 	showOverlaySpinner bool
 
-	// Watch mode (for future Story 2.1)
+	// Watch mode and watcher
 	watchMode bool
+	watcher   *watcher.Watcher
 
-	// Render options for visibility control
+	// Render options for visibility control (includes FilePath for reload on truncation)
 	renderOpts RenderOptions
 }
 
@@ -125,6 +129,15 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 		m.width = opts.Width
 	}
 
+	// Create watcher if watch mode enabled and file path provided
+	if opts.WatchMode && opts.FilePath != "" {
+		w, err := watcher.New(opts.FilePath)
+		if err == nil {
+			m.watcher = w
+		}
+		// If watcher creation fails, continue without it (graceful degradation)
+	}
+
 	return m
 }
 
@@ -165,6 +178,9 @@ func (m *ViewerModel) SetSize(width, height int) {
 
 // Init implements tea.Model.
 func (m ViewerModel) Init() tea.Cmd {
+	if m.watcher != nil {
+		return m.watcher.WaitForEvent()
+	}
 	return nil
 }
 
@@ -223,6 +239,9 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch keyStr {
 		case "q", "ctrl+c":
+			if m.watcher != nil {
+				_ = m.watcher.Close()
+			}
 			return m, tea.Quit
 
 		case "j", "down":
@@ -330,6 +349,43 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// If overlay was shown (bulk load via 'G'), go to bottom after loading
 		if wasOverlayShown {
 			m.viewport.GotoBottom()
+		}
+		return m, nil
+
+	case watcher.NewEntriesMsg:
+		// Append new entries from file watcher
+		m.entries = append(m.entries, msg.Entries...)
+		m.loadedCount = len(m.entries)
+		m.updateContent()
+		// Scroll to bottom to show new entries
+		m.viewport.GotoBottom()
+		// Chain next wait
+		if m.watcher != nil {
+			return m, m.watcher.WaitForEvent()
+		}
+		return m, nil
+
+	case watcher.FileResetMsg:
+		// File was truncated - reload from beginning
+		if m.renderOpts.FilePath != "" {
+			result, err := parser.ParseJSONLFile(m.renderOpts.FilePath)
+			if err == nil {
+				m.entries = result.Entries
+				m.loadedCount = len(m.entries)
+				m.parseErrors = result.ParseErrors
+				m.updateContent()
+			}
+		}
+		// Chain next wait
+		if m.watcher != nil {
+			return m, m.watcher.WaitForEvent()
+		}
+		return m, nil
+
+	case watcher.WatcherErrorMsg:
+		// On watcher error, continue waiting (graceful degradation)
+		if m.watcher != nil {
+			return m, m.watcher.WaitForEvent()
 		}
 		return m, nil
 	}

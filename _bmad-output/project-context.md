@@ -36,6 +36,7 @@ _This file contains critical rules and patterns that AI agents must follow when 
 | Package | Purpose | Added |
 |---------|---------|-------|
 | `github.com/charmbracelet/glamour` | Markdown rendering for assistant text | 2026-01-15 |
+| `github.com/fsnotify/fsnotify` | File watching for live mode | 2026-01-16 |
 
 ### Build System Rules
 
