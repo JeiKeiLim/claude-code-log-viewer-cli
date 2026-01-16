@@ -141,14 +141,12 @@ var Styles = struct {
 	UserMessage: lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(userColor).
-		Padding(0, 1).
-		MarginBottom(1),
+		Padding(0, 1),
 
 	AssistantMessage: lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(assistantColor).
-		Padding(0, 1).
-		MarginBottom(1),
+		Padding(0, 1),
 
 	ThinkingBlock: lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
