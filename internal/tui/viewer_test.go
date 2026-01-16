@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
 
@@ -2168,5 +2170,76 @@ func TestRawModeLazyLoadScrollTrigger(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(rawLinesLoadedMsg); !ok {
 		t.Errorf("loadMoreRawLines() command should produce rawLinesLoadedMsg, got %T", msg)
+	}
+}
+
+func TestGKeyInRawModeStaysInRawMode(t *testing.T) {
+	// Test that 'G' key in raw mode stays in raw mode (Story 4.3 CR fix)
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Set up raw mode with lazy loading
+	m.rawMode = true
+	m.rawLines = make([]string, 150)
+	for i := range m.rawLines {
+		m.rawLines[i] = `{"line": ` + string(rune('0'+i%10)) + `}`
+	}
+	m.rawLineCount = 150
+	m.loadedCount = 40
+	m.lazyEnabled = true
+	m.lazyLoadState = LoadingStateIdle
+
+	// Press 'G' key
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}}
+	updatedModel, cmd := m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+
+	// Should still be in raw mode
+	if !m.rawMode {
+		t.Error("After 'G' key in raw mode, should still be in rawMode")
+	}
+
+	// Should show overlay spinner for loading
+	if !m.showOverlaySpinner {
+		t.Error("After 'G' key with lazy loading, should show overlay spinner")
+	}
+
+	// Command should produce rawLinesLoadedMsg, not viewerMessagesLoadedMsg
+	if cmd != nil {
+		// Execute the batch command - it returns multiple commands
+		// We just verify the model state is correct
+	}
+}
+
+func TestGKeyInRawModeAllLoadedGoesToBottom(t *testing.T) {
+	// Test that 'G' key in raw mode when all loaded just goes to bottom
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts)
+	m.SetSize(80, 24)
+
+	// Set up raw mode with all content loaded
+	m.rawMode = true
+	m.rawLines = []string{`{"line": 1}`, `{"line": 2}`}
+	m.rawLineCount = 2
+	m.loadedCount = 2
+	m.lazyEnabled = true
+	m.lazyLoadState = LoadingStateComplete
+
+	// Press 'G' key
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}}
+	updatedModel, _ := m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+
+	// Should still be in raw mode
+	if !m.rawMode {
+		t.Error("After 'G' key when all loaded, should still be in rawMode")
+	}
+
+	// Should NOT show overlay spinner (all content already loaded)
+	if m.showOverlaySpinner {
+		t.Error("After 'G' key when all loaded, should NOT show overlay spinner")
 	}
 }

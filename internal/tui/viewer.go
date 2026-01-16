@@ -438,7 +438,17 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Clear new entries indicator when jumping to bottom
 			m.newEntriesCount = 0
 
-			// Go to bottom with async loading if lazy loading is enabled
+			// Raw mode: check against rawLineCount (Story 4.3)
+			if m.rawMode {
+				if m.lazyEnabled && m.loadedCount < m.rawLineCount {
+					m.showOverlaySpinner = true
+					return m, tea.Batch(m.overlaySpinner.Tick, m.markAllRawLinesLoadedCmd())
+				}
+				m.viewport.GotoBottom()
+				return m, nil
+			}
+
+			// Normal mode: go to bottom with async loading if lazy loading is enabled
 			if m.lazyEnabled && m.loadedCount < len(m.entries) {
 				m.showOverlaySpinner = true
 				return m, tea.Batch(m.overlaySpinner.Tick, m.markAllMessagesLoadedCmd())
@@ -620,12 +630,24 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case rawLinesLoadedMsg:
 		// Update loaded count for raw mode lazy loading (Story 4.3)
 		m.loadedCount = msg.loadedCount
+		wasOverlayShown := m.showOverlaySpinner
+		m.showOverlaySpinner = false
 		if m.loadedCount >= m.rawLineCount {
 			m.lazyLoadState = LoadingStateComplete
 		} else {
 			m.lazyLoadState = LoadingStateIdle
 		}
-		m.updateRawContent()
+		// Use pre-rendered content if available (from bulk loading via 'G')
+		if msg.renderedContent != "" {
+			m.viewport.SetContent(msg.renderedContent)
+			m.rawLinePositions = msg.linePositions
+		} else {
+			m.updateRawContent()
+		}
+		// If overlay was shown (bulk load via 'G'), go to bottom after loading
+		if wasOverlayShown {
+			m.viewport.GotoBottom()
+		}
 		return m, nil
 
 	case watcher.NewEntriesMsg:
@@ -752,7 +774,9 @@ func (m *ViewerModel) loadMoreRawLines() tea.Cmd {
 
 // rawLinesLoadedMsg is sent when more raw JSONL lines are loaded (Story 4.3).
 type rawLinesLoadedMsg struct {
-	loadedCount int
+	loadedCount     int
+	renderedContent string // Pre-rendered content (for bulk load via 'G')
+	linePositions   []int  // Pre-computed line positions (for bulk load)
 }
 
 // markAllMessagesLoadedCmd returns a command that pre-renders all messages.
@@ -784,6 +808,38 @@ func (m *ViewerModel) markAllMessagesLoadedCmd() tea.Cmd {
 		return viewerMessagesLoadedMsg{
 			loadedCount:     total,
 			renderedContent: content.String(),
+		}
+	}
+}
+
+// markAllRawLinesLoadedCmd pre-renders all raw JSONL lines and returns them (Story 4.3).
+// Similar to markAllMessagesLoadedCmd but for raw mode.
+func (m *ViewerModel) markAllRawLinesLoadedCmd() tea.Cmd {
+	rawLines := m.rawLines
+	total := len(rawLines)
+	showLineNumbers := m.showLineNumbers
+	gutterWidth := m.gutterWidth
+
+	return func() tea.Msg {
+		var content strings.Builder
+		linePositions := make([]int, 0, total)
+		currentLine := 0
+
+		for i := 0; i < total; i++ {
+			linePositions = append(linePositions, currentLine)
+			formatted := formatJSONLine(rawLines[i])
+			if showLineNumbers {
+				formatted = prependGutterStatic(i+1, formatted, gutterWidth)
+			}
+			content.WriteString(formatted)
+			content.WriteString("\n")
+			currentLine += strings.Count(formatted, "\n") + 1
+		}
+
+		return rawLinesLoadedMsg{
+			loadedCount:     total,
+			renderedContent: content.String(),
+			linePositions:   linePositions,
 		}
 	}
 }

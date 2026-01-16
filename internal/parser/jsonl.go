@@ -17,7 +17,7 @@ type ParseResult struct {
 }
 
 // ParseJSONL reads a JSONL file and returns parsed log entries.
-// It skips malformed lines and tracks the number of parse errors.
+// It skips malformed lines and non-user/assistant entries, tracking parse errors.
 func ParseJSONL(r io.Reader) ParseResult {
 	result := ParseResult{
 		Entries: make([]types.LogEntry, 0),
@@ -31,6 +31,18 @@ func ParseJSONL(r io.Reader) ParseResult {
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
+			continue
+		}
+
+		// Quick check for relevant entry types (filter out summary, etc.)
+		var raw types.RawLogEntry
+		if err := json.Unmarshal(line, &raw); err != nil {
+			result.ParseErrors++
+			continue
+		}
+
+		// Only parse user and assistant entries
+		if raw.Type != string(types.EntryTypeUser) && raw.Type != string(types.EntryTypeAssistant) {
 			continue
 		}
 
