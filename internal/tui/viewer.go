@@ -83,6 +83,9 @@ type ViewerModel struct {
 
 	// Render options for visibility control (includes FilePath for reload on truncation)
 	renderOpts RenderOptions
+
+	// Markdown renderer for assistant text
+	markdownRenderer *MarkdownRenderer
 }
 
 // NewViewerModel creates a new viewer model with the given entries.
@@ -109,21 +112,29 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 	s.Spinner = spinner.Dot
 	s.Style = ListStyles.Loading
 
+	// Initialize markdown renderer with default width
+	initialWidth := opts.Width
+	if initialWidth <= 0 {
+		initialWidth = 80
+	}
+	mdRenderer, _ := NewMarkdownRenderer(initialWidth - 4) // Account for padding
+
 	m := ViewerModel{
-		entries:         entries,
-		parseErrors:     parseErrors,
-		title:           title,
-		showThinking:    false, // Collapsed by default
-		showToolInputs:  false, // Collapsed by default
-		canGoBack:       false,
-		searchInput:     ti,
-		lazyEnabled:     lazyEnabled,
-		loadedCount:     loadedCount,
-		lazyLoadState:   state,
-		overlaySpinner:  s,
-		watchMode:       opts.WatchMode,
-		newEntriesCount: 0, // Explicitly initialize for watch mode tracking
-		renderOpts:      opts,
+		entries:          entries,
+		parseErrors:      parseErrors,
+		title:            title,
+		showThinking:     false, // Collapsed by default
+		showToolInputs:   false, // Collapsed by default
+		canGoBack:        false,
+		searchInput:      ti,
+		lazyEnabled:      lazyEnabled,
+		loadedCount:      loadedCount,
+		lazyLoadState:    state,
+		overlaySpinner:   s,
+		watchMode:        opts.WatchMode,
+		newEntriesCount:  0, // Explicitly initialize for watch mode tracking
+		renderOpts:       opts,
+		markdownRenderer: mdRenderer,
 	}
 
 	// Apply width override if specified
@@ -350,6 +361,16 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.height = msg.Height
 
+		// Recreate markdown renderer if width changed significantly
+		newRenderWidth := m.width - 4
+		widthDiff := m.markdownRenderer.Width() - newRenderWidth
+		if widthDiff < 0 {
+			widthDiff = -widthDiff
+		}
+		if m.markdownRenderer == nil || widthDiff > 5 {
+			m.markdownRenderer, _ = NewMarkdownRenderer(newRenderWidth)
+		}
+
 		// Header: 1 line for title
 		// Footer: 1 line for help/status
 		headerHeight := 1
@@ -479,12 +500,13 @@ func (m *ViewerModel) markAllMessagesLoadedCmd() tea.Cmd {
 	showThinking := m.showThinking
 	showToolInputs := m.showToolInputs
 	opts := m.renderOpts
+	mdRenderer := m.markdownRenderer // Capture for async rendering
 
 	return func() tea.Msg {
 		// Pre-render all content in the goroutine (expensive operation)
 		var content strings.Builder
 		for i := 0; i < total; i++ {
-			rendered := renderEntryStatic(entries[i], width, showThinking, showToolInputs, opts)
+			rendered := renderEntryStatic(entries[i], width, showThinking, showToolInputs, opts, mdRenderer)
 			content.WriteString(rendered)
 			content.WriteString("\n")
 		}
@@ -682,12 +704,6 @@ func (m *ViewerModel) renderAssistantMessage(entry types.LogEntry) string {
 		Styles.Timestamp.Render(timestamp),
 	)
 
-	// Calculate wrap width for content
-	wrapWidth := m.width - 4
-	if wrapWidth < 20 {
-		wrapWidth = 20
-	}
-
 	var parts []string
 	parts = append(parts, header)
 
@@ -695,8 +711,9 @@ func (m *ViewerModel) renderAssistantMessage(entry types.LogEntry) string {
 		switch content.Type {
 		case types.ContentTypeText:
 			if content.Text != "" {
-				wrappedText := WrapText(content.Text, wrapWidth)
-				parts = append(parts, Styles.MessageContent.Render(wrappedText))
+				// Use Glamour for markdown rendering
+				rendered := m.markdownRenderer.Render(content.Text)
+				parts = append(parts, rendered) // No extra styling - Glamour handles it
 			}
 
 		case types.ContentTypeThinking:
@@ -778,12 +795,12 @@ func formatToolInput(input map[string]any) string {
 }
 
 // renderEntryStatic renders a single log entry without model state (for async rendering).
-func renderEntryStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions) string {
+func renderEntryStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions, mdRenderer *MarkdownRenderer) string {
 	switch entry.Type {
 	case types.EntryTypeUser:
 		return renderUserMessageStatic(entry, width)
 	case types.EntryTypeAssistant:
-		return renderAssistantMessageStatic(entry, width, showThinking, showToolInputs, opts)
+		return renderAssistantMessageStatic(entry, width, showThinking, showToolInputs, opts, mdRenderer)
 	default:
 		return ""
 	}
@@ -809,18 +826,13 @@ func renderUserMessageStatic(entry types.LogEntry, width int) string {
 }
 
 // renderAssistantMessageStatic renders an assistant message entry without model state.
-func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions) string {
+func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions, mdRenderer *MarkdownRenderer) string {
 	timestamp := formatTimestamp(entry.Timestamp)
 	header := fmt.Sprintf("%s %s  %s",
 		AssistantIcon,
 		Styles.AssistantHeader.Render("Assistant"),
 		Styles.Timestamp.Render(timestamp),
 	)
-
-	wrapWidth := width - 4
-	if wrapWidth < 20 {
-		wrapWidth = 20
-	}
 
 	var parts []string
 	parts = append(parts, header)
@@ -829,8 +841,9 @@ func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking,
 		switch content.Type {
 		case types.ContentTypeText:
 			if content.Text != "" {
-				wrappedText := WrapText(content.Text, wrapWidth)
-				parts = append(parts, Styles.MessageContent.Render(wrappedText))
+				// Use Glamour for markdown rendering
+				rendered := mdRenderer.Render(content.Text)
+				parts = append(parts, rendered) // No extra styling - Glamour handles it
 			}
 
 		case types.ContentTypeThinking:

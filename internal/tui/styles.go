@@ -1,7 +1,12 @@
 // Package tui provides the terminal user interface components.
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/lipgloss"
+)
 
 // Theme defines adaptive colors for light and dark terminal backgrounds.
 type Theme struct {
@@ -345,4 +350,46 @@ var ListStyles = struct {
 	Loading: lipgloss.NewStyle().
 		Foreground(accentColor).
 		Italic(true),
+}
+
+// MarkdownRenderer handles markdown-to-styled-text conversion.
+type MarkdownRenderer struct {
+	renderer *glamour.TermRenderer
+	width    int
+}
+
+// NewMarkdownRenderer creates a new markdown renderer for the given width.
+func NewMarkdownRenderer(width int) (*MarkdownRenderer, error) {
+	if width <= 0 {
+		width = 80 // Default width
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &MarkdownRenderer{renderer: r, width: width}, nil
+}
+
+// Render converts markdown to styled terminal output.
+// Returns raw content on error (graceful degradation).
+func (m *MarkdownRenderer) Render(content string) string {
+	if m == nil || m.renderer == nil {
+		return content // Graceful fallback
+	}
+	rendered, err := m.renderer.Render(content)
+	if err != nil {
+		return content // Graceful fallback
+	}
+	return strings.TrimRight(rendered, "\n")
+}
+
+// Width returns the current width of the renderer.
+func (m *MarkdownRenderer) Width() int {
+	if m == nil {
+		return 0
+	}
+	return m.width
 }

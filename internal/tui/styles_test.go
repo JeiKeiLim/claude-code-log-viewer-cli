@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
@@ -284,4 +285,189 @@ func TestGutterConstants(t *testing.T) {
 			t.Errorf("GutterNormal should be two spaces, got %q", GutterNormal)
 		}
 	})
+}
+
+// TestNewMarkdownRenderer tests markdown renderer creation
+func TestNewMarkdownRenderer(t *testing.T) {
+	t.Run("creates valid renderer with positive width", func(t *testing.T) {
+		r, err := NewMarkdownRenderer(80)
+		if err != nil {
+			t.Errorf("NewMarkdownRenderer(80) error = %v", err)
+		}
+		if r == nil {
+			t.Error("NewMarkdownRenderer(80) returned nil")
+		}
+		if r.Width() != 80 {
+			t.Errorf("Width() = %d, want 80", r.Width())
+		}
+	})
+
+	t.Run("uses default width for zero", func(t *testing.T) {
+		r, err := NewMarkdownRenderer(0)
+		if err != nil {
+			t.Errorf("NewMarkdownRenderer(0) error = %v", err)
+		}
+		if r == nil {
+			t.Error("NewMarkdownRenderer(0) returned nil")
+		}
+		if r.Width() != 80 {
+			t.Errorf("Width() = %d, want 80 (default)", r.Width())
+		}
+	})
+
+	t.Run("uses default width for negative", func(t *testing.T) {
+		r, err := NewMarkdownRenderer(-10)
+		if err != nil {
+			t.Errorf("NewMarkdownRenderer(-10) error = %v", err)
+		}
+		if r == nil {
+			t.Error("NewMarkdownRenderer(-10) returned nil")
+		}
+		if r.Width() != 80 {
+			t.Errorf("Width() = %d, want 80 (default)", r.Width())
+		}
+	})
+}
+
+// TestMarkdownRenderCodeBlock tests rendering of code blocks
+func TestMarkdownRenderCodeBlock(t *testing.T) {
+	r, err := NewMarkdownRenderer(80)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer(80) error = %v", err)
+	}
+
+	input := "```go\nfunc main() {}\n```"
+	output := r.Render(input)
+
+	// Verify function text is present
+	if !strings.Contains(output, "func main") {
+		t.Error("Rendered code block should contain 'func main'")
+	}
+
+	// Verify output is different from input (processing occurred)
+	if output == input {
+		t.Error("Glamour should process the code block, but output equals input")
+	}
+
+	// Verify ANSI codes or structural changes indicate rendering occurred (AC 3.1.4)
+	// Note: Glamour's WithAutoStyle() may not emit ANSI codes in non-TTY test environments,
+	// but the output should still be structurally different from the raw markdown.
+	hasANSI := strings.Contains(output, "\x1b[")
+	hasStructuralChange := !strings.Contains(output, "```")
+	if !hasANSI && !hasStructuralChange {
+		t.Error("Rendered code block should either contain ANSI codes or have markdown syntax processed")
+	}
+}
+
+// TestMarkdownRenderNilRenderer tests graceful fallback for nil renderer
+func TestMarkdownRenderNilRenderer(t *testing.T) {
+	var r *MarkdownRenderer
+	output := r.Render("test content")
+	if output != "test content" {
+		t.Errorf("Render() = %q, want %q (graceful fallback)", output, "test content")
+	}
+}
+
+// TestMarkdownRenderNilInternalRenderer tests graceful fallback when internal renderer is nil
+func TestMarkdownRenderNilInternalRenderer(t *testing.T) {
+	r := &MarkdownRenderer{renderer: nil, width: 80}
+	output := r.Render("test content")
+	if output != "test content" {
+		t.Errorf("Render() = %q, want %q (graceful fallback)", output, "test content")
+	}
+}
+
+// TestMarkdownTrimTrailingNewlines tests that trailing newlines are trimmed
+func TestMarkdownTrimTrailingNewlines(t *testing.T) {
+	r, err := NewMarkdownRenderer(80)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer(80) error = %v", err)
+	}
+
+	output := r.Render("# Header")
+	if strings.HasSuffix(output, "\n") {
+		t.Error("Rendered output should not have trailing newlines")
+	}
+}
+
+// TestMarkdownRenderHeader tests rendering of markdown headers
+func TestMarkdownRenderHeader(t *testing.T) {
+	r, err := NewMarkdownRenderer(80)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer(80) error = %v", err)
+	}
+
+	output := r.Render("# Hello World")
+
+	// Verify the text is present
+	if !strings.Contains(output, "Hello World") {
+		t.Error("Rendered header should contain 'Hello World'")
+	}
+}
+
+// TestMarkdownRenderList tests rendering of markdown lists
+func TestMarkdownRenderList(t *testing.T) {
+	r, err := NewMarkdownRenderer(80)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer(80) error = %v", err)
+	}
+
+	input := "- Item 1\n- Item 2\n- Item 3"
+	output := r.Render(input)
+
+	// Verify list items are present
+	if !strings.Contains(output, "Item 1") {
+		t.Error("Rendered list should contain 'Item 1'")
+	}
+	if !strings.Contains(output, "Item 2") {
+		t.Error("Rendered list should contain 'Item 2'")
+	}
+}
+
+// TestMarkdownRendererWidth tests the Width() method
+func TestMarkdownRendererWidth(t *testing.T) {
+	t.Run("returns width for valid renderer", func(t *testing.T) {
+		r, _ := NewMarkdownRenderer(100)
+		if r.Width() != 100 {
+			t.Errorf("Width() = %d, want 100", r.Width())
+		}
+	})
+
+	t.Run("returns 0 for nil renderer", func(t *testing.T) {
+		var r *MarkdownRenderer
+		if r.Width() != 0 {
+			t.Errorf("Width() = %d, want 0", r.Width())
+		}
+	})
+}
+
+// TestMarkdownRenderPlainText tests that plain text passes through correctly
+func TestMarkdownRenderPlainText(t *testing.T) {
+	r, err := NewMarkdownRenderer(80)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer(80) error = %v", err)
+	}
+
+	input := "Just some plain text without any markdown."
+	output := r.Render(input)
+
+	// The text should be present in output
+	if !strings.Contains(output, "plain text") {
+		t.Error("Plain text should be preserved in output")
+	}
+}
+
+// TestMarkdownRenderEmptyContent tests graceful handling of empty content
+func TestMarkdownRenderEmptyContent(t *testing.T) {
+	r, err := NewMarkdownRenderer(80)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer(80) error = %v", err)
+	}
+
+	output := r.Render("")
+	// Empty content should return empty string (or minimal whitespace)
+	trimmed := strings.TrimSpace(output)
+	if trimmed != "" {
+		t.Errorf("Render(\"\") should return empty/whitespace, got %q", output)
+	}
 }
