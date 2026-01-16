@@ -278,7 +278,7 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case viewerMessagesLoadedMsg:
-		// Update loaded count and refresh content
+		// Update loaded count
 		m.loadedCount = msg.loadedCount
 		wasOverlayShown := m.showOverlaySpinner
 		m.showOverlaySpinner = false // Clear overlay spinner
@@ -287,7 +287,12 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lazyLoadState = LoadingStateIdle
 		}
-		m.updateContent()
+		// Use pre-rendered content if available (from bulk loading)
+		if msg.renderedContent != "" {
+			m.viewport.SetContent(msg.renderedContent)
+		} else {
+			m.updateContent()
+		}
 		// If overlay was shown (bulk load via 'G'), go to bottom after loading
 		if wasOverlayShown {
 			m.viewport.GotoBottom()
@@ -325,13 +330,28 @@ func (m *ViewerModel) loadMoreMessages() tea.Cmd {
 	}
 }
 
-// markAllMessagesLoadedCmd returns a command that marks all messages as loaded.
-// Unlike ConversationModel which loads metadata from disk, ViewerModel's entries
-// are already in memory - this just updates the loaded count for lazy rendering.
+// markAllMessagesLoadedCmd returns a command that pre-renders all messages.
+// The expensive rendering happens in the command (goroutine) so the spinner can animate.
 func (m *ViewerModel) markAllMessagesLoadedCmd() tea.Cmd {
-	total := len(m.entries)
+	// Capture values needed for rendering
+	entries := m.entries
+	total := len(entries)
+	width := m.width
+	showThinking := m.showThinking
+	showToolInputs := m.showToolInputs
+
 	return func() tea.Msg {
-		return viewerMessagesLoadedMsg{loadedCount: total}
+		// Pre-render all content in the goroutine (expensive operation)
+		var content strings.Builder
+		for i := 0; i < total; i++ {
+			rendered := renderEntryStatic(entries[i], width, showThinking, showToolInputs)
+			content.WriteString(rendered)
+			content.WriteString("\n")
+		}
+		return viewerMessagesLoadedMsg{
+			loadedCount:     total,
+			renderedContent: content.String(),
+		}
 	}
 }
 
@@ -340,7 +360,8 @@ type GoBackMsg struct{}
 
 // viewerMessagesLoadedMsg is sent when more messages are rendered.
 type viewerMessagesLoadedMsg struct {
-	loadedCount int
+	loadedCount     int
+	renderedContent string // Pre-rendered content for bulk loading (optional)
 }
 
 // buildModeSegment returns the mode indicator segment (for watch mode).
@@ -596,6 +617,116 @@ func formatToolInput(input map[string]any) string {
 	}
 
 	return string(data)
+}
+
+// renderEntryStatic renders a single log entry without model state (for async rendering).
+func renderEntryStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool) string {
+	switch entry.Type {
+	case types.EntryTypeUser:
+		return renderUserMessageStatic(entry, width)
+	case types.EntryTypeAssistant:
+		return renderAssistantMessageStatic(entry, width, showThinking, showToolInputs)
+	default:
+		return ""
+	}
+}
+
+// renderUserMessageStatic renders a user message entry without model state.
+func renderUserMessageStatic(entry types.LogEntry, width int) string {
+	timestamp := formatTimestamp(entry.Timestamp)
+	header := fmt.Sprintf("%s %s  %s",
+		UserIcon,
+		Styles.UserHeader.Render("User"),
+		Styles.Timestamp.Render(timestamp),
+	)
+
+	wrapWidth := width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	wrappedText := WrapText(entry.Message.TextContent, wrapWidth)
+	content := Styles.MessageContent.Render(wrappedText)
+
+	return Styles.UserMessage.Render(header + "\n" + content)
+}
+
+// renderAssistantMessageStatic renders an assistant message entry without model state.
+func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool) string {
+	timestamp := formatTimestamp(entry.Timestamp)
+	header := fmt.Sprintf("%s %s  %s",
+		AssistantIcon,
+		Styles.AssistantHeader.Render("Assistant"),
+		Styles.Timestamp.Render(timestamp),
+	)
+
+	wrapWidth := width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+
+	var parts []string
+	parts = append(parts, header)
+
+	for _, content := range entry.Message.Content {
+		switch content.Type {
+		case types.ContentTypeText:
+			if content.Text != "" {
+				wrappedText := WrapText(content.Text, wrapWidth)
+				parts = append(parts, Styles.MessageContent.Render(wrappedText))
+			}
+
+		case types.ContentTypeThinking:
+			parts = append(parts, renderThinkingBlockStatic(content, width, showThinking))
+
+		case types.ContentTypeToolUse:
+			parts = append(parts, renderToolUseBlockStatic(content, width, showToolInputs))
+		}
+	}
+
+	return Styles.AssistantMessage.Render(strings.Join(parts, "\n"))
+}
+
+// renderThinkingBlockStatic renders a thinking content block without model state.
+func renderThinkingBlockStatic(content types.MessageContent, width int, showThinking bool) string {
+	if !showThinking {
+		return Styles.CollapsedIndicator.Render(
+			fmt.Sprintf("%s [thinking - press 't' to expand]", ThinkingIcon),
+		)
+	}
+
+	wrapWidth := width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	wrappedThinking := WrapText(content.Thinking, wrapWidth)
+
+	header := fmt.Sprintf("%s %s", ThinkingIcon, Styles.ThinkingHeader.Render("Thinking"))
+	return Styles.ThinkingBlock.Render(header + "\n" + wrappedThinking)
+}
+
+// renderToolUseBlockStatic renders a tool use content block without model state.
+func renderToolUseBlockStatic(content types.MessageContent, width int, showToolInputs bool) string {
+	header := fmt.Sprintf("%s %s: %s",
+		ToolIcon,
+		Styles.ToolHeader.Render("Tool"),
+		content.ToolName,
+	)
+
+	if !showToolInputs {
+		return Styles.ToolBlock.Render(
+			header + " " + Styles.CollapsedIndicator.Render("[inputs - press 'i' to expand]"),
+		)
+	}
+
+	wrapWidth := width - 4
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+
+	inputStr := formatToolInput(content.ToolInput)
+	wrappedInput := WrapText(inputStr, wrapWidth)
+
+	return Styles.ToolBlock.Render(header + "\n" + wrappedInput)
 }
 
 // performSearch searches through the content and finds matching lines.
