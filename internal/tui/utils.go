@@ -59,6 +59,19 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dd %dh", days, hours)
 }
 
+// listItemAvailWidth calculates the available width for list item content.
+// It accounts for the gutter prefix (2 chars) and border padding (2 chars).
+// Returns a minimum of 10 to ensure content is always readable.
+func listItemAvailWidth(totalWidth int) int {
+	const gutterPrefixWidth = 2 // "│ " or "  "
+	const borderPadding = 2     // Left and right border chars
+	availWidth := totalWidth - gutterPrefixWidth - borderPadding
+	if availWidth < 10 {
+		availWidth = 10
+	}
+	return availWidth
+}
+
 // addBorder wraps content in a rounded box border.
 // Returns exactly len(lines)+2 lines (top border, content, bottom border).
 // Content lines should already be properly sized before calling this.

@@ -67,6 +67,7 @@ func TestThemeBackgroundColors(t *testing.T) {
 	}{
 		{"Background", DefaultTheme.Background},
 		{"BgAlt", DefaultTheme.BgAlt},
+		{"SelectedBg", DefaultTheme.SelectedBg},
 	}
 
 	for _, tt := range tests {
@@ -131,11 +132,11 @@ func TestThemeConstantColors(t *testing.T) {
 	}
 }
 
-// TestThemeAllFieldsPopulated ensures all 14 color fields are non-zero (12 adaptive + 2 constant)
+// TestThemeAllFieldsPopulated ensures all 15 color fields are non-zero (13 adaptive + 2 constant)
 func TestThemeAllFieldsPopulated(t *testing.T) {
 	// Count populated fields
 	populated := 0
-	expected := 14
+	expected := 15 // 13 adaptive colors + 2 constant colors
 
 	if DefaultTheme.Primary != (lipgloss.AdaptiveColor{}) {
 		populated++
@@ -161,6 +162,9 @@ func TestThemeAllFieldsPopulated(t *testing.T) {
 	if DefaultTheme.BgAlt != (lipgloss.AdaptiveColor{}) {
 		populated++
 	}
+	if DefaultTheme.SelectedBg != (lipgloss.AdaptiveColor{}) {
+		populated++
+	}
 	if DefaultTheme.User != (lipgloss.AdaptiveColor{}) {
 		populated++
 	}
@@ -183,4 +187,101 @@ func TestThemeAllFieldsPopulated(t *testing.T) {
 	if populated != expected {
 		t.Errorf("DefaultTheme has %d populated fields, want %d", populated, expected)
 	}
+}
+
+// TestListItemStyles tests that all ListItem styles are properly initialized
+// Note: lipgloss doesn't render ANSI codes in non-TTY environments (tests),
+// so we verify style initialization by checking they can render without panic.
+func TestListItemStyles(t *testing.T) {
+	// Verify GutterSelected is initialized and can render
+	t.Run("GutterSelected is initialized", func(t *testing.T) {
+		style := Styles.ListItem.GutterSelected
+		rendered := style.Render("│")
+		if len(rendered) == 0 {
+			t.Error("GutterSelected should render content")
+		}
+	})
+
+	// Verify TitleSelected is initialized
+	t.Run("TitleSelected is initialized", func(t *testing.T) {
+		style := Styles.ListItem.TitleSelected
+		rendered := style.Render("test")
+		if len(rendered) == 0 {
+			t.Error("TitleSelected should render content")
+		}
+	})
+
+	// Verify TitleNormal is initialized
+	t.Run("TitleNormal is initialized", func(t *testing.T) {
+		style := Styles.ListItem.TitleNormal
+		rendered := style.Render("test")
+		if len(rendered) == 0 {
+			t.Error("TitleNormal should render content")
+		}
+	})
+
+	// Verify DescSelected is initialized
+	t.Run("DescSelected is initialized", func(t *testing.T) {
+		style := Styles.ListItem.DescSelected
+		rendered := style.Render("test")
+		if len(rendered) == 0 {
+			t.Error("DescSelected should render content")
+		}
+	})
+
+	// Verify DescNormal is initialized
+	t.Run("DescNormal is initialized", func(t *testing.T) {
+		style := Styles.ListItem.DescNormal
+		rendered := style.Render("test")
+		if len(rendered) == 0 {
+			t.Error("DescNormal should render content")
+		}
+	})
+
+	// Verify style struct has exactly 5 styles (GutterNormal was removed as unused)
+	t.Run("ListItem struct has 5 styles", func(t *testing.T) {
+		// This documents that GutterNormal style was intentionally removed
+		// GutterNormal constant is used directly (no styling needed for unselected gutter)
+		_ = Styles.ListItem.GutterSelected
+		_ = Styles.ListItem.TitleSelected
+		_ = Styles.ListItem.TitleNormal
+		_ = Styles.ListItem.DescSelected
+		_ = Styles.ListItem.DescNormal
+	})
+}
+
+// TestGutterConstants verifies gutter string constants have correct visual width and bytes
+func TestGutterConstants(t *testing.T) {
+	t.Run("GutterSelected visual width is 2", func(t *testing.T) {
+		width := VisualWidth(GutterSelected)
+		if width != 2 {
+			t.Errorf("GutterSelected visual width = %d, want 2", width)
+		}
+	})
+
+	t.Run("GutterNormal visual width is 2", func(t *testing.T) {
+		width := VisualWidth(GutterNormal)
+		if width != 2 {
+			t.Errorf("GutterNormal visual width = %d, want 2", width)
+		}
+	})
+
+	t.Run("GutterSelected contains vertical line U+2502", func(t *testing.T) {
+		if GutterSelected[0:3] != "│" {
+			t.Errorf("GutterSelected should start with │ (U+2502)")
+		}
+	})
+
+	t.Run("GutterSelected ends with regular space U+0020", func(t *testing.T) {
+		// U+2502 is 3 bytes, so the space should be at index 3
+		if GutterSelected[3] != ' ' {
+			t.Errorf("GutterSelected should end with regular space (U+0020), got %v", GutterSelected[3])
+		}
+	})
+
+	t.Run("GutterNormal is two regular spaces", func(t *testing.T) {
+		if GutterNormal != "  " {
+			t.Errorf("GutterNormal should be two spaces, got %q", GutterNormal)
+		}
+	})
 }

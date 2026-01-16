@@ -19,24 +19,21 @@ type ConversationItem struct {
 // Render renders the conversation item for display.
 func (i ConversationItem) Render(width int, selected bool) string {
 	// Selection indicator and styling
-	var prefix string
+	var prefixStyled string
 	var titleStyle, descStyle lipgloss.Style
+
 	if selected {
-		prefix = " > "
-		titleStyle = Styles.Selected
-		descStyle = Styles.Selected.Background(lipgloss.Color("#4C1D95")) // Darker purple for description
+		prefixStyled = Styles.ListItem.GutterSelected.Render(GutterSelected)
+		titleStyle = Styles.ListItem.TitleSelected
+		descStyle = Styles.ListItem.DescSelected
 	} else {
-		prefix = "   "
-		titleStyle = Styles.Normal.Bold(true)
-		descStyle = Styles.Muted
+		prefixStyled = GutterNormal // No styling needed for normal gutter
+		titleStyle = Styles.ListItem.TitleNormal
+		descStyle = Styles.ListItem.DescNormal
 	}
 
-	// Available width for content (account for border and prefix)
-	// Total width minus prefix (3) and border chars (2 sides = 4 total when rendered)
-	availWidth := width - VisualWidth(prefix) - 2
-	if availWidth < 10 {
-		availWidth = 10
-	}
+	// Calculate available width using shared helper
+	availWidth := listItemAvailWidth(width)
 
 	timestamp := formatTimestamp(i.conversation.LastModified)
 	title := titleStyle.Render(timestamp)
@@ -64,9 +61,13 @@ func (i ConversationItem) Render(width int, selected bool) string {
 	}
 	preview = TruncateToWidth(preview, previewMaxWidth)
 
-	desc := descStyle.Render(metaPrefix + preview)
+	// Pad description to fill width for consistent selection background
+	descContent := metaPrefix + preview
+	paddedDesc := PadToWidth(descContent, availWidth)
+	desc := descStyle.Render(paddedDesc)
 
-	return fmt.Sprintf("%s%s\n   %s", prefix, title, desc)
+	// Description line also gets gutter alignment (normal gutter for visual alignment)
+	return fmt.Sprintf("%s%s\n%s%s", prefixStyled, title, GutterNormal, desc)
 }
 
 // FilterValue returns the value used for filtering.

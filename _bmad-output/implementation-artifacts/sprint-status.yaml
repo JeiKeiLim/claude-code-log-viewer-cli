@@ -51,7 +51,7 @@ development_status:
   # Epic 1.5: Visual Consistency (NEW - from Epic 1 Retrospective)
   epic-1.5: in-progress
   1-5-research-list-view-polish-options: done
-  1-6-implement-list-view-polish: backlog
+  1-6-implement-list-view-polish: done
   1-7-adjust-spacing-and-margins: backlog
   1-8-implement-overlay-spinner: backlog
   epic-1.5-retrospective: optional

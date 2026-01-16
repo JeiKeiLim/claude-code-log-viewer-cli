@@ -18,6 +18,7 @@ type Theme struct {
 	// Background colors
 	Background lipgloss.AdaptiveColor
 	BgAlt      lipgloss.AdaptiveColor
+	SelectedBg lipgloss.AdaptiveColor // Subtle selection background
 
 	// Role colors (semantic)
 	User      lipgloss.AdaptiveColor
@@ -55,6 +56,9 @@ var DefaultTheme = Theme{
 	// Constant colors (same in light and dark modes)
 	White: lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#FFFFFF"}, // Constant white
 	Black: lipgloss.AdaptiveColor{Light: "#000000", Dark: "#000000"}, // Constant black
+
+	// Selection background (subtle tint for list selection)
+	SelectedBg: lipgloss.AdaptiveColor{Light: "#EDE9FE", Dark: "#2D1B4E"}, // Subtle purple
 }
 
 // Color palette (using Theme for adaptive colors)
@@ -122,6 +126,15 @@ var Styles = struct {
 		Mode      lipgloss.Style
 		Position  lipgloss.Style
 		Shortcuts lipgloss.Style
+	}
+
+	// List item styles (for project/conversation lists)
+	ListItem struct {
+		GutterSelected lipgloss.Style
+		TitleSelected  lipgloss.Style
+		TitleNormal    lipgloss.Style
+		DescSelected   lipgloss.Style
+		DescNormal     lipgloss.Style
 	}
 }{
 	// Message container styles
@@ -234,6 +247,29 @@ var Styles = struct {
 			Foreground(textColor).
 			Padding(0, 1),
 	},
+
+	ListItem: struct {
+		GutterSelected lipgloss.Style
+		TitleSelected  lipgloss.Style
+		TitleNormal    lipgloss.Style
+		DescSelected   lipgloss.Style
+		DescNormal     lipgloss.Style
+	}{
+		GutterSelected: lipgloss.NewStyle().
+			Foreground(primaryColor),
+		TitleSelected: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(primaryColor).
+			Background(DefaultTheme.SelectedBg),
+		TitleNormal: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(textColor),
+		DescSelected: lipgloss.NewStyle().
+			Foreground(textColor).
+			Background(DefaultTheme.SelectedBg),
+		DescNormal: lipgloss.NewStyle().
+			Foreground(mutedColor),
+	},
 }
 
 // Icons for different message types (text-based, no emoji per FR-017)
@@ -252,6 +288,12 @@ const (
 	TopRight       = "┐"
 	BottomLeft     = "└"
 	BottomRight    = "┘"
+)
+
+// List item gutter indicators
+const (
+	GutterSelected = "│ " // U+2502 + space (2 chars visual width)
+	GutterNormal   = "  " // Two spaces (2 chars visual width)
 )
 
 // LoadingState represents the state of lazy loading.

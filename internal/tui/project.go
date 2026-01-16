@@ -20,31 +20,32 @@ type ProjectItem struct {
 // Render renders the project item for display.
 func (i ProjectItem) Render(width int, selected bool) string {
 	// Selection indicator and styling
-	var prefix string
+	var prefixStyled string
 	var titleStyle, descStyle lipgloss.Style
+
 	if selected {
-		prefix = " > "
-		titleStyle = Styles.Selected
-		descStyle = Styles.Selected.Background(lipgloss.Color("#4C1D95")) // Darker purple for description
+		prefixStyled = Styles.ListItem.GutterSelected.Render(GutterSelected)
+		titleStyle = Styles.ListItem.TitleSelected
+		descStyle = Styles.ListItem.DescSelected
 	} else {
-		prefix = "   "
-		titleStyle = Styles.Normal.Bold(true)
-		descStyle = Styles.Muted
+		prefixStyled = GutterNormal // No styling needed for normal gutter
+		titleStyle = Styles.ListItem.TitleNormal
+		descStyle = Styles.ListItem.DescNormal
 	}
 
-	// Available width for content (account for border and prefix)
-	availWidth := width - VisualWidth(prefix) - 2
-	if availWidth < 10 {
-		availWidth = 10
-	}
+	// Calculate available width using shared helper
+	availWidth := listItemAvailWidth(width)
 
 	title := titleStyle.Render(i.project.DisplayName)
 
 	// Truncate path from left if too long (keeps the meaningful end)
 	path := TruncateFromLeftToWidth(i.project.DecodedPath, availWidth)
-	desc := descStyle.Render(path)
+	// Pad description to fill width for consistent selection background
+	paddedPath := PadToWidth(path, availWidth)
+	desc := descStyle.Render(paddedPath)
 
-	return fmt.Sprintf("%s%s\n   %s", prefix, title, desc)
+	// Description line also gets gutter alignment (normal gutter for visual alignment)
+	return fmt.Sprintf("%s%s\n%s%s", prefixStyled, title, GutterNormal, desc)
 }
 
 // FilterValue returns the value used for filtering.
