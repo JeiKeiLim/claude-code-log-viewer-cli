@@ -53,8 +53,9 @@ This document provides the complete epic and story breakdown for cclv Phase 2, d
 | Epic | Title | Stories | Priority | Status |
 |------|-------|---------|----------|--------|
 | 1 | Visual Polish | 4 | High | Done |
-| 1.5 | Visual Consistency | 4 | High | Backlog |
-| 2 | Real-time File Watching | 3 | High | Backlog |
+| 1.5 | Visual Consistency | 4 | High | Done |
+| 1.6 | CLI Enhancements | 4 | Medium | Done |
+| 2 | Real-time File Watching | 4 | High | In Progress |
 | 3 | Markdown Rendering | 3 | Medium | Backlog |
 
 ---
@@ -443,6 +444,198 @@ func (m Model) View() string {
 
 ---
 
+## Epic 1.6: CLI Enhancements
+
+**Goal:** Improve CLI usability for pipeline integration, add conversation counts to project list, and enhance help documentation.
+
+**Requirements Covered:** Retrospective finding - feature requests from Epic 1.5 dogfooding
+
+**Dependencies:** Epic 1.5 (uses existing styles and rendering patterns)
+
+**Risk:** Low
+
+**Origin:** Added from Epic 1.5 Retrospective (2026-01-16)
+
+---
+
+### Story 1.9: Pipeline Visibility Flags with Richer Collapsed Info
+
+**As a** developer integrating cclv with other tools,
+**I want** flags to control thought/tool visibility and richer collapsed tool summaries,
+**So that** I can customize output for pipelines and quickly understand what tools did.
+
+**Requirements:** Retrospective finding
+
+**Acceptance Criteria:**
+
+**AC 1.9.1: --hide-thoughts flag**
+- **Given** the cclv CLI in pipeline mode
+- **When** I run `cclv --hide-thoughts <file>`
+- **Then** thinking blocks are not rendered in output
+- **And** other content types render normally
+
+**AC 1.9.2: --hide-tools flag**
+- **Given** the cclv CLI in pipeline mode
+- **When** I run `cclv --hide-tools <file>`
+- **Then** tool use/result blocks are not rendered in output
+- **And** other content types render normally
+
+**AC 1.9.3: Flags combinable**
+- **Given** the cclv CLI
+- **When** I run `cclv --hide-thoughts --hide-tools <file>`
+- **Then** both thoughts and tools are hidden
+- **And** only user/assistant messages render
+
+**AC 1.9.4: Richer collapsed tool info**
+- **Given** a collapsed tool block (default state)
+- **When** it renders
+- **Then** it shows a brief summary like `Read: viewer.go (lines 1-50)` or `Edit: styles.go (+15 lines)`
+- **And** the summary provides actionable context without expanding
+
+**Technical Notes:**
+```go
+// New flags in cmd/cclv/main.go
+var hideThoughts bool
+var hideTools bool
+
+// Collapsed tool summary format examples:
+// Read: internal/tui/viewer.go (lines 1-100)
+// Edit: internal/tui/styles.go (+15/-3 lines)
+// Glob: **/*.go (found 42 files)
+// Grep: "func.*Update" in internal/ (12 matches)
+// Write: new-file.go (created, 85 lines)
+// Bash: make test (exit 0)
+```
+
+---
+
+### Story 1.10: Project Conversation Count
+
+**As a** developer browsing projects,
+**I want** to see how many conversations each project has,
+**So that** I can quickly identify active projects.
+
+**Requirements:** Retrospective finding
+
+**Acceptance Criteria:**
+
+**AC 1.10.1: Count displayed in project list**
+- **Given** the project list view
+- **When** it renders
+- **Then** each project shows "X conversations" in the description
+- **And** format matches existing conversation list metadata style
+
+**AC 1.10.2: Count accuracy**
+- **Given** a project with multiple conversation files
+- **When** the count is displayed
+- **Then** it accurately reflects the number of .jsonl files in conversations/
+- **And** updates when conversations are added/removed (on refresh)
+
+**AC 1.10.3: Lazy loading compatible**
+- **Given** lazy loading is enabled
+- **When** browsing projects
+- **Then** conversation counts load with project metadata
+- **And** no performance degradation on large project lists
+
+**Technical Notes:**
+```go
+// In ProjectItem.Render() - add conversation count to description
+// Current: Shows decoded path only
+// Target: "X conversations • /path/to/project"
+
+// May need to add ConversationCount field to scanner.ProjectInfo
+// Or compute on-demand in Render()
+```
+
+---
+
+### Story 1.11: Pipeline Width Override
+
+**As a** developer piping cclv output to other tools,
+**I want** to specify the rendering width explicitly,
+**So that** output formats correctly regardless of terminal detection.
+
+**Requirements:** Retrospective finding
+
+**Acceptance Criteria:**
+
+**AC 1.11.1: --width flag**
+- **Given** the cclv CLI
+- **When** I run `cclv --width 120 <file>`
+- **Then** all content renders to 120 character width
+- **And** terminal auto-detection is overridden
+
+**AC 1.11.2: Reasonable bounds**
+- **Given** the --width flag
+- **When** set to unreasonable values (< 40 or > 500)
+- **Then** cclv uses sensible defaults or shows warning
+- **And** doesn't crash or produce broken output
+
+**AC 1.11.3: Works with pipeline mode**
+- **Given** cclv piped to another tool
+- **When** --width is specified
+- **Then** output uses specified width
+- **And** boxes and borders align correctly
+
+**Technical Notes:**
+```go
+// New flag in cmd/cclv/main.go
+var widthOverride int
+
+// In model initialization:
+if widthOverride > 0 {
+    m.width = widthOverride
+} else {
+    m.width = detectedWidth
+}
+```
+
+---
+
+### Story 1.12: Richer Help Output
+
+**As a** developer learning cclv,
+**I want** comprehensive help with examples,
+**So that** I can quickly understand available options.
+
+**Requirements:** Retrospective finding
+
+**Acceptance Criteria:**
+
+**AC 1.12.1: Expanded flag descriptions**
+- **Given** I run `cclv --help`
+- **When** viewing the output
+- **Then** each flag has a clear description
+- **And** descriptions explain the purpose, not just the syntax
+
+**AC 1.12.2: Usage examples**
+- **Given** I run `cclv --help`
+- **When** viewing the output
+- **Then** common usage examples are shown
+- **And** examples cover: basic usage, pipeline mode, filtering
+
+**AC 1.12.3: Keyboard shortcuts section**
+- **Given** I run `cclv --help`
+- **When** viewing the output
+- **Then** TUI keyboard shortcuts are documented
+- **And** grouped logically (navigation, toggles, actions)
+
+**Technical Notes:**
+```
+EXAMPLES:
+  cclv                           # Interactive mode - browse all projects
+  cclv ~/.claude/projects/*/     # View specific project
+  cclv --plain conversation.jsonl | less  # Pipeline mode
+  cclv --width 100 --hide-tools file.jsonl  # Custom width, no tools
+
+KEYBOARD SHORTCUTS (TUI mode):
+  Navigation: j/k (up/down), g/G (top/bottom), h/l (back/forward)
+  Toggles:    t (thoughts), i (tool inputs)
+  Actions:    enter (select), q (quit), ? (help)
+```
+
+---
+
 ## Epic 2: Real-time File Watching
 
 **Goal:** Enable cclv to automatically detect and display new log entries as Claude writes them, without requiring restart.
@@ -609,6 +802,76 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     }
 }
 ```
+
+---
+
+### Story 2.4: Enable Watch Mode from Interactive Browse
+
+**As a** developer using cclv interactively,
+**I want** to enable watch mode on a conversation I browse to,
+**So that** I can monitor live sessions without knowing the file path upfront.
+
+**Requirements:** Retrospective finding (Epic 2)
+
+**Acceptance Criteria:**
+
+**AC 2.4.1: Watch mode shortcut in conversation list**
+- **Given** the user is in the conversation list view
+- **When** they press 'w' on a selected conversation
+- **Then** the conversation opens in the viewer with watch mode enabled
+- **And** the watcher starts monitoring the file
+
+**AC 2.4.2: Watch mode shortcut in viewer**
+- **Given** the user is viewing a conversation (entered via normal Enter key)
+- **When** they press 'w' to toggle watch mode
+- **Then** watch mode is enabled and watcher starts
+- **And** "LIVE" indicator appears in status bar
+
+**AC 2.4.3: Toggle watch mode off**
+- **Given** watch mode is active in the viewer
+- **When** user presses 'w' again
+- **Then** watch mode is disabled and watcher stops
+- **And** "LIVE" indicator disappears
+
+**AC 2.4.4: Help documentation**
+- **Given** the user views keyboard shortcuts (status bar or --help)
+- **When** looking for watch functionality
+- **Then** 'w' shortcut is documented for watch mode toggle
+
+**Technical Notes:**
+```go
+// In conversation.go - handle 'w' key
+case "w":
+    // Open conversation with watch mode enabled
+    opts := tui.RenderOptions{
+        WatchMode: true,
+        FilePath:  selectedConversation.Path,
+    }
+    return m, openConversationWithOpts(opts)
+
+// In viewer.go - handle 'w' key to toggle
+case "w":
+    if m.watchMode {
+        // Disable watch mode
+        if m.watcher != nil {
+            m.watcher.Close()
+            m.watcher = nil
+        }
+        m.watchMode = false
+    } else {
+        // Enable watch mode
+        if m.renderOpts.FilePath != "" {
+            w, err := watcher.New(m.renderOpts.FilePath)
+            if err == nil {
+                m.watcher = w
+                m.watchMode = true
+                return m, m.watcher.WaitForEvent()
+            }
+        }
+    }
+```
+
+**Origin:** Added from Epic 2 Retrospective (2026-01-16) - User expected interactive browse-then-watch capability.
 
 ---
 
@@ -800,13 +1063,18 @@ func (m *model) getRenderedContent(idx int, content string) string {
 | FR-102 | 1 | 1.2 | Done |
 | FR-103 | 1 | 1.3 | Done |
 | FR-104 | 1 | 1.4 | Done |
-| Retro-001 | 1.5 | 1.5 | Planned |
-| Retro-002 | 1.5 | 1.6 | Planned |
-| Retro-003 | 1.5 | 1.7 | Planned |
-| Retro-004 | 1.5 | 1.8 | Planned |
-| FR-201 | 2 | 2.1 | Planned |
-| FR-202 | 2 | 2.2 | Planned |
-| FR-203 | 2 | 2.3 | Planned |
+| Retro-001 | 1.5 | 1.5 | Done |
+| Retro-002 | 1.5 | 1.6 | Done |
+| Retro-003 | 1.5 | 1.7 | Done |
+| Retro-004 | 1.5 | 1.8 | Done |
+| Retro-005 | 1.6 | 1.9 | Planned |
+| Retro-006 | 1.6 | 1.10 | Planned |
+| Retro-007 | 1.6 | 1.11 | Planned |
+| Retro-008 | 1.6 | 1.12 | Planned |
+| FR-201 | 2 | 2.1 | Done |
+| FR-202 | 2 | 2.2 | Done |
+| FR-203 | 2 | 2.3 | Done |
+| Retro-009 | 2 | 2.4 | Planned |
 | FR-301 | 3 | 3.1 | Planned |
 | FR-302 | 3 | 3.2 | Planned |
 | FR-303 | 3 | 3.3 | Planned |
@@ -823,31 +1091,37 @@ func (m *model) getRenderedContent(idx int, content string) string {
 3. ~~**Story 1.3** - Segmented Status Bar~~ ✅
 4. ~~**Story 1.4** - Spinner Animation~~ ✅
 
-### Epic 1.5: Visual Consistency (NEXT)
-5. **Story 1.5** - Research List View Polish Options (spike)
-6. **Story 1.6** - Implement List View Polish (depends on 1.5)
-7. **Story 1.7** - Adjust Spacing and Margins (independent)
-8. **Story 1.8** - Implement Overlay Spinner (depends on 1.4 spinner patterns)
+### Epic 1.5: Visual Consistency (DONE)
+5. ~~**Story 1.5** - Research List View Polish Options (spike)~~ ✅
+6. ~~**Story 1.6** - Implement List View Polish~~ ✅
+7. ~~**Story 1.7** - Adjust Spacing and Margins~~ ✅
+8. ~~**Story 1.8** - Implement Overlay Spinner~~ ✅
+
+### Epic 1.6: CLI Enhancements (NEXT)
+9. **Story 1.9** - Pipeline Visibility Flags + Richer Collapsed Tool Info (medium)
+10. **Story 1.10** - Project Conversation Count (low)
+11. **Story 1.11** - Pipeline Width Override (low)
+12. **Story 1.12** - Richer Help Output (low)
 
 ### Epic 2: Real-time File Watching
-9. **Story 2.1** - Watch Mode CLI Flag (independent)
-10. **Story 2.2** - fsnotify Integration (depends on 2.1, uses 1.4/1.8 spinner)
-11. **Story 2.3** - Smart Auto-scroll (depends on 2.2, uses 1.3 status bar)
+13. ~~**Story 2.1** - Watch Mode CLI Flag~~ ✅
+14. ~~**Story 2.2** - fsnotify Integration~~ ✅
+15. ~~**Story 2.3** - Smart Auto-scroll~~ ✅
+16. **Story 2.4** - Enable Watch Mode from Interactive Browse (retrospective finding)
 
 ### Epic 3: Markdown Rendering
-12. **Story 3.1** - Glamour Integration (can parallelize with Epic 2)
-13. **Story 3.2** - Dynamic Word Wrap (depends on 3.1)
-14. **Story 3.3** - Render Caching (depends on 3.1, 3.2)
+17. **Story 3.1** - Glamour Integration (can parallelize with Epic 2)
+18. **Story 3.2** - Dynamic Word Wrap (depends on 3.1)
+19. **Story 3.3** - Render Caching (depends on 3.1, 3.2)
 
 ---
 
 ## Next Steps
 
-1. **Sprint Planning** - `/bmad:bmm:workflows:sprint-planning` - Regenerate sprint-status.yaml with Epic 1.5
-2. **Create Story 1.5** - `/bmad:bmm:agents:sm` then `[CS]` - Prepare research spike for list view polish
-3. **Execute Epic 1.5** - Complete all 4 stories for visual consistency
-4. **Then Epic 2** - Real-time File Watching
+1. **Complete Story 2.4** - `/bmad:bmm:agents:sm` then `[CS]` - Enable watch mode from interactive browse
+2. **Mark Epic 2 Done** - After Story 2.4 is complete
+3. **Then Epic 3** - Markdown Rendering
 
 ---
 
-*Epics & Stories - Initial: 2026-01-15 | Updated: 2026-01-15 (Epic 1.5 added from retrospective)*
+*Epics & Stories - Initial: 2026-01-15 | Updated: 2026-01-16 (Epic 2 stories 2.1-2.3 done, Story 2.4 added from retrospective)*
