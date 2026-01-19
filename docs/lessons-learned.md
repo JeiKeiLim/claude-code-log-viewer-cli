@@ -171,3 +171,66 @@ Key insight: Korean characters are 3 bytes in UTF-8 but only 2 display columns. 
 - `internal/tui/listviewport.go` (NEW)
 - `internal/tui/conversation.go` (refactored to use ListViewport)
 - `internal/tui/project.go` (refactored to use ListViewport)
+
+---
+
+## Dashboard Pane Border Clipping
+
+**Date**: 2026-01-19
+**Project**: claude-code-log-viewer-cli
+
+### Problem
+
+Dashboard grid panes had their first row title clipped and merged with the top border line.
+
+### Symptoms
+
+- First row title not visible
+- Title text overlaps with top border character
+- Only affects bordered components using `lipgloss.Height()`
+
+### Root Cause
+
+Using `lipgloss.Style.Height(n).Render(content)` on a style with borders does not reliably control output height. This is the same underlying issue as "Option 3" in the first lesson above.
+
+```go
+// UNRELIABLE - causes clipping
+return PaneBorderStyle.
+    Width(p.width).
+    Height(p.height).
+    Render(inner)
+```
+
+### Solution
+
+Use manual border drawing with `addBorder()` utility function instead of lipgloss borders with Height():
+
+```go
+// RELIABLE - manual border control
+func (p PaneModel) View() string {
+    innerWidth := p.width - 2
+    innerHeight := p.height - 2  // account for top/bottom borders
+
+    // Build content with exact line count
+    var lines []string
+    lines = append(lines, header)
+    for i := 0; i < innerHeight-1; i++ {
+        lines = append(lines, strings.Repeat(" ", innerWidth))
+    }
+    innerContent := strings.Join(lines, "\n")
+
+    // Manual border drawing
+    return addBorder(innerContent, p.width)
+}
+```
+
+### Key Insight
+
+When you need strict height control with borders:
+1. Never use `lipgloss.Height()` on bordered styles
+2. Build inner content with exact line count manually
+3. Use `addBorder()` for reliable border wrapping
+
+### Files Changed
+
+- `internal/tui/dashboard.go` (fixed PaneModel.View())
