@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/token"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
 
@@ -47,6 +49,7 @@ type AppModel struct {
 	height               int
 	spinner              spinner.Model
 	loading              bool
+	tokenService         *token.Service
 }
 
 // NewAppModel creates a new application model with the project browser.
@@ -55,11 +58,18 @@ func NewAppModel(projects []types.Project) AppModel {
 	s.Spinner = spinner.Dot
 	s.Style = ListStyles.Loading
 
+	// Initialize token service with soft-fail
+	tokenSvc, err := token.New()
+	if err != nil {
+		log.Printf("Warning: token service initialization failed: %v", err)
+	}
+
 	return AppModel{
 		state:        viewProjects,
 		projectModel: NewProjectModel(projects),
 		spinner:      s,
 		loading:      false,
+		tokenService: tokenSvc,
 	}
 }
 
@@ -69,11 +79,18 @@ func NewAppModelWithError(err error) AppModel {
 	s.Spinner = spinner.Dot
 	s.Style = ListStyles.Loading
 
+	// Initialize token service with soft-fail
+	tokenSvc, tokenErr := token.New()
+	if tokenErr != nil {
+		log.Printf("Warning: token service initialization failed: %v", tokenErr)
+	}
+
 	return AppModel{
 		state:        viewProjects,
 		projectModel: NewProjectModelWithError(err),
 		spinner:      s,
 		loading:      false,
+		tokenService: tokenSvc,
 	}
 }
 
@@ -168,12 +185,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ConversationSelectedMsg:
 		// User selected a conversation, load it
+		// Clear token cache before loading new conversation
+		if m.tokenService != nil {
+			m.tokenService.ClearCache()
+		}
 		m.loading = true
 		m.selectedConversation = msg.Conversation
 		return m, tea.Batch(m.spinner.Tick, m.loadConversation(msg.Conversation.FilePath))
 
 	case ConversationSelectedWithWatchMsg:
 		// User selected a conversation with watch mode enabled
+		// Clear token cache before loading new conversation
+		if m.tokenService != nil {
+			m.tokenService.ClearCache()
+		}
 		m.loading = true
 		m.selectedConversation = msg.Conversation
 		return m, tea.Batch(m.spinner.Tick, m.loadConversationWithWatch(msg.Conversation.FilePath))
@@ -213,6 +238,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case GoBackMsg:
 		// User pressed escape in viewer, return to source view (Story 5.5)
+		// Clear token cache when leaving viewer
+		if m.tokenService != nil {
+			m.tokenService.ClearCache()
+		}
 		if m.viewerSource == FromDashboard {
 			m.state = viewDashboard
 			m.viewerSource = FromConversationList // Reset for next navigation

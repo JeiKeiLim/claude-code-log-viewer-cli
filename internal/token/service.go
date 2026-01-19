@@ -2,9 +2,13 @@
 package token
 
 import (
+	"encoding/json"
+	"log"
 	"sync"
 
 	tiktoken "github.com/pkoukk/tiktoken-go"
+
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
 
 // Service provides token counting with caching for performance.
@@ -61,4 +65,69 @@ func (s *Service) ClearCache() {
 	s.mu.Lock()
 	s.cache = make(map[string]int)
 	s.mu.Unlock()
+}
+
+// CalculateBatch returns token counts for multiple texts.
+// Uses the same cache as individual calculations for efficiency.
+func (s *Service) CalculateBatch(texts []string) []int {
+	results := make([]int, len(texts))
+	for i, text := range texts {
+		results[i] = s.Calculate(text)
+	}
+	return results
+}
+
+// CalculateEntry returns the token count for a log entry.
+// Handles user messages, assistant messages (including text, thinking, tool_use),
+// and file-history-snapshot entries (returns 0).
+func (s *Service) CalculateEntry(entry types.LogEntry) int {
+	switch entry.Type {
+	case types.EntryTypeUser:
+		return s.Calculate(entry.Message.TextContent)
+	case types.EntryTypeAssistant:
+		var total int
+		for _, content := range entry.Message.Content {
+			switch content.Type {
+			case types.ContentTypeText:
+				total += s.Calculate(content.Text)
+			case types.ContentTypeThinking:
+				total += s.Calculate(content.Thinking)
+			case types.ContentTypeToolUse:
+				// Serialize ToolInput to JSON for tokenization
+				if len(content.ToolInput) > 0 {
+					data, err := json.Marshal(content.ToolInput)
+					if err != nil {
+						log.Printf("Warning: failed to marshal ToolInput for tokenization: %v", err)
+						continue
+					}
+					total += s.Calculate(string(data))
+				}
+			}
+		}
+		return total
+	default:
+		// EntryTypeFileHistorySnapshot: no user-facing text
+		return 0
+	}
+}
+
+// CalculateConversation returns the total token count for a conversation.
+// Uses actual Usage data from entries when available, falls back to calculation otherwise.
+// Returns (total tokens, estimated) where estimated is true if any entry required calculation.
+// Note: file-history-snapshot entries always return 0 tokens and are not marked as estimated.
+func (s *Service) CalculateConversation(entries []types.LogEntry) (int, bool) {
+	var total int
+	var estimated bool
+	for _, entry := range entries {
+		if !entry.Usage.IsEmpty() {
+			total += entry.Usage.Total()
+		} else if entry.Type == types.EntryTypeFileHistorySnapshot {
+			// file-history-snapshot has no text content by design - not estimated
+			continue
+		} else {
+			total += s.CalculateEntry(entry)
+			estimated = true
+		}
+	}
+	return total, estimated
 }
