@@ -75,10 +75,10 @@ func listItemAvailWidth(totalWidth int) int {
 	return availWidth
 }
 
-// addBorder wraps content in a rounded box border.
+// addBorderWithStyle wraps content in a rounded box border with configurable color.
 // Returns exactly len(lines)+2 lines (top border, content, bottom border).
 // Content lines should already be properly sized before calling this.
-func addBorder(content string, width int) string {
+func addBorderWithStyle(content string, width int, borderColor lipgloss.AdaptiveColor) string {
 	if width < 4 {
 		width = 4
 	}
@@ -86,16 +86,17 @@ func addBorder(content string, width int) string {
 	lines := strings.Split(content, "\n")
 	innerWidth := width - 2 // Account for left and right border chars
 
+	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
+
 	var result strings.Builder
 
 	// Top border: ╭───╮
-	result.WriteString("╭")
-	result.WriteString(strings.Repeat("─", innerWidth))
-	result.WriteString("╮\n")
+	result.WriteString(borderStyle.Render("╭" + strings.Repeat("─", innerWidth) + "╮"))
+	result.WriteString("\n")
 
 	// Content lines with side borders
 	for _, line := range lines {
-		result.WriteString("│")
+		result.WriteString(borderStyle.Render("│"))
 		// Use lipgloss.Width to get visual width (ignores ANSI escape codes)
 		visualWidth := lipgloss.Width(line)
 		if visualWidth < innerWidth {
@@ -105,15 +106,21 @@ func addBorder(content string, width int) string {
 			// Line fits exactly or is longer - just use it
 			result.WriteString(line)
 		}
-		result.WriteString("│\n")
+		result.WriteString(borderStyle.Render("│"))
+		result.WriteString("\n")
 	}
 
 	// Bottom border: ╰───╯
-	result.WriteString("╰")
-	result.WriteString(strings.Repeat("─", innerWidth))
-	result.WriteString("╯")
+	result.WriteString(borderStyle.Render("╰" + strings.Repeat("─", innerWidth) + "╯"))
 
 	return result.String()
+}
+
+// addBorder wraps content in a rounded box border with default (unfocused) color.
+// Returns exactly len(lines)+2 lines (top border, content, bottom border).
+// Content lines should already be properly sized before calling this.
+func addBorder(content string, width int) string {
+	return addBorderWithStyle(content, width, PaneUnfocusedBorderColor)
 }
 
 // overlaySpinnerView creates an overlay with a spinner centered on the background.

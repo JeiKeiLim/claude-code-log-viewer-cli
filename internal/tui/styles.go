@@ -411,6 +411,10 @@ var (
 			Bold(true).
 			Align(lipgloss.Center).
 			Foreground(primaryColor)
+
+	// Pane focus styles (Story 5.5)
+	PaneFocusedBorderColor   = DefaultTheme.Accent // Amber for focused pane
+	PaneUnfocusedBorderColor = DefaultTheme.Muted  // Gray for unfocused pane
 )
 
 // multipleNewlinesRe matches 3+ consecutive newlines for normalization (Story 4.5).

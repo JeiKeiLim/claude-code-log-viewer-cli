@@ -92,6 +92,13 @@ type paneNewConversationMsg struct {
 	newFilePath string
 }
 
+// OpenViewerFromDashboardMsg signals request to open viewer from dashboard.
+// Handled by AppModel to load conversation and transition to viewer.
+type OpenViewerFromDashboardMsg struct {
+	FilePath string        // Full path to conversation JSONL file
+	Project  types.Project // Project for building viewer title
+}
+
 // paneIndicatorExpiredMsg signals that the new conversation indicator should be cleared.
 type paneIndicatorExpiredMsg struct {
 	paneIndex int
@@ -336,6 +343,32 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Close all watchers before exiting
 			m.closeAllWatchers()
 			return m, func() tea.Msg { return GoBackToProjectsFromDashboardMsg{} }
+		case "up", "k":
+			m.focusIndex = m.moveFocus("up")
+			return m, nil
+		case "down", "j":
+			m.focusIndex = m.moveFocus("down")
+			return m, nil
+		case "left", "h":
+			m.focusIndex = m.moveFocus("left")
+			return m, nil
+		case "right", "l":
+			m.focusIndex = m.moveFocus("right")
+			return m, nil
+		case "enter":
+			if m.focusIndex >= 0 && m.focusIndex < len(m.panes) {
+				pane := m.panes[m.focusIndex]
+				if pane.conversation.FilePath == "" {
+					return m, nil // No conversation to open
+				}
+				return m, func() tea.Msg {
+					return OpenViewerFromDashboardMsg{
+						FilePath: pane.conversation.FilePath,
+						Project:  pane.project,
+					}
+				}
+			}
+			return m, nil
 		}
 
 	case paneContentLoadedMsg:
@@ -580,6 +613,36 @@ func (m *DashboardModel) closeAllWatchers() {
 	}
 }
 
+// moveFocus calculates new focus index for given direction.
+// Handles wrap-around and clamping for incomplete grids.
+func (m *DashboardModel) moveFocus(direction string) int {
+	if len(m.panes) <= 1 {
+		return 0 // Single pane - no movement
+	}
+
+	rows, cols := calculateGrid(len(m.panes))
+	row := m.focusIndex / cols
+	col := m.focusIndex % cols
+
+	switch direction {
+	case "up":
+		row = (row - 1 + rows) % rows
+	case "down":
+		row = (row + 1) % rows
+	case "left":
+		col = (col - 1 + cols) % cols
+	case "right":
+		col = (col + 1) % cols
+	}
+
+	newIdx := row*cols + col
+	// Clamp to valid pane range (handles incomplete last row)
+	if newIdx >= len(m.panes) {
+		newIdx = len(m.panes) - 1
+	}
+	return newIdx
+}
+
 // View implements tea.Model.
 func (m DashboardModel) View() string {
 	// Handle edge case: no panes
@@ -605,7 +668,8 @@ func (m DashboardModel) View() string {
 				pane := m.panes[idx]
 				pane.width = paneWidth
 				pane.height = paneHeight
-				colViews = append(colViews, pane.View())
+				focused := idx == m.focusIndex
+				colViews = append(colViews, pane.ViewWithFocus(focused))
 			} else {
 				// Empty cell for incomplete last row - render blank space matching pane dimensions
 				colViews = append(colViews, lipgloss.NewStyle().
@@ -679,10 +743,16 @@ func calculatePaneDimensions(totalWidth, totalHeight, rows, cols int) (paneWidth
 	return paneWidth, paneHeight
 }
 
-// View renders a single pane with border and project name header.
+// View renders a single pane with border and project name header (unfocused).
 // Uses manual border drawing (addBorder) instead of lipgloss.Height() which is unreliable.
 // See docs/lessons-learned.md for details.
+// Delegates to ViewWithFocus(false) for consistent unfocused styling.
 func (p PaneModel) View() string {
+	return p.ViewWithFocus(false)
+}
+
+// ViewWithFocus renders pane with border color based on focus state.
+func (p PaneModel) ViewWithFocus(focused bool) string {
 	// Guard against invalid dimensions
 	if p.width < 4 || p.height < 3 {
 		return ""
@@ -766,6 +836,9 @@ func (p PaneModel) View() string {
 	}
 	innerContent := strings.Join(lines, "\n")
 
-	// Use manual border drawing for reliable height control
-	return addBorder(innerContent, p.width)
+	// Use focused or unfocused border color
+	if focused {
+		return addBorderWithStyle(innerContent, p.width, PaneFocusedBorderColor)
+	}
+	return addBorderWithStyle(innerContent, p.width, PaneUnfocusedBorderColor)
 }

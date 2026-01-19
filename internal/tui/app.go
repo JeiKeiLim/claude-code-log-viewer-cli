@@ -23,6 +23,15 @@ const (
 	viewDashboard
 )
 
+// NavigationSource tracks where the viewer was opened from.
+// Used by GoBackMsg handler to return to correct parent view.
+type NavigationSource int
+
+const (
+	FromConversationList NavigationSource = iota // Default: viewer opened from conversation list
+	FromDashboard                                // Viewer opened from dashboard pane
+)
+
 // AppModel is the root Bubbletea model for the interactive mode.
 type AppModel struct {
 	state                viewState
@@ -32,7 +41,8 @@ type AppModel struct {
 	dashboardModel       DashboardModel   // Dashboard view (Story 5.2)
 	selectedProject      types.Project
 	selectedConversation types.Conversation
-	selectedProjects     []types.Project // For dashboard view (Story 5.1)
+	selectedProjects     []types.Project  // For dashboard view (Story 5.1)
+	viewerSource         NavigationSource // Tracks where viewer was opened from (Story 5.5)
 	width                int
 	height               int
 	spinner              spinner.Model
@@ -202,8 +212,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case GoBackMsg:
-		// User pressed escape in viewer, go back to conversation list
-		m.state = viewConversations
+		// User pressed escape in viewer, return to source view (Story 5.5)
+		if m.viewerSource == FromDashboard {
+			m.state = viewDashboard
+		} else {
+			m.state = viewConversations
+		}
+		m.viewerSource = FromConversationList // Reset for next navigation
 		return m, nil
 
 	case DashboardSelectedMsg:
@@ -222,6 +237,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.projectModel.updateItemsWithSelection()
 		m.state = viewProjects
 		return m, nil
+
+	case OpenViewerFromDashboardMsg:
+		// User pressed Enter on a pane in dashboard - open viewer (Story 5.5)
+		m.loading = true
+		m.selectedConversation = types.Conversation{FilePath: msg.FilePath}
+		m.selectedProject = msg.Project
+		m.viewerSource = FromDashboard
+		return m, tea.Batch(m.spinner.Tick, m.loadConversation(msg.FilePath))
 
 	case ShowToastMsg:
 		// For now, we just ignore toast messages since project view doesn't have toast UI

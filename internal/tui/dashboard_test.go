@@ -855,3 +855,351 @@ func TestPaneDirWatcherEventMsgHandlerFileOlder(t *testing.T) {
 		t.Error("paneDirWatcherEventMsg with older-timestamp file should not switch")
 	}
 }
+
+// Story 5.5 Tests: Pane Focus Navigation
+
+func TestMoveFocusSinglePane(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Single pane - navigation should return 0 for all directions
+	for _, dir := range []string{"up", "down", "left", "right"} {
+		result := model.moveFocus(dir)
+		if result != 0 {
+			t.Errorf("moveFocus(%q) with single pane = %d, want 0", dir, result)
+		}
+	}
+}
+
+func TestMoveFocus2x2Grid(t *testing.T) {
+	// 4 panes = 2x2 grid
+	// [0] [1]
+	// [2] [3]
+	projects := make([]types.Project, 4)
+	for i := range projects {
+		projects[i] = types.Project{DisplayName: fmt.Sprintf("P%d", i)}
+	}
+	model, _ := NewDashboardModel(projects)
+
+	tests := []struct {
+		name       string
+		startFocus int
+		direction  string
+		wantFocus  int
+	}{
+		// From top-left (0)
+		{"0 right", 0, "right", 1},
+		{"0 down", 0, "down", 2},
+		{"0 left (wrap)", 0, "left", 1},
+		{"0 up (wrap)", 0, "up", 2},
+		// From top-right (1)
+		{"1 left", 1, "left", 0},
+		{"1 right (wrap)", 1, "right", 0},
+		{"1 down", 1, "down", 3},
+		{"1 up (wrap)", 1, "up", 3},
+		// From bottom-left (2)
+		{"2 right", 2, "right", 3},
+		{"2 up", 2, "up", 0},
+		{"2 down (wrap)", 2, "down", 0},
+		{"2 left (wrap)", 2, "left", 3},
+		// From bottom-right (3)
+		{"3 left", 3, "left", 2},
+		{"3 up", 3, "up", 1},
+		{"3 right (wrap)", 3, "right", 2},
+		{"3 down (wrap)", 3, "down", 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model.focusIndex = tt.startFocus
+			result := model.moveFocus(tt.direction)
+			if result != tt.wantFocus {
+				t.Errorf("moveFocus(%q) from %d = %d, want %d",
+					tt.direction, tt.startFocus, result, tt.wantFocus)
+			}
+		})
+	}
+}
+
+func TestMoveFocusIncompleteGrid(t *testing.T) {
+	// 5 panes = 2x3 grid (incomplete)
+	// [0] [1] [2]
+	// [3] [4] [ ]
+	projects := make([]types.Project, 5)
+	for i := range projects {
+		projects[i] = types.Project{DisplayName: fmt.Sprintf("P%d", i)}
+	}
+	model, _ := NewDashboardModel(projects)
+
+	tests := []struct {
+		name       string
+		startFocus int
+		direction  string
+		wantFocus  int
+	}{
+		// From position 2, down would go to position 5 which doesn't exist
+		// Should clamp to last valid index (4)
+		{"2 down (clamp)", 2, "down", 4},
+		// From position 4, right would go to position 5 which doesn't exist
+		// Since 5 >= len(panes), clamps to 4 (stays in place)
+		{"4 right (clamp)", 4, "right", 4},
+		// Normal navigation
+		{"0 right", 0, "right", 1},
+		{"1 right", 1, "right", 2},
+		{"3 up", 3, "up", 0},
+		// From position 2, right wraps to 0
+		{"2 right (wrap)", 2, "right", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			model.focusIndex = tt.startFocus
+			result := model.moveFocus(tt.direction)
+			if result != tt.wantFocus {
+				t.Errorf("moveFocus(%q) from %d = %d, want %d",
+					tt.direction, tt.startFocus, result, tt.wantFocus)
+			}
+		})
+	}
+}
+
+func TestArrowKeyNavigation(t *testing.T) {
+	projects := make([]types.Project, 4)
+	for i := range projects {
+		projects[i] = types.Project{DisplayName: fmt.Sprintf("P%d", i)}
+	}
+	model, _ := NewDashboardModel(projects)
+
+	// 2x2 grid layout:
+	// [0] [1]
+	// [2] [3]
+	// Test arrow keys
+	tests := []struct {
+		key        tea.KeyMsg
+		wantFocus  int
+	}{
+		// From index 0 (top-left): right -> 1
+		{tea.KeyMsg{Type: tea.KeyRight}, 1},
+		// From index 1: down -> 3 (same column, next row)
+		{tea.KeyMsg{Type: tea.KeyDown}, 3},
+	}
+
+	for i, tt := range tests {
+		if i == 0 {
+			model.focusIndex = 0
+		}
+		newModel, _ := model.Update(tt.key)
+		model = newModel.(DashboardModel)
+		if model.focusIndex != tt.wantFocus {
+			t.Errorf("After key %v: focusIndex = %d, want %d", tt.key, model.focusIndex, tt.wantFocus)
+		}
+	}
+}
+
+func TestVimKeyNavigation(t *testing.T) {
+	projects := make([]types.Project, 4)
+	for i := range projects {
+		projects[i] = types.Project{DisplayName: fmt.Sprintf("P%d", i)}
+	}
+	model, _ := NewDashboardModel(projects)
+	model.focusIndex = 3 // Start at bottom-right
+
+	// Test vim keys: h, j, k, l
+	tests := []struct {
+		key       string
+		wantFocus int
+	}{
+		{"h", 2}, // left: 3 -> 2
+		{"k", 0}, // up: 2 -> 0
+		{"l", 1}, // right: 0 -> 1
+		{"j", 3}, // down: 1 -> 3
+	}
+
+	for _, tt := range tests {
+		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)}
+		newModel, _ := model.Update(msg)
+		model = newModel.(DashboardModel)
+		if model.focusIndex != tt.wantFocus {
+			t.Errorf("After key %q: focusIndex = %d, want %d", tt.key, model.focusIndex, tt.wantFocus)
+		}
+	}
+}
+
+func TestEnterKeyWithConversation(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+	model.panes[0].conversation.FilePath = "/tmp/test/conv.jsonl"
+
+	// Press Enter
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	_, cmd := model.Update(msg)
+
+	if cmd == nil {
+		t.Fatal("Enter key with conversation should return a command")
+	}
+
+	// Execute the command and check message type
+	result := cmd()
+	openMsg, ok := result.(OpenViewerFromDashboardMsg)
+	if !ok {
+		t.Fatalf("Enter key should return OpenViewerFromDashboardMsg, got %T", result)
+	}
+	if openMsg.FilePath != "/tmp/test/conv.jsonl" {
+		t.Errorf("OpenViewerFromDashboardMsg.FilePath = %q, want %q",
+			openMsg.FilePath, "/tmp/test/conv.jsonl")
+	}
+}
+
+func TestEnterKeyWithoutConversation(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model, _ := NewDashboardModel(projects)
+	// No conversation set (empty FilePath)
+
+	// Press Enter
+	msg := tea.KeyMsg{Type: tea.KeyEnter}
+	_, cmd := model.Update(msg)
+
+	// Should return nil - no message when no conversation
+	if cmd != nil {
+		t.Error("Enter key without conversation should return nil command")
+	}
+}
+
+func TestPaneViewWithFocus(t *testing.T) {
+	pane := PaneModel{
+		project: types.Project{DisplayName: "TestProject"},
+		width:   30,
+		height:  10,
+		loading: false,
+	}
+
+	// Test focused view
+	focusedView := pane.ViewWithFocus(true)
+	if focusedView == "" {
+		t.Error("ViewWithFocus(true) should return non-empty string")
+	}
+
+	// Test unfocused view
+	unfocusedView := pane.ViewWithFocus(false)
+	if unfocusedView == "" {
+		t.Error("ViewWithFocus(false) should return non-empty string")
+	}
+
+	// Both should contain project name
+	if !strings.Contains(focusedView, "TestProject") {
+		t.Error("ViewWithFocus(true) should contain project name")
+	}
+	if !strings.Contains(unfocusedView, "TestProject") {
+		t.Error("ViewWithFocus(false) should contain project name")
+	}
+}
+
+func TestPaneViewWithFocusInvalidDimensions(t *testing.T) {
+	pane := PaneModel{
+		project: types.Project{DisplayName: "Test"},
+		width:   3, // Too small
+		height:  2, // Too small
+	}
+
+	view := pane.ViewWithFocus(true)
+	if view != "" {
+		t.Error("ViewWithFocus with invalid dimensions should return empty string")
+	}
+}
+
+func TestDashboardFocusedPaneBorderColor(t *testing.T) {
+	projects := make([]types.Project, 4)
+	for i := range projects {
+		projects[i] = types.Project{DisplayName: fmt.Sprintf("P%d", i)}
+	}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 40)
+
+	// Focus should be on first pane (index 0)
+	if model.focusIndex != 0 {
+		t.Errorf("Initial focusIndex should be 0, got %d", model.focusIndex)
+	}
+
+	// View should render without error
+	view := model.View()
+	if view == "" {
+		t.Error("Dashboard View() should return non-empty string")
+	}
+}
+
+func TestFocusBoundsChecking(t *testing.T) {
+	projects := make([]types.Project, 4)
+	for i := range projects {
+		projects[i] = types.Project{DisplayName: fmt.Sprintf("P%d", i)}
+	}
+	model, _ := NewDashboardModel(projects)
+
+	// Test that focus never goes out of bounds
+	for i := 0; i < 100; i++ {
+		model.focusIndex = model.moveFocus("right")
+		if model.focusIndex < 0 || model.focusIndex >= len(model.panes) {
+			t.Fatalf("Focus went out of bounds: %d (max: %d)", model.focusIndex, len(model.panes)-1)
+		}
+	}
+}
+
+func TestOpenViewerFromDashboardMsgType(t *testing.T) {
+	// Verify the message type has expected fields
+	msg := OpenViewerFromDashboardMsg{
+		FilePath: "/test/path.jsonl",
+		Project:  types.Project{DisplayName: "Test"},
+	}
+
+	if msg.FilePath != "/test/path.jsonl" {
+		t.Errorf("OpenViewerFromDashboardMsg.FilePath = %q, want %q", msg.FilePath, "/test/path.jsonl")
+	}
+	if msg.Project.DisplayName != "Test" {
+		t.Errorf("OpenViewerFromDashboardMsg.Project.DisplayName = %q, want %q", msg.Project.DisplayName, "Test")
+	}
+}
+
+// Test addBorderWithStyle edge cases and addBorder delegation (Story 5.5 M2/M4 fixes)
+
+func TestAddBorderWithStyleSmallWidth(t *testing.T) {
+	// Test that width < 4 is clamped to 4
+	content := "test"
+	result := addBorderWithStyle(content, 2, PaneUnfocusedBorderColor)
+
+	// Should not panic and should produce valid output
+	if result == "" {
+		t.Error("addBorderWithStyle with small width should produce non-empty output")
+	}
+	// Should contain border characters
+	if !strings.Contains(result, "╭") || !strings.Contains(result, "╯") {
+		t.Error("addBorderWithStyle should contain border characters")
+	}
+}
+
+func TestAddBorderDelegatesToAddBorderWithStyle(t *testing.T) {
+	content := "test content"
+
+	// Both should produce the same result (addBorder uses unfocused color)
+	borderResult := addBorder(content, 20)
+	styledResult := addBorderWithStyle(content, 20, PaneUnfocusedBorderColor)
+
+	if borderResult != styledResult {
+		t.Error("addBorder should delegate to addBorderWithStyle with unfocused color")
+	}
+}
+
+func TestPaneViewDelegatesToViewWithFocus(t *testing.T) {
+	pane := PaneModel{
+		project: types.Project{DisplayName: "TestProject"},
+		width:   30,
+		height:  10,
+		loading: false,
+	}
+
+	// View() should produce same result as ViewWithFocus(false)
+	viewResult := pane.View()
+	viewWithFocusResult := pane.ViewWithFocus(false)
+
+	if viewResult != viewWithFocusResult {
+		t.Error("View() should delegate to ViewWithFocus(false)")
+	}
+}
