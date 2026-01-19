@@ -2,7 +2,12 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -37,6 +42,11 @@ type PaneModel struct {
 	height       int
 	loading      bool   // Loading state indicator (Story 5.3)
 	errMsg       string // Error message if content failed to load (Story 5.3)
+
+	// Story 5.4: New conversation detection
+	dirWatcher       *fsnotify.Watcher // Directory watcher for new conversations
+	watchingDir      string            // Directory path being watched
+	showNewIndicator bool              // Visual indicator for new conversation
 }
 
 // paneContentLoadedMsg signals content has been loaded for a specific pane.
@@ -48,10 +58,71 @@ type paneContentLoadedMsg struct {
 	err         error
 }
 
-// paneWatcherEventMsg wraps watcher events with pane index for routing.
+// paneWatcherEventMsg wraps file content watcher events with pane index for routing.
+// This is distinct from paneDirWatcherEventMsg which handles directory-level events.
 type paneWatcherEventMsg struct {
 	paneIndex int
 	event     tea.Msg
+}
+
+// Story 5.4: Directory watcher message types
+
+// paneDirWatcherInitMsg signals successful directory watcher initialization.
+type paneDirWatcherInitMsg struct {
+	paneIndex int
+	watcher   *fsnotify.Watcher
+	watchDir  string
+}
+
+// paneDirWatcherEventMsg signals a new file was created in the watched directory.
+type paneDirWatcherEventMsg struct {
+	paneIndex   int
+	newFilePath string
+}
+
+// paneDirWatcherErrorMsg signals an error in the directory watcher.
+type paneDirWatcherErrorMsg struct {
+	paneIndex int
+	err       error
+}
+
+// paneNewConversationMsg signals that a pane should switch to a new conversation.
+type paneNewConversationMsg struct {
+	paneIndex   int
+	newFilePath string
+}
+
+// paneIndicatorExpiredMsg signals that the new conversation indicator should be cleared.
+type paneIndicatorExpiredMsg struct {
+	paneIndex int
+}
+
+// initDirectoryWatcher returns a command that creates and stores the directory watcher.
+// Called from paneContentLoadedMsg handler, NOT from constructor.
+func (m *DashboardModel) initDirectoryWatcher(paneIndex int, projectPath string) tea.Cmd {
+	return func() tea.Msg {
+		convsDir := filepath.Join(projectPath, "conversations")
+
+		// Ensure directory exists (Task 10.4)
+		if _, err := os.Stat(convsDir); os.IsNotExist(err) {
+			if err := os.MkdirAll(convsDir, 0755); err != nil {
+				return paneDirWatcherErrorMsg{paneIndex: paneIndex, err: err}
+			}
+		}
+
+		w, err := fsnotify.NewWatcher()
+		if err != nil {
+			return paneDirWatcherErrorMsg{paneIndex: paneIndex, err: err}
+		}
+
+		if err := w.Add(convsDir); err != nil {
+			_ = w.Close()
+			return paneDirWatcherErrorMsg{paneIndex: paneIndex, err: err}
+		}
+
+		// Return init success message with watcher reference
+		return paneDirWatcherInitMsg{paneIndex: paneIndex, watcher: w, watchDir: convsDir}
+	}
 }
 
 // findLatestConversation returns the most recent conversation for a project.
@@ -275,7 +346,8 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if msg.err != nil {
 				pane.errMsg = msg.err.Error()
-				return m, nil
+				// Still start directory watcher even on error (to detect first conversation)
+				return m, m.initDirectoryWatcher(msg.paneIndex, pane.project.DirPath)
 			}
 
 			// Store entries and render content
@@ -294,16 +366,111 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Render content
 			pane.content = pane.renderPaneContent()
 
+			// Collect commands to batch
+			var cmds []tea.Cmd
+
 			// Start file watcher if we have a file path
 			if msg.filePath != "" {
 				w, err := watcher.New(msg.filePath)
 				if err == nil {
 					pane.watcher = w
 					pane.conversation = types.Conversation{FilePath: msg.filePath}
-					return m, m.waitForPaneWatcher(msg.paneIndex)
+					cmds = append(cmds, m.waitForPaneWatcher(msg.paneIndex))
 				}
 				// Watcher creation failed - continue without live updates
 			}
+
+			// Start directory watcher (Story 5.4)
+			cmds = append(cmds, m.initDirectoryWatcher(msg.paneIndex, pane.project.DirPath))
+
+			if len(cmds) > 0 {
+				return m, tea.Batch(cmds...)
+			}
+		}
+		return m, nil
+
+	case paneDirWatcherInitMsg:
+		// Handle directory watcher initialization success
+		if msg.paneIndex >= 0 && msg.paneIndex < len(m.panes) {
+			pane := &m.panes[msg.paneIndex]
+			pane.dirWatcher = msg.watcher
+			pane.watchingDir = msg.watchDir
+			// Start waiting for directory events
+			return m, m.waitForDirEvent(msg.paneIndex)
+		}
+		return m, nil
+
+	case paneDirWatcherEventMsg:
+		// Handle new file creation in watched directory
+		if msg.paneIndex >= 0 && msg.paneIndex < len(m.panes) {
+			pane := &m.panes[msg.paneIndex]
+
+			// Check if this is actually a newer file than current conversation
+			newInfo, err := os.Stat(msg.newFilePath)
+			if err != nil {
+				// File disappeared - continue watching
+				return m, m.waitForDirEvent(msg.paneIndex)
+			}
+
+			// If we have a current conversation, compare timestamps
+			if pane.conversation.FilePath != "" {
+				currInfo, err := os.Stat(pane.conversation.FilePath)
+				if err == nil && !newInfo.ModTime().After(currInfo.ModTime()) {
+					// New file is not newer - continue watching
+					return m, m.waitForDirEvent(msg.paneIndex)
+				}
+			}
+
+			// New file is newer - switch to it
+			return m, func() tea.Msg {
+				return paneNewConversationMsg(msg)
+			}
+		}
+		return m, nil
+
+	case paneDirWatcherErrorMsg:
+		// Continue watching on error (graceful degradation)
+		if msg.paneIndex >= 0 && msg.paneIndex < len(m.panes) {
+			return m, m.waitForDirEvent(msg.paneIndex)
+		}
+		return m, nil
+
+	case paneNewConversationMsg:
+		// Handle switching to a new conversation
+		if msg.paneIndex >= 0 && msg.paneIndex < len(m.panes) {
+			pane := &m.panes[msg.paneIndex]
+
+			// Close existing file watcher
+			if pane.watcher != nil {
+				_ = pane.watcher.Close()
+				pane.watcher = nil
+			}
+
+			// Reset pane state
+			pane.entries = nil
+			pane.content = ""
+			pane.loading = true
+			pane.errMsg = ""
+
+			// Set visual indicator (cleared via paneIndicatorTimeoutCmd)
+			pane.showNewIndicator = true
+
+			// Update conversation path
+			pane.conversation = types.Conversation{FilePath: msg.newFilePath}
+
+			// Batch: load new content, clear indicator after timeout, continue dir watching
+			return m, tea.Batch(
+				loadPaneContentCmd(msg.paneIndex, pane.project.DirPath),
+				paneIndicatorTimeoutCmd(msg.paneIndex, 2*time.Second),
+				m.waitForDirEvent(msg.paneIndex),
+			)
+		}
+		return m, nil
+
+	case paneIndicatorExpiredMsg:
+		// Clear the new conversation indicator
+		if msg.paneIndex >= 0 && msg.paneIndex < len(m.panes) {
+			m.panes[msg.paneIndex].showNewIndicator = false
 		}
 		return m, nil
 
@@ -354,12 +521,61 @@ func (m *DashboardModel) waitForPaneWatcher(paneIndex int) tea.Cmd {
 	}
 }
 
-// closeAllWatchers closes all pane watchers to prevent resource leaks.
+// waitForDirEvent returns a command that waits for directory watcher events.
+// Filters for Create events on .jsonl files only.
+func (m *DashboardModel) waitForDirEvent(paneIndex int) tea.Cmd {
+	if paneIndex < 0 || paneIndex >= len(m.panes) {
+		return nil
+	}
+	w := m.panes[paneIndex].dirWatcher
+	if w == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		// This runs in a goroutine - blocking is safe
+		for {
+			select {
+			case event, ok := <-w.Events:
+				if !ok {
+					return nil // Watcher closed
+				}
+				if event.Op&fsnotify.Create != 0 {
+					if strings.HasSuffix(event.Name, ".jsonl") {
+						// Verify file still exists (Task 10.3)
+						if _, err := os.Stat(event.Name); err == nil {
+							return paneDirWatcherEventMsg{paneIndex: paneIndex, newFilePath: event.Name}
+						}
+					}
+				}
+			case err, ok := <-w.Errors:
+				if !ok {
+					return nil // Watcher closed
+				}
+				return paneDirWatcherErrorMsg{paneIndex: paneIndex, err: err}
+			}
+		}
+	}
+}
+
+// paneIndicatorTimeoutCmd returns a command that fires after the given duration.
+func paneIndicatorTimeoutCmd(paneIndex int, duration time.Duration) tea.Cmd {
+	return tea.Tick(duration, func(t time.Time) tea.Msg {
+		return paneIndicatorExpiredMsg{paneIndex: paneIndex}
+	})
+}
+
+// closeAllWatchers closes all pane watchers (file and directory) to prevent resource leaks.
 func (m *DashboardModel) closeAllWatchers() {
 	for i := range m.panes {
+		// Close file content watcher
 		if m.panes[i].watcher != nil {
 			_ = m.panes[i].watcher.Close()
 			m.panes[i].watcher = nil
+		}
+		// Close directory watcher (Story 5.4)
+		if m.panes[i].dirWatcher != nil {
+			_ = m.panes[i].dirWatcher.Close()
+			m.panes[i].dirWatcher = nil
 		}
 	}
 }
@@ -475,11 +691,24 @@ func (p PaneModel) View() string {
 	// Inner content width (account for left+right border = 2 chars)
 	innerWidth := p.width - 2
 
-	// Truncate project name if too long (leave room for padding)
+	// Truncate project name if too long (leave room for padding and [NEW] badge)
 	displayName := p.project.DisplayName
-	maxNameLen := innerWidth - 2 // padding
-	if maxNameLen > 3 && len(displayName) > maxNameLen {
-		displayName = displayName[:maxNameLen-3] + "..."
+	badgeLen := 0
+	if p.showNewIndicator {
+		badgeLen = 6 // " [NEW]" length
+	}
+	maxNameLen := innerWidth - 2 - badgeLen // padding + badge
+	if maxNameLen > 3 && VisualWidth(displayName) > maxNameLen {
+		displayName = TruncateToWidth(displayName, maxNameLen-3) + "..."
+	}
+
+	// Append [NEW] badge if indicator is active (Story 5.4)
+	if p.showNewIndicator {
+		badge := lipgloss.NewStyle().
+			Foreground(DefaultTheme.Accent).
+			Bold(true).
+			Render(" [NEW]")
+		displayName = displayName + badge
 	}
 
 	// Header with project name (centered)

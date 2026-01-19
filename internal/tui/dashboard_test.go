@@ -2,8 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -590,5 +592,266 @@ func TestWindowSizeMsgUpdatesMarkdownRenderer(t *testing.T) {
 	// Verify content was re-rendered (not empty)
 	if updatedModel.panes[0].content == "" && len(updatedModel.panes[0].entries) > 0 {
 		t.Error("content should be re-rendered after resize")
+	}
+}
+
+// Story 5.4 Tests
+
+func TestPaneNewConversationMsgHandler(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 40)
+
+	// Pre-set some state to verify it gets reset
+	model.panes[0].entries = []types.LogEntry{{Type: types.EntryTypeUser}}
+	model.panes[0].content = "old content"
+	model.panes[0].loading = false
+	model.panes[0].conversation.FilePath = "/tmp/old.jsonl"
+
+	// Handle new conversation message
+	msg := paneNewConversationMsg{
+		paneIndex:   0,
+		newFilePath: "/tmp/test/new.jsonl",
+	}
+	newModel, cmd := model.Update(msg)
+	updatedModel := newModel.(DashboardModel)
+
+	// Check pane state was reset
+	if !updatedModel.panes[0].loading {
+		t.Error("pane.loading should be true after new conversation switch")
+	}
+	if updatedModel.panes[0].content != "" {
+		t.Error("pane.content should be empty after new conversation switch")
+	}
+	if len(updatedModel.panes[0].entries) != 0 {
+		t.Error("pane.entries should be empty after new conversation switch")
+	}
+	// Check visual indicator was set
+	if !updatedModel.panes[0].showNewIndicator {
+		t.Error("pane.showNewIndicator should be true after new conversation switch")
+	}
+	// Check conversation path was updated
+	if updatedModel.panes[0].conversation.FilePath != "/tmp/test/new.jsonl" {
+		t.Errorf("pane.conversation.FilePath = %q, want %q",
+			updatedModel.panes[0].conversation.FilePath, "/tmp/test/new.jsonl")
+	}
+	// Check command was returned (should be a batch)
+	if cmd == nil {
+		t.Error("Update(paneNewConversationMsg) should return a command")
+	}
+}
+
+func TestPaneIndicatorExpiredMsgHandler(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Set indicator active
+	model.panes[0].showNewIndicator = true
+
+	// Handle expired message
+	msg := paneIndicatorExpiredMsg{paneIndex: 0}
+	newModel, _ := model.Update(msg)
+	updatedModel := newModel.(DashboardModel)
+
+	// Check indicator was cleared
+	if updatedModel.panes[0].showNewIndicator {
+		t.Error("pane.showNewIndicator should be false after indicator expired")
+	}
+}
+
+func TestPaneViewWithNewIndicator(t *testing.T) {
+	pane := PaneModel{
+		project:          types.Project{DisplayName: "TestProject"},
+		width:            40,
+		height:           10,
+		loading:          false,
+		showNewIndicator: true,
+	}
+
+	view := pane.View()
+	if !strings.Contains(view, "[NEW]") {
+		t.Error("PaneModel.View() should show '[NEW]' badge when showNewIndicator=true")
+	}
+	if !strings.Contains(view, "TestProject") {
+		t.Error("PaneModel.View() should still show project name with badge")
+	}
+}
+
+func TestPaneViewWithNewIndicatorTruncatesName(t *testing.T) {
+	// Long name + badge should result in truncation
+	pane := PaneModel{
+		project:          types.Project{DisplayName: "VeryLongProjectName"},
+		width:            25, // Small width to force truncation
+		height:           10,
+		loading:          false,
+		showNewIndicator: true,
+	}
+
+	view := pane.View()
+	if !strings.Contains(view, "[NEW]") {
+		t.Error("PaneModel.View() should show '[NEW]' badge")
+	}
+	// Name should be truncated to fit
+	if !strings.Contains(view, "...") {
+		t.Error("PaneModel.View() should truncate long name with badge")
+	}
+}
+
+func TestCloseAllWatchersWithDirWatcher(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Manually test closeAllWatchers doesn't panic with nil watchers
+	// (both file and directory watchers)
+	model.panes[0].watcher = nil
+	model.panes[0].dirWatcher = nil
+	model.closeAllWatchers() // Should not panic
+}
+
+func TestPaneDirWatcherInitMsgHandler(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// We can't easily create a real fsnotify.Watcher in tests,
+	// but we can verify the handler works with nil (edge case)
+	msg := paneDirWatcherInitMsg{
+		paneIndex: 0,
+		watcher:   nil,
+		watchDir:  "/tmp/test/conversations",
+	}
+	newModel, cmd := model.Update(msg)
+	updatedModel := newModel.(DashboardModel)
+
+	// Check watchingDir was set
+	if updatedModel.panes[0].watchingDir != "/tmp/test/conversations" {
+		t.Errorf("pane.watchingDir = %q, want %q",
+			updatedModel.panes[0].watchingDir, "/tmp/test/conversations")
+	}
+	// With nil watcher, waitForDirEvent should return nil
+	if cmd != nil {
+		t.Error("waitForDirEvent with nil watcher should return nil")
+	}
+}
+
+func TestPaneDirWatcherErrorMsgHandler(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Error message should gracefully continue
+	msg := paneDirWatcherErrorMsg{
+		paneIndex: 0,
+		err:       fmt.Errorf("test error"),
+	}
+	_, cmd := model.Update(msg)
+
+	// With nil dirWatcher, should return nil (graceful degradation)
+	if cmd != nil {
+		t.Error("paneDirWatcherErrorMsg with nil watcher should return nil cmd")
+	}
+}
+
+func TestPaneDirWatcherEventMsgHandlerFileMissing(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Event with non-existent file path
+	msg := paneDirWatcherEventMsg{
+		paneIndex:   0,
+		newFilePath: "/nonexistent/path/to/file.jsonl",
+	}
+	_, cmd := model.Update(msg)
+
+	// Should return nil cmd when file doesn't exist (with nil dirWatcher)
+	if cmd != nil {
+		t.Error("paneDirWatcherEventMsg with missing file and nil watcher should return nil")
+	}
+}
+
+func TestWaitForDirEventWithNilWatcher(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model, _ := NewDashboardModel(projects)
+
+	// dirWatcher is nil
+	cmd := model.waitForDirEvent(0)
+	if cmd != nil {
+		t.Error("waitForDirEvent with nil dirWatcher should return nil")
+	}
+}
+
+func TestWaitForDirEventWithInvalidIndex(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Out of bounds index
+	cmd := model.waitForDirEvent(99)
+	if cmd != nil {
+		t.Error("waitForDirEvent with invalid index should return nil")
+	}
+
+	// Negative index
+	cmd = model.waitForDirEvent(-1)
+	if cmd != nil {
+		t.Error("waitForDirEvent with negative index should return nil")
+	}
+}
+
+func TestInitDirectoryWatcherCreatesDir(t *testing.T) {
+	tmpDir := t.TempDir() // Auto-cleaned up after test
+	projects := []types.Project{{DisplayName: "proj1", DirPath: tmpDir}}
+	model, _ := NewDashboardModel(projects)
+
+	// This will attempt to create the conversations directory and then the watcher
+	// We just verify it doesn't panic and returns a command
+	cmd := model.initDirectoryWatcher(0, tmpDir)
+	if cmd == nil {
+		t.Error("initDirectoryWatcher should return a command")
+	}
+}
+
+func TestPaneIndicatorTimeoutCmd(t *testing.T) {
+	// Just verify the function returns a non-nil command
+	cmd := paneIndicatorTimeoutCmd(0, 0) // 0 duration for instant test
+	if cmd == nil {
+		t.Error("paneIndicatorTimeoutCmd should return a command")
+	}
+}
+
+func TestPaneDirWatcherEventMsgHandlerFileOlder(t *testing.T) {
+	// Create temp files to test timestamp comparison
+	tmpDir := t.TempDir()
+	currFile := tmpDir + "/current.jsonl"
+	newFile := tmpDir + "/new.jsonl"
+
+	// Create both files
+	if err := os.WriteFile(newFile, []byte("{}"), 0644); err != nil {
+		t.Fatalf("failed to create new file: %v", err)
+	}
+	if err := os.WriteFile(currFile, []byte("{}"), 0644); err != nil {
+		t.Fatalf("failed to create current file: %v", err)
+	}
+
+	// Set new file to have an older timestamp (1 hour ago)
+	oldTime := time.Now().Add(-1 * time.Hour)
+	if err := os.Chtimes(newFile, oldTime, oldTime); err != nil {
+		t.Fatalf("failed to set file time: %v", err)
+	}
+
+	projects := []types.Project{{DisplayName: "proj1", DirPath: tmpDir}}
+	model, _ := NewDashboardModel(projects)
+
+	// Set current conversation to the "current" file (newer)
+	model.panes[0].conversation.FilePath = currFile
+
+	// Event with the "new" file that has older timestamp
+	msg := paneDirWatcherEventMsg{
+		paneIndex:   0,
+		newFilePath: newFile,
+	}
+	_, cmd := model.Update(msg)
+
+	// With nil dirWatcher and older-timestamp file, should return nil
+	// (would continue watching in real scenario, not switch to older file)
+	if cmd != nil {
+		t.Error("paneDirWatcherEventMsg with older-timestamp file should not switch")
 	}
 }
