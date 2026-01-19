@@ -146,3 +146,70 @@ func TestWindowSizeMsgForwarded(t *testing.T) {
 		t.Errorf("height = %d, want 60", updatedModel.height)
 	}
 }
+
+// Story 5.6 Tests: Dashboard Navigation Hierarchy
+
+func TestGoBackToProjectsFromDashboardMsgHandler(t *testing.T) {
+	projects := []types.Project{
+		{DisplayName: "proj1", DirPath: "/tmp/proj1"},
+		{DisplayName: "proj2", DirPath: "/tmp/proj2"},
+	}
+	model := NewAppModel(projects)
+	model.state = viewDashboard
+
+	// Handle GoBackToProjectsFromDashboardMsg
+	newModel, _ := model.Update(GoBackToProjectsFromDashboardMsg{})
+	updatedModel := newModel.(AppModel)
+
+	// Should return to projects view
+	if updatedModel.state != viewProjects {
+		t.Errorf("GoBackToProjectsFromDashboardMsg: state = %d, want %d (viewProjects)",
+			updatedModel.state, viewProjects)
+	}
+}
+
+func TestDashboardEscKeyEmitsGoBackToProjects(t *testing.T) {
+	projects := []types.Project{
+		{DisplayName: "proj1", DirPath: "/tmp/proj1"},
+	}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 40)
+
+	// Simulate esc key press
+	newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	_ = newModel.(DashboardModel)
+
+	// Should return a command that produces GoBackToProjectsFromDashboardMsg
+	if cmd == nil {
+		t.Fatal("esc key should return a command")
+	}
+
+	// Execute the command and check the message type
+	msg := cmd()
+	if _, ok := msg.(GoBackToProjectsFromDashboardMsg); !ok {
+		t.Errorf("esc key should emit GoBackToProjectsFromDashboardMsg, got %T", msg)
+	}
+}
+
+func TestDashboardQKeyEmitsGoBackToProjects(t *testing.T) {
+	projects := []types.Project{
+		{DisplayName: "proj1", DirPath: "/tmp/proj1"},
+	}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 40)
+
+	// Simulate q key press
+	newModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_ = newModel.(DashboardModel)
+
+	// Should return a command that produces GoBackToProjectsFromDashboardMsg
+	if cmd == nil {
+		t.Fatal("q key should return a command")
+	}
+
+	// Execute the command and check the message type
+	msg := cmd()
+	if _, ok := msg.(GoBackToProjectsFromDashboardMsg); !ok {
+		t.Errorf("q key should emit GoBackToProjectsFromDashboardMsg, got %T", msg)
+	}
+}
