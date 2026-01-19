@@ -29,6 +29,7 @@ type AppModel struct {
 	projectModel         ProjectModel
 	conversationModel    ConversationModel
 	viewerModel          ViewerModel
+	dashboardModel       DashboardModel   // Dashboard view (Story 5.2)
 	selectedProject      types.Project
 	selectedConversation types.Conversation
 	selectedProjects     []types.Project // For dashboard view (Story 5.1)
@@ -114,6 +115,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			newModel, cmd := m.viewerModel.Update(msg)
 			m.viewerModel = newModel.(ViewerModel)
+			return m, cmd
+		case viewDashboard:
+			var cmd tea.Cmd
+			newModel, cmd := m.dashboardModel.Update(msg)
+			m.dashboardModel = newModel.(DashboardModel)
 			return m, cmd
 		}
 
@@ -201,9 +207,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case DashboardSelectedMsg:
-		// User selected multiple projects for dashboard view (Story 5.1)
+		// User selected multiple projects for dashboard view (Story 5.1, 5.2)
 		m.selectedProjects = msg.Projects
+		m.dashboardModel = NewDashboardModel(msg.Projects)
+		m.dashboardModel.SetSize(m.width, m.height)
 		m.state = viewDashboard
+		return m, nil
+
+	case GoBackToProjectsFromDashboardMsg:
+		// User pressed escape in dashboard, go back to projects (Story 5.2)
+		m.projectModel.ClearSelections()
+		m.projectModel.updateItemsWithSelection()
+		m.state = viewProjects
 		return m, nil
 
 	case ShowToastMsg:
@@ -233,20 +248,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case viewDashboard:
-		// Handle dashboard placeholder input (Story 5.1)
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			switch keyMsg.String() {
-			case "esc":
-				// Go back to project list and clear selections
-				m.projectModel.ClearSelections()
-				m.projectModel.updateItemsWithSelection()
-				m.state = viewProjects
-				return m, nil
-			case "q", "ctrl+c":
-				return m, tea.Quit
-			}
-		}
-		return m, nil
+		// Forward messages to dashboard model (Story 5.2)
+		var cmd tea.Cmd
+		newModel, cmd := m.dashboardModel.Update(msg)
+		m.dashboardModel = newModel.(DashboardModel)
+		return m, cmd
 	}
 
 	return m, nil
@@ -265,26 +271,10 @@ func (m AppModel) View() string {
 	case viewViewer:
 		return m.viewerModel.View()
 	case viewDashboard:
-		return m.dashboardPlaceholderView()
+		return m.dashboardModel.View()
 	default:
 		return m.projectModel.View()
 	}
-}
-
-// dashboardPlaceholderView renders a placeholder for the dashboard view (Story 5.1).
-// The actual dashboard implementation will be in Story 5.2+.
-func (m AppModel) dashboardPlaceholderView() string {
-	title := Styles.Title.Render(fmt.Sprintf("Dashboard - %d projects", len(m.selectedProjects)))
-
-	// List the selected projects
-	var projectList string
-	for i, p := range m.selectedProjects {
-		projectList += fmt.Sprintf("  %d. %s\n", i+1, p.DisplayName)
-	}
-
-	help := Styles.HelpText.Render("esc:back to projects • q:quit")
-
-	return fmt.Sprintf("%s\n\n%s\n%s", title, projectList, help)
 }
 
 // loadingView renders the spinner during loading operations.

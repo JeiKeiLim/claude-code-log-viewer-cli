@@ -399,6 +399,20 @@ var ListStyles = struct {
 		Italic(true),
 }
 
+// Dashboard pane styles (Story 5.2)
+var (
+	// PaneBorderStyle defines the border style for dashboard panes.
+	PaneBorderStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(dimColor)
+
+	// PaneHeaderStyle defines the header style for dashboard panes.
+	PaneHeaderStyle = lipgloss.NewStyle().
+			Bold(true).
+			Align(lipgloss.Center).
+			Foreground(primaryColor)
+)
+
 // multipleNewlinesRe matches 3+ consecutive newlines for normalization (Story 4.5).
 var multipleNewlinesRe = regexp.MustCompile(`\n{3,}`)
 

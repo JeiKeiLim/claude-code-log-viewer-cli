@@ -96,7 +96,7 @@ development_status:
   # Epic 5: Dashboard Mode
   epic-5: in-progress
   5-1-multi-project-selection: done
-  5-2-grid-layout-component: backlog
+  5-2-grid-layout-component: done
   5-3-dashboard-pane-content-display: backlog
   5-4-new-conversation-detection: backlog
   5-5-pane-focus-navigation: backlog
