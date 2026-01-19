@@ -20,6 +20,7 @@ const (
 	viewProjects viewState = iota
 	viewConversations
 	viewViewer
+	viewDashboard
 )
 
 // AppModel is the root Bubbletea model for the interactive mode.
@@ -30,6 +31,7 @@ type AppModel struct {
 	viewerModel          ViewerModel
 	selectedProject      types.Project
 	selectedConversation types.Conversation
+	selectedProjects     []types.Project // For dashboard view (Story 5.1)
 	width                int
 	height               int
 	spinner              spinner.Model
@@ -197,6 +199,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// User pressed escape in viewer, go back to conversation list
 		m.state = viewConversations
 		return m, nil
+
+	case DashboardSelectedMsg:
+		// User selected multiple projects for dashboard view (Story 5.1)
+		m.selectedProjects = msg.Projects
+		m.state = viewDashboard
+		return m, nil
+
+	case ShowToastMsg:
+		// For now, we just ignore toast messages since project view doesn't have toast UI
+		// TODO: Add toast UI to project view or AppModel in future stories
+		return m, nil
 	}
 
 	// Route updates to current view
@@ -218,6 +231,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newModel, cmd := m.viewerModel.Update(msg)
 		m.viewerModel = newModel.(ViewerModel)
 		return m, cmd
+
+	case viewDashboard:
+		// Handle dashboard placeholder input (Story 5.1)
+		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+			switch keyMsg.String() {
+			case "esc":
+				// Go back to project list and clear selections
+				m.projectModel.ClearSelections()
+				m.projectModel.updateItemsWithSelection()
+				m.state = viewProjects
+				return m, nil
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			}
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -235,9 +264,27 @@ func (m AppModel) View() string {
 		return m.conversationModel.View()
 	case viewViewer:
 		return m.viewerModel.View()
+	case viewDashboard:
+		return m.dashboardPlaceholderView()
 	default:
 		return m.projectModel.View()
 	}
+}
+
+// dashboardPlaceholderView renders a placeholder for the dashboard view (Story 5.1).
+// The actual dashboard implementation will be in Story 5.2+.
+func (m AppModel) dashboardPlaceholderView() string {
+	title := Styles.Title.Render(fmt.Sprintf("Dashboard - %d projects", len(m.selectedProjects)))
+
+	// List the selected projects
+	var projectList string
+	for i, p := range m.selectedProjects {
+		projectList += fmt.Sprintf("  %d. %s\n", i+1, p.DisplayName)
+	}
+
+	help := Styles.HelpText.Render("esc:back to projects • q:quit")
+
+	return fmt.Sprintf("%s\n\n%s\n%s", title, projectList, help)
 }
 
 // loadingView renders the spinner during loading operations.

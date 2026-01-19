@@ -32,6 +32,7 @@ type Theme struct {
 	Background lipgloss.AdaptiveColor
 	BgAlt      lipgloss.AdaptiveColor
 	SelectedBg lipgloss.AdaptiveColor // Subtle selection background
+	CheckedBg  lipgloss.AdaptiveColor // Subtle checked selection background (multi-select)
 
 	// Role colors (semantic)
 	User      lipgloss.AdaptiveColor
@@ -72,6 +73,8 @@ var DefaultTheme = Theme{
 
 	// Selection background (subtle tint for list selection)
 	SelectedBg: lipgloss.AdaptiveColor{Light: "#EDE9FE", Dark: "#2D1B4E"}, // Subtle purple
+	// Checked selection background (for multi-select checkbox state)
+	CheckedBg: lipgloss.AdaptiveColor{Light: "#D1FAE5", Dark: "#064E3B"}, // Subtle green
 }
 
 // Color palette (using Theme for adaptive colors)
@@ -149,9 +152,14 @@ var Styles = struct {
 		GutterSelected lipgloss.Style
 		TitleSelected  lipgloss.Style
 		TitleNormal    lipgloss.Style
+		TitleChecked   lipgloss.Style // For multi-select checked items
 		DescSelected   lipgloss.Style
 		DescNormal     lipgloss.Style
+		DescChecked    lipgloss.Style // For multi-select checked items
 	}
+
+	// Selection style for multi-select checkbox indicator (Story 5.1)
+	SelectionIndicator lipgloss.Style
 }{
 	// Message container styles
 	UserMessage: lipgloss.NewStyle().
@@ -270,8 +278,10 @@ var Styles = struct {
 		GutterSelected lipgloss.Style
 		TitleSelected  lipgloss.Style
 		TitleNormal    lipgloss.Style
+		TitleChecked   lipgloss.Style
 		DescSelected   lipgloss.Style
 		DescNormal     lipgloss.Style
+		DescChecked    lipgloss.Style
 	}{
 		GutterSelected: lipgloss.NewStyle().
 			Foreground(primaryColor),
@@ -282,12 +292,24 @@ var Styles = struct {
 		TitleNormal: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(textColor),
+		TitleChecked: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(secondaryColor).
+			Background(DefaultTheme.CheckedBg),
 		DescSelected: lipgloss.NewStyle().
 			Foreground(textColor).
 			Background(DefaultTheme.SelectedBg),
 		DescNormal: lipgloss.NewStyle().
 			Foreground(mutedColor),
+		DescChecked: lipgloss.NewStyle().
+			Foreground(textColor).
+			Background(DefaultTheme.CheckedBg),
 	},
+
+	// Selection indicator style (green foreground for [x])
+	SelectionIndicator: lipgloss.NewStyle().
+		Foreground(secondaryColor).
+		Bold(true),
 }
 
 // GutterSeparator is the string between gutter numbers and content (Story 4.1).
@@ -299,6 +321,13 @@ const (
 	AssistantIcon = "[A]"
 	ThinkingIcon  = "[T]"
 	ToolIcon      = "[>]"
+)
+
+// Selection constants for multi-project selection (Story 5.1)
+const (
+	MaxSelectedProjects  = 9    // Maximum projects that can be selected for dashboard
+	SelectionChecked     = "[x]" // Indicator for selected project
+	SelectionUnchecked   = "[ ]" // Indicator for unselected project in selection mode
 )
 
 // Box-drawing characters for list decoration
