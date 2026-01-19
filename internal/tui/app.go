@@ -38,7 +38,7 @@ type AppModel struct {
 	projectModel         ProjectModel
 	conversationModel    ConversationModel
 	viewerModel          ViewerModel
-	dashboardModel       DashboardModel   // Dashboard view (Story 5.2)
+	dashboardModel       DashboardModel // Dashboard view (Story 5.2)
 	selectedProject      types.Project
 	selectedConversation types.Conversation
 	selectedProjects     []types.Project  // For dashboard view (Story 5.1)

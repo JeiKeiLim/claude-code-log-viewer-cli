@@ -1209,8 +1209,8 @@ func TestArrowKeyNavigation(t *testing.T) {
 	// [2] [3]
 	// Test arrow keys
 	tests := []struct {
-		key        tea.KeyMsg
-		wantFocus  int
+		key       tea.KeyMsg
+		wantFocus int
 	}{
 		// From index 0 (top-left): right -> 1
 		{tea.KeyMsg{Type: tea.KeyRight}, 1},

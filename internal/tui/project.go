@@ -104,9 +104,9 @@ type ProjectModel struct {
 	filterInput   textinput.Model
 	filtering     bool
 	err           error
-	ready         bool          // Set to true after first WindowSizeMsg
-	selected      map[int]bool  // Map of project indices to selected state
-	selectionMode bool          // True when any project is selected
+	ready         bool         // Set to true after first WindowSizeMsg
+	selected      map[int]bool // Map of project indices to selected state
+	selectionMode bool         // True when any project is selected
 }
 
 // NewProjectModel creates a new project browser model.

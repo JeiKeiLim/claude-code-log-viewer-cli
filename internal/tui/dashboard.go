@@ -35,12 +35,12 @@ type DashboardModel struct {
 // PaneModel represents a single pane in the dashboard grid.
 type PaneModel struct {
 	project      types.Project
-	conversation types.Conversation  // Latest conversation for this project (Story 5.3)
-	entries      []types.LogEntry    // Parsed log entries (Story 5.3)
-	content      string              // Pre-rendered view content (Story 5.3)
-	parseErrors  int                 // Parse error count (Story 5.3)
-	watcher      *watcher.Watcher    // File watcher for live updates (Story 5.3)
-	mdRenderer   *MarkdownRenderer   // Markdown renderer for content (Story 5.3)
+	conversation types.Conversation // Latest conversation for this project (Story 5.3)
+	entries      []types.LogEntry   // Parsed log entries (Story 5.3)
+	content      string             // Pre-rendered view content (Story 5.3)
+	parseErrors  int                // Parse error count (Story 5.3)
+	watcher      *watcher.Watcher   // File watcher for live updates (Story 5.3)
+	mdRenderer   *MarkdownRenderer  // Markdown renderer for content (Story 5.3)
 	width        int
 	height       int
 	loading      bool   // Loading state indicator (Story 5.3)

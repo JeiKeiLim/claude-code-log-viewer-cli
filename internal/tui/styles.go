@@ -325,9 +325,9 @@ const (
 
 // Selection constants for multi-project selection (Story 5.1)
 const (
-	MaxSelectedProjects  = 9    // Maximum projects that can be selected for dashboard
-	SelectionChecked     = "[x]" // Indicator for selected project
-	SelectionUnchecked   = "[ ]" // Indicator for unselected project in selection mode
+	MaxSelectedProjects = 9     // Maximum projects that can be selected for dashboard
+	SelectionChecked    = "[x]" // Indicator for selected project
+	SelectionUnchecked  = "[ ]" // Indicator for unselected project in selection mode
 )
 
 // Box-drawing characters for list decoration
