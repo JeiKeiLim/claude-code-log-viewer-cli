@@ -118,7 +118,7 @@ development_status:
   # Epic 7: Usage Limit Monitoring
   epic-7: in-progress
   7-1-oauth-credential-access: done
-  7-2-usage-api-client: backlog
+  7-2-usage-api-client: done
   7-3-usage-bar-component: backlog
   7-4-app-model-wrapper: backlog
   7-5-usage-bar-refresh: backlog
