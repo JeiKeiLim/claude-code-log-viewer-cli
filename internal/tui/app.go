@@ -215,9 +215,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// User pressed escape in viewer, return to source view (Story 5.5)
 		if m.viewerSource == FromDashboard {
 			m.state = viewDashboard
-		} else {
-			m.state = viewConversations
+			m.viewerSource = FromConversationList // Reset for next navigation
+			// Resume dashboard watchers that were suspended during viewer navigation
+			return m, m.dashboardModel.ResumeWatchers()
 		}
+		m.state = viewConversations
 		m.viewerSource = FromConversationList // Reset for next navigation
 		return m, nil
 

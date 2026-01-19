@@ -605,6 +605,26 @@ func (m *DashboardModel) closeAllWatchers() {
 	}
 }
 
+// ResumeWatchers returns commands to restart all active watcher event chains.
+// Called when returning to dashboard from viewer to resume file/directory watching.
+func (m *DashboardModel) ResumeWatchers() tea.Cmd {
+	var cmds []tea.Cmd
+	for i := range m.panes {
+		// Resume file content watcher if active
+		if m.panes[i].watcher != nil {
+			cmds = append(cmds, m.waitForPaneWatcher(i))
+		}
+		// Resume directory watcher if active (Story 5.4)
+		if m.panes[i].dirWatcher != nil {
+			cmds = append(cmds, m.waitForDirEvent(i))
+		}
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
 // moveFocus calculates new focus index for given direction.
 // Handles wrap-around and clamping for incomplete grids.
 func (m *DashboardModel) moveFocus(direction string) int {
