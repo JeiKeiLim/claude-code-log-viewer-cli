@@ -1,6 +1,6 @@
 # Story 4.6: Fix Position Indicator Desync
 
-Status: review
+Status: done
 
 ## Story
 
