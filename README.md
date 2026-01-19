@@ -1,16 +1,25 @@
 # cclv - Claude Code Log Viewer
 
-A beautiful terminal UI for browsing and viewing Claude Code conversation logs.
+A terminal UI for browsing and viewing Claude Code conversation logs.
 
 ![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 [![Release](https://img.shields.io/github/v/release/JeiKeiLim/claude-code-log-viewer-cli)](https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest)
 
+<!-- TODO: Replace with actual screenshot -->
+![cclv demo](assets/screenshot.png)
+
+Browse your Claude Code projects, select a conversation, and view the full message history with collapsible thinking sections and tool call details — all from your terminal.
+
 ## Features
 
 - **Interactive Project Browser** - Navigate all your Claude Code projects from `~/.claude/projects/`
 - **Conversation Timeline** - Browse conversations sorted by most recent
-- **Beautiful Log Viewer** - View messages with syntax highlighting and proper formatting
+- **Log Viewer** - View messages with markdown rendering and proper text wrapping
+- **Dashboard Mode** - Monitor up to 9 projects simultaneously in a grid layout
+- **Watch Mode** - Real-time updates as conversations grow (`-w` flag)
+- **Developer Power Tools** - Line numbers, raw JSONL mode, vim-style `:N` navigation
+- **Token Statistics** - View token counts per message and conversation totals
 - **Vim-style Navigation** - `j/k`, `gg/G`, `/search`, and more
 - **CJK Support** - Proper display of Korean, Japanese, and Chinese characters
 - **Pipeline Mode** - Pipe JSONL logs directly: `cat file.jsonl | cclv`
@@ -108,6 +117,34 @@ cclv --plain conversation.jsonl | grep "error"
 cat file.jsonl | cclv --tui
 ```
 
+### Watch Mode
+
+Monitor a conversation in real-time as it grows:
+
+```bash
+# Watch a specific file
+cclv -w conversation.jsonl
+
+# From interactive mode, press 'w' on a conversation to watch it
+```
+
+### Dashboard Mode
+
+Monitor multiple projects simultaneously:
+
+1. Run `cclv` to open the project browser
+2. Press `Space` to select projects (up to 9)
+3. Press `Enter` to open dashboard view
+
+The dashboard displays a grid layout that auto-sizes based on selection count:
+- 1 project: Full screen
+- 2-3 projects: 1 row
+- 4 projects: 2x2 grid
+- 5-6 projects: 2x3 grid
+- 7-9 projects: 3x3 grid
+
+Each pane shows the latest conversation and updates in real-time.
+
 ### Color Output
 
 By default, colors are disabled when output is piped. Use `--color` to control this:
@@ -133,12 +170,24 @@ cclv -v
 
 ## Keyboard Shortcuts
 
-### Project/Conversation List
+### Project List
 
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate down / up |
-| `Enter` / `l` | Select item |
+| `Enter` / `l` | Select project |
+| `Space` | Toggle project selection (for dashboard) |
+| `g` / `G` | Jump to top / bottom |
+| `/` | Filter list |
+| `q` | Quit |
+
+### Conversation List
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Navigate down / up |
+| `Enter` / `l` | Open conversation |
+| `w` | Open with watch mode |
 | `h` / `Esc` | Go back |
 | `g` / `G` | Jump to top / bottom |
 | `/` | Filter list |
@@ -151,11 +200,24 @@ cclv -v
 | `j` / `k` | Scroll down / up |
 | `d` / `u` | Half page down / up |
 | `gg` / `G` | Jump to top / bottom |
+| `:N` | Jump to line/entry N |
 | `/` | Search |
 | `n` / `N` | Next / previous match |
 | `t` | Toggle thinking blocks |
 | `i` | Toggle tool inputs |
+| `r` | Toggle raw JSONL mode |
+| `p` | Show file path (toast) |
 | `h` / `Esc` | Go back |
+| `q` | Quit |
+
+### Dashboard
+
+| Key | Action |
+|-----|--------|
+| `h` / `j` / `k` / `l` | Navigate between panes |
+| Arrow keys | Navigate between panes |
+| `Enter` | Open focused pane in viewer |
+| `Esc` | Return to project list |
 | `q` | Quit |
 
 ## Message Types
@@ -163,9 +225,15 @@ cclv -v
 The viewer renders different message types with distinct styling:
 
 - **User messages** - Your prompts and questions
-- **Assistant responses** - Claude's text responses
+- **Assistant responses** - Claude's text responses with markdown rendering
 - **Thinking blocks** - Claude's reasoning (collapsible with `t`)
 - **Tool use** - Tool calls and inputs (collapsible with `i`)
+
+Each message displays token usage when available:
+- `Tokens: 1,234 (from log)` - Actual token count from Claude's API response
+- `Tokens: ~1,200 (estimated)` - Calculated estimate using tiktoken
+
+The status bar shows conversation totals with a `~` prefix when any tokens are estimated.
 
 ## How It Works
 
@@ -174,7 +242,7 @@ Claude Code stores conversation logs in `~/.claude/projects/` as JSONL files. Ea
 1. Scans the projects directory
 2. Decodes project paths (handles hyphens, underscores, and special characters)
 3. Parses JSONL conversation logs
-4. Renders them in a beautiful TUI
+4. Renders them in a TUI
 
 ## Requirements
 
@@ -191,3 +259,6 @@ Built with:
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) - TUI framework
 - [Lip Gloss](https://github.com/charmbracelet/lipgloss) - Style definitions
 - [Bubbles](https://github.com/charmbracelet/bubbles) - TUI components
+- [Glamour](https://github.com/charmbracelet/glamour) - Markdown rendering
+- [fsnotify](https://github.com/fsnotify/fsnotify) - File system notifications
+- [tiktoken-go](https://github.com/pkoukk/tiktoken-go) - Token counting
