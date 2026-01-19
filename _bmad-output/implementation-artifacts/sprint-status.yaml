@@ -100,7 +100,7 @@ development_status:
   5-3-dashboard-pane-content-display: done
   5-4-new-conversation-detection: done
   5-5-pane-focus-navigation: done
-  5-6-dashboard-navigation-hierarchy: backlog
+  5-6-dashboard-navigation-hierarchy: done
   epic-5-retrospective: optional
 
   # Epic 6: Statistics View
