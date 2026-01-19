@@ -207,15 +207,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case DashboardSelectedMsg:
-		// User selected multiple projects for dashboard view (Story 5.1, 5.2)
+		// User selected multiple projects for dashboard view (Story 5.1, 5.2, 5.3)
 		m.selectedProjects = msg.Projects
-		m.dashboardModel = NewDashboardModel(msg.Projects)
+		var cmd tea.Cmd
+		m.dashboardModel, cmd = NewDashboardModel(msg.Projects)
 		m.dashboardModel.SetSize(m.width, m.height)
 		m.state = viewDashboard
-		return m, nil
+		return m, cmd
 
 	case GoBackToProjectsFromDashboardMsg:
-		// User pressed escape in dashboard, go back to projects (Story 5.2)
+		// User pressed escape in dashboard, go back to projects (Story 5.2, 5.3)
+		// Watchers are already closed in DashboardModel.Update() before sending this msg
 		m.projectModel.ClearSelections()
 		m.projectModel.updateItemsWithSelection()
 		m.state = viewProjects
