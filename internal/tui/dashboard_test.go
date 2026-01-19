@@ -714,18 +714,19 @@ func TestPaneDirWatcherInitMsgHandler(t *testing.T) {
 
 	// We can't easily create a real fsnotify.Watcher in tests,
 	// but we can verify the handler works with nil (edge case)
+	// Watcher watches project directory directly (not conversations subdirectory)
 	msg := paneDirWatcherInitMsg{
 		paneIndex: 0,
 		watcher:   nil,
-		watchDir:  "/tmp/test/conversations",
+		watchDir:  "/tmp/test",
 	}
 	newModel, cmd := model.Update(msg)
 	updatedModel := newModel.(DashboardModel)
 
-	// Check watchingDir was set
-	if updatedModel.panes[0].watchingDir != "/tmp/test/conversations" {
+	// Check watchingDir was set to project directory
+	if updatedModel.panes[0].watchingDir != "/tmp/test" {
 		t.Errorf("pane.watchingDir = %q, want %q",
-			updatedModel.panes[0].watchingDir, "/tmp/test/conversations")
+			updatedModel.panes[0].watchingDir, "/tmp/test")
 	}
 	// With nil watcher, waitForDirEvent should return nil
 	if cmd != nil {
@@ -795,13 +796,12 @@ func TestWaitForDirEventWithInvalidIndex(t *testing.T) {
 	}
 }
 
-func TestInitDirectoryWatcherCreatesDir(t *testing.T) {
+func TestInitDirectoryWatcherReturnsCommand(t *testing.T) {
 	tmpDir := t.TempDir() // Auto-cleaned up after test
 	projects := []types.Project{{DisplayName: "proj1", DirPath: tmpDir}}
 	model, _ := NewDashboardModel(projects)
 
-	// This will attempt to create the conversations directory and then the watcher
-	// We just verify it doesn't panic and returns a command
+	// Verify watcher can be initialized on project directory
 	cmd := model.initDirectoryWatcher(0, tmpDir)
 	if cmd == nil {
 		t.Error("initDirectoryWatcher should return a command")

@@ -3,7 +3,6 @@ package tui
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -106,29 +105,22 @@ type paneIndicatorExpiredMsg struct {
 
 // initDirectoryWatcher returns a command that creates and stores the directory watcher.
 // Called from paneContentLoadedMsg handler, NOT from constructor.
+// Watches the project directory directly where .jsonl files are stored.
 func (m *DashboardModel) initDirectoryWatcher(paneIndex int, projectPath string) tea.Cmd {
 	return func() tea.Msg {
-		convsDir := filepath.Join(projectPath, "conversations")
-
-		// Ensure directory exists (Task 10.4)
-		if _, err := os.Stat(convsDir); os.IsNotExist(err) {
-			if err := os.MkdirAll(convsDir, 0755); err != nil {
-				return paneDirWatcherErrorMsg{paneIndex: paneIndex, err: err}
-			}
-		}
-
+		// Watch project directory directly - Claude Code stores .jsonl files at root level
 		w, err := fsnotify.NewWatcher()
 		if err != nil {
 			return paneDirWatcherErrorMsg{paneIndex: paneIndex, err: err}
 		}
 
-		if err := w.Add(convsDir); err != nil {
+		if err := w.Add(projectPath); err != nil {
 			_ = w.Close()
 			return paneDirWatcherErrorMsg{paneIndex: paneIndex, err: err}
 		}
 
 		// Return init success message with watcher reference
-		return paneDirWatcherInitMsg{paneIndex: paneIndex, watcher: w, watchDir: convsDir}
+		return paneDirWatcherInitMsg{paneIndex: paneIndex, watcher: w, watchDir: projectPath}
 	}
 }
 

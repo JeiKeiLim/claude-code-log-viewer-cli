@@ -505,6 +505,7 @@ N/A
 - 14 new unit tests added for Story 5.4 functionality (TestPaneNewConversationMsgHandler through TestPaneDirWatcherEventMsgHandlerFileOlder)
 - Code review fixes applied: removed dead `newIndicatorExpiry` field, fixed visual width truncation for CJK/emoji
 - Build, lint, and all tests pass
+- **BUGFIX (Story 5.5 review):** Fixed directory watcher path - was watching `{projectPath}/conversations/` but Claude Code stores `.jsonl` files directly in `{projectPath}`. Changed to watch project directory directly.
 
 ### File List
 
