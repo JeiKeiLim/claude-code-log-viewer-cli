@@ -90,7 +90,8 @@ development_status:
   4-3-raw-jsonl-mode-toggle: done
   4-4-toast-path-display: done
   4-5-newline-normalization-fix: done
-  epic-4-retrospective: optional
+  4-6-fix-position-indicator-desync: ready-for-dev
+  epic-4-retrospective: done
 
   # Epic 5: Dashboard Mode
   epic-5: backlog

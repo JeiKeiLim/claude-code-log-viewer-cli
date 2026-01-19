@@ -1,10 +1,10 @@
 ---
 project_name: 'claude-code-log-viewer-cli'
 user_name: 'Jongkuk Lim'
-date: '2026-01-13'
+date: '2026-01-19'
 sections_completed: ['technology_stack', 'go_language_rules', 'bubbletea_framework_rules', 'code_quality', 'development_workflow', 'critical_rules', 'testing_rules']
 status: 'complete'
-rule_count: 47
+rule_count: 48
 optimized_for_llm: true
 ---
 
@@ -237,6 +237,29 @@ var BuildDate = "unknown"
 
 Enable lazy loading when items exceed threshold. Load metadata on-demand as user scrolls.
 
+### Lazy Loading with Multiple View Modes (Epic 4 Lesson)
+
+**When adding new view modes (e.g., raw JSONL mode), lazy loading requires mode-specific handling:**
+
+- Each view mode needs its own count tracking (e.g., `rawLineCount` vs `len(entries)`)
+- Scroll triggers must check the correct count for the active mode
+- Navigation to unloaded content must trigger loading (not silently fail)
+- Position tracking arrays are mode-specific (e.g., `entryLinePositions` vs `rawLinePositions`)
+
+```go
+// WRONG - uses normal mode count in raw mode
+if m.loadedCount < len(m.entries) { loadMore() }
+
+// CORRECT - check active mode's count
+if m.rawMode {
+    if m.loadedCount < m.rawLineCount { loadMoreRawLines() }
+} else {
+    if m.loadedCount < len(m.entries) { loadMoreEntries() }
+}
+```
+
+**Pattern:** When implementing a new view mode, audit ALL lazy loading code paths for mode-specific handling.
+
 ### Path Decoding Algorithm
 
 Claude Code encodes paths lossily (`/` and `_` both become `-`).
@@ -406,5 +429,5 @@ AI agents MUST NOT write meaningless tests to hit coverage:
 
 ---
 
-_Last Updated: 2026-01-13_
+_Last Updated: 2026-01-19_
 
