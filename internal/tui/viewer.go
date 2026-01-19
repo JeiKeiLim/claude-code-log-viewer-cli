@@ -898,7 +898,8 @@ func (m ViewerModel) buildNewEntriesSegment() string {
 	return Styles.StatusBarSegment.Mode.Render(indicator) // Reuse accent style
 }
 
-// buildPositionSegment returns the position indicator segment (Story 4.3: raw mode support).
+// buildPositionSegment returns the position indicator segment (Story 4.3: raw mode support, Story 4.6: accurate position).
+// Uses binary search on position arrays for accurate entry/line tracking.
 func (m ViewerModel) buildPositionSegment() string {
 	// In raw mode, show line position (Story 4.3)
 	if m.rawMode {
@@ -906,20 +907,26 @@ func (m ViewerModel) buildPositionSegment() string {
 		if total == 0 {
 			return Styles.StatusBarSegment.Position.Render("Line 0/0")
 		}
-		scrollPct := m.viewport.ScrollPercent()
-		pos := int(float64(total-1)*scrollPct) + 1
+		// Use binary search for accurate position (Story 4.6)
+		pos := m.findVisibleRawLine(m.viewport.YOffset)
+		// During lazy loading, show position within loaded range
+		if m.lazyEnabled && m.loadedCount < total {
+			return Styles.StatusBarSegment.Position.Render(fmt.Sprintf("Line %d/%d (of %d)", pos, m.loadedCount, total))
+		}
 		return Styles.StatusBarSegment.Position.Render(fmt.Sprintf("Line %d/%d", pos, total))
 	}
 
 	// Normal mode: show entry position
 	total := len(m.entries)
 	if total == 0 {
-		return Styles.StatusBarSegment.Position.Render("0/0")
+		return Styles.StatusBarSegment.Position.Render("Entry 0/0")
 	}
-	// Approximate position from scroll percentage
-	// scrollPct=0.0 → pos 1, scrollPct=1.0 → pos total
-	scrollPct := m.viewport.ScrollPercent()
-	pos := int(float64(total-1)*scrollPct) + 1
+	// Use binary search for accurate position (Story 4.6)
+	pos := m.findVisibleEntry(m.viewport.YOffset)
+	// During lazy loading, show position within loaded range
+	if m.lazyEnabled && m.loadedCount < total {
+		return Styles.StatusBarSegment.Position.Render(fmt.Sprintf("Entry %d/%d (of %d)", pos, m.loadedCount, total))
+	}
 	return Styles.StatusBarSegment.Position.Render(fmt.Sprintf("Entry %d/%d", pos, total))
 }
 
@@ -1653,6 +1660,43 @@ func (m *ViewerModel) isAtBottom() bool {
 	// AtBottom() returns true when scrolled to end
 	// ScrollPercent() >= 0.99 handles edge cases near bottom
 	return m.viewport.AtBottom() || m.viewport.ScrollPercent() >= 0.99
+}
+
+// findPositionByOffset performs binary search to find the 1-indexed position
+// for a given yOffset within a sorted positions array. Returns 1 if empty.
+// This is a shared helper for findVisibleEntry and findVisibleRawLine (Story 4.6).
+func findPositionByOffset(positions []int, yOffset int) int {
+	if len(positions) == 0 {
+		return 1
+	}
+
+	// Binary search for largest position <= yOffset
+	lo, hi := 0, len(positions)-1
+	result := 0
+
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if positions[mid] <= yOffset {
+			result = mid
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+
+	return result + 1 // 1-indexed for display
+}
+
+// findVisibleEntry returns the 1-indexed entry number visible at yOffset.
+// Uses binary search on entryLinePositions for O(log n) lookup.
+func (m *ViewerModel) findVisibleEntry(yOffset int) int {
+	return findPositionByOffset(m.entryLinePositions, yOffset)
+}
+
+// findVisibleRawLine returns the 1-indexed raw line number visible at yOffset.
+// Uses binary search on rawLinePositions for O(log n) lookup.
+func (m *ViewerModel) findVisibleRawLine(yOffset int) int {
+	return findPositionByOffset(m.rawLinePositions, yOffset)
 }
 
 // performSearch searches through the content and finds matching lines.

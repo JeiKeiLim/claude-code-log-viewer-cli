@@ -2411,3 +2411,246 @@ func TestRapidPKeyPressesUpdateToastID(t *testing.T) {
 		t.Errorf("After old toast expiry, toast = %q, should still show path", m.toast)
 	}
 }
+
+// Story 4.6: Position indicator desync fix tests
+
+func TestFindVisibleEntry(t *testing.T) {
+	tests := []struct {
+		name      string
+		positions []int
+		yOffset   int
+		want      int
+	}{
+		{
+			name:      "empty positions returns 1",
+			positions: []int{},
+			yOffset:   100,
+			want:      1,
+		},
+		{
+			name:      "single entry at offset 0",
+			positions: []int{0},
+			yOffset:   0,
+			want:      1,
+		},
+		{
+			name:      "single entry with higher offset",
+			positions: []int{0},
+			yOffset:   50,
+			want:      1,
+		},
+		{
+			name:      "multiple entries - at start",
+			positions: []int{0, 10, 20, 30},
+			yOffset:   0,
+			want:      1,
+		},
+		{
+			name:      "multiple entries - middle of first",
+			positions: []int{0, 10, 20, 30},
+			yOffset:   5,
+			want:      1,
+		},
+		{
+			name:      "multiple entries - exactly at second",
+			positions: []int{0, 10, 20, 30},
+			yOffset:   10,
+			want:      2,
+		},
+		{
+			name:      "multiple entries - between second and third",
+			positions: []int{0, 10, 20, 30},
+			yOffset:   15,
+			want:      2,
+		},
+		{
+			name:      "multiple entries - at last",
+			positions: []int{0, 10, 20, 30},
+			yOffset:   30,
+			want:      4,
+		},
+		{
+			name:      "multiple entries - past last",
+			positions: []int{0, 10, 20, 30},
+			yOffset:   100,
+			want:      4,
+		},
+		{
+			name:      "large array - binary search works",
+			positions: []int{0, 50, 100, 150, 200, 250, 300, 350, 400, 450},
+			yOffset:   225,
+			want:      5, // Entry 5 starts at 200, entry 6 starts at 250
+		},
+		{
+			name:      "offset before first entry",
+			positions: []int{10, 20, 30},
+			yOffset:   5,
+			want:      1, // Binary search finds no position <= 5, returns index 0 + 1 = 1
+		},
+		{
+			name:      "negative offset returns first entry",
+			positions: []int{0, 10, 20, 30},
+			yOffset:   -5,
+			want:      1, // Negative offset: no position <= -5, returns index 0 + 1 = 1
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := ViewerModel{entryLinePositions: tt.positions}
+			got := m.findVisibleEntry(tt.yOffset)
+			if got != tt.want {
+				t.Errorf("findVisibleEntry(%d) = %d, want %d", tt.yOffset, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindVisibleRawLine(t *testing.T) {
+	tests := []struct {
+		name      string
+		positions []int
+		yOffset   int
+		want      int
+	}{
+		{
+			name:      "empty positions returns 1",
+			positions: []int{},
+			yOffset:   100,
+			want:      1,
+		},
+		{
+			name:      "single line at offset 0",
+			positions: []int{0},
+			yOffset:   0,
+			want:      1,
+		},
+		{
+			name:      "multiple lines - at start",
+			positions: []int{0, 5, 10, 15, 20},
+			yOffset:   0,
+			want:      1,
+		},
+		{
+			name:      "multiple lines - between lines",
+			positions: []int{0, 5, 10, 15, 20},
+			yOffset:   7,
+			want:      2, // Line 2 starts at 5, line 3 starts at 10
+		},
+		{
+			name:      "multiple lines - exactly on line",
+			positions: []int{0, 5, 10, 15, 20},
+			yOffset:   15,
+			want:      4,
+		},
+		{
+			name:      "multiple lines - past last",
+			positions: []int{0, 5, 10, 15, 20},
+			yOffset:   50,
+			want:      5,
+		},
+		{
+			name:      "negative offset returns first line",
+			positions: []int{0, 5, 10, 15, 20},
+			yOffset:   -10,
+			want:      1, // Negative offset: no position <= -10, returns index 0 + 1 = 1
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := ViewerModel{rawLinePositions: tt.positions}
+			got := m.findVisibleRawLine(tt.yOffset)
+			if got != tt.want {
+				t.Errorf("findVisibleRawLine(%d) = %d, want %d", tt.yOffset, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildPositionSegmentWithAccuratePosition(t *testing.T) {
+	// Note: viewport.YOffset is read from viewport.YOffset property.
+	// For unit tests, we test the lookup functions directly (TestFindVisibleEntry/TestFindVisibleRawLine).
+	// This test validates that buildPositionSegment produces expected output format
+	// when positions are set to known values.
+
+	tests := []struct {
+		name       string
+		entries    int
+		positions  []int
+		rawMode    bool
+		rawCount   int
+		rawPos     []int
+		want       string
+		wantPrefix string
+	}{
+		{
+			name:      "normal mode - has entries shows entry count",
+			entries:   10,
+			positions: []int{0, 10, 20, 30, 40, 50, 60, 70, 80, 90},
+			want:      "/10", // Shows total entries in denominator
+		},
+		{
+			name:      "normal mode - empty entries shows 0/0",
+			entries:   0,
+			positions: []int{},
+			want:      "Entry 0/0",
+		},
+		{
+			name:     "raw mode - has lines shows line count",
+			rawMode:  true,
+			rawCount: 5,
+			rawPos:   []int{0, 3, 6, 9, 12},
+			want:     "/5", // Shows total lines in denominator
+		},
+		{
+			name:     "raw mode - empty shows 0/0",
+			rawMode:  true,
+			rawCount: 0,
+			rawPos:   []int{},
+			want:     "Line 0/0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entries := make([]types.LogEntry, tt.entries)
+			m := ViewerModel{
+				entries:            entries,
+				entryLinePositions: tt.positions,
+				rawMode:            tt.rawMode,
+				rawLineCount:       tt.rawCount,
+				rawLinePositions:   tt.rawPos,
+				loadedCount:        tt.entries, // Assume fully loaded for simplicity
+			}
+			if tt.rawMode {
+				m.loadedCount = tt.rawCount
+			}
+
+			got := m.buildPositionSegment()
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("buildPositionSegment() = %q, want to contain %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildPositionSegmentLazyLoading(t *testing.T) {
+	// Test that lazy loading shows "(of Z)" format when not fully loaded
+	entries := make([]types.LogEntry, 100)
+	m := ViewerModel{
+		entries:            entries,
+		entryLinePositions: []int{0, 10, 20, 30, 40}, // Only 5 entries loaded
+		loadedCount:        5,
+		lazyEnabled:        true,
+	}
+
+	got := m.buildPositionSegment()
+	// Should show "Entry X/5 (of 100)" format during lazy loading
+	if !strings.Contains(got, "/5") {
+		t.Errorf("buildPositionSegment() = %q, want to contain '/5' (loaded count)", got)
+	}
+	if !strings.Contains(got, "of 100") {
+		t.Errorf("buildPositionSegment() = %q, want to contain 'of 100' (total count)", got)
+	}
+}
