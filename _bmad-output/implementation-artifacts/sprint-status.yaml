@@ -109,4 +109,4 @@ development_status:
   6-1-tiktoken-go-integration: done
   6-2-token-calculation-service: done
   6-3-statistics-display: done
-  epic-6-retrospective: optional
+  epic-6-retrospective: done
