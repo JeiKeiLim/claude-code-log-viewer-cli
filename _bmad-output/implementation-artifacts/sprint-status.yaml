@@ -33,8 +33,8 @@
 # - SM typically creates next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
-generated: 2026-01-16
-project: cclv (Phase 2 + Phase 3)
+generated: 2026-01-20
+project: cclv (Phase 2 + Phase 3 + Phase 4)
 project_key: cclv
 tracking_system: file-system
 story_location: _bmad-output/implementation-artifacts
@@ -110,3 +110,18 @@ development_status:
   6-2-token-calculation-service: done
   6-3-statistics-display: done
   epic-6-retrospective: done
+
+  # ============================================
+  # PHASE 4: Usage Monitoring
+  # ============================================
+
+  # Epic 7: Usage Limit Monitoring
+  epic-7: backlog
+  7-1-oauth-credential-access: backlog
+  7-2-usage-api-client: backlog
+  7-3-usage-bar-component: backlog
+  7-4-app-model-wrapper: backlog
+  7-5-usage-bar-refresh: backlog
+  7-6-plain-text-usage-output: backlog
+  7-7-graceful-degradation: backlog
+  epic-7-retrospective: optional
