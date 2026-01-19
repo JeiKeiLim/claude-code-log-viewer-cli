@@ -94,14 +94,15 @@ development_status:
   epic-4-retrospective: done
 
   # Epic 5: Dashboard Mode
-  epic-5: in-progress
+  epic-5: done
   5-1-multi-project-selection: done
   5-2-grid-layout-component: done
   5-3-dashboard-pane-content-display: done
   5-4-new-conversation-detection: done
   5-5-pane-focus-navigation: done
   5-6-dashboard-navigation-hierarchy: done
-  epic-5-retrospective: optional
+  5-7-dashboard-polish: done
+  epic-5-retrospective: done
 
   # Epic 6: Statistics View
   epic-6: backlog

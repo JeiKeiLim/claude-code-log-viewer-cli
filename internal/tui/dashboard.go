@@ -3,6 +3,7 @@ package tui
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,6 +17,9 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
 )
+
+// dashboardHelpText is the keyboard shortcut guide displayed at the bottom of the dashboard.
+const dashboardHelpText = "arrows/hjkl:nav • Enter:open • Esc:back"
 
 // GoBackToProjectsFromDashboardMsg signals return to project list from dashboard.
 type GoBackToProjectsFromDashboardMsg struct{}
@@ -178,6 +182,48 @@ func truncateFromTop(content string, maxLines int) string {
 	return strings.Join(lines[len(lines)-maxLines:], "\n")
 }
 
+// PaneToolIcon is the icon used for tool entries in dashboard panes.
+// Uses [T] as specified in AC 5.7.2 (distinct from styles.ToolIcon which is [>]).
+const PaneToolIcon = "[T]"
+
+// formatPaneToolSummary returns a compact summary for tool use in panes.
+// Format: "target" (e.g., "/path/to/file.go" for Read, "make build" for Bash).
+func formatPaneToolSummary(toolName string, input map[string]any) string {
+	switch toolName {
+	case "Read", "Write", "Edit":
+		if filePath, ok := input["file_path"].(string); ok && filePath != "" {
+			return filePath
+		}
+	case "Bash":
+		if cmd, ok := input["command"].(string); ok && cmd != "" {
+			// Take first line of command
+			firstLine := strings.Split(cmd, "\n")[0]
+			return firstLine
+		}
+	case "Glob":
+		if pattern, ok := input["pattern"].(string); ok && pattern != "" {
+			return pattern
+		}
+	case "Grep":
+		if pattern, ok := input["pattern"].(string); ok && pattern != "" {
+			return pattern
+		}
+	case "Task":
+		if desc, ok := input["description"].(string); ok && desc != "" {
+			return desc
+		}
+	case "WebFetch":
+		if url, ok := input["url"].(string); ok && url != "" {
+			return url
+		}
+	case "WebSearch":
+		if query, ok := input["query"].(string); ok && query != "" {
+			return query
+		}
+	}
+	return ""
+}
+
 // renderPaneEntry renders a single log entry for compact pane display.
 // Uses minimal chrome - no line numbers, collapsed blocks only.
 func renderPaneEntry(entry types.LogEntry, width int, mdRenderer *MarkdownRenderer) string {
@@ -201,14 +247,41 @@ func renderPaneEntry(entry types.LogEntry, width int, mdRenderer *MarkdownRender
 		return UserIcon + " " + firstLine
 
 	case types.EntryTypeAssistant:
+		// Check for tool use first (AC 5.7.2: tool short info)
+		for _, c := range entry.Message.Content {
+			if c.Type == types.ContentTypeToolUse {
+				// Format: [T] ToolName: target/summary
+				summary := formatPaneToolSummary(c.ToolName, c.ToolInput)
+				maxWidth := width - 4 // Account for icon + space
+				if maxWidth < 10 {
+					maxWidth = 10
+				}
+				// Build display string
+				display := c.ToolName
+				if summary != "" {
+					display = c.ToolName + ": " + summary
+				}
+				// Truncate if too long - use filepath.Base for paths
+				if VisualWidth(display) > maxWidth {
+					// For file paths, show just the filename
+					if strings.Contains(summary, "/") {
+						shortSummary := filepath.Base(summary)
+						display = c.ToolName + ": " + shortSummary
+					}
+					// Still too long? Truncate
+					if VisualWidth(display) > maxWidth {
+						display = TruncateToWidth(display, maxWidth)
+					}
+				}
+				return PaneToolIcon + " " + display
+			}
+		}
+
 		// [A] <rendered markdown, first few lines>
 		text := extractPaneTextContent(entry)
 		if text == "" {
-			// Check for tool use or thinking only
+			// Check for thinking only
 			for _, c := range entry.Message.Content {
-				if c.Type == types.ContentTypeToolUse {
-					return AssistantIcon + " [tool: " + c.ToolName + "]"
-				}
 				if c.Type == types.ContentTypeThinking {
 					return AssistantIcon + " [thinking...]"
 				}
@@ -667,7 +740,12 @@ func (m DashboardModel) View() string {
 		return ""
 	}
 
-	paneWidth, paneHeight := calculatePaneDimensions(m.width, m.height, rows, cols)
+	// Reserve 1 line for help text at bottom
+	gridHeight := m.height - 1
+	if gridHeight < 3 {
+		gridHeight = 3
+	}
+	paneWidth, paneHeight := calculatePaneDimensions(m.width, gridHeight, rows, cols)
 
 	// Build rows
 	var rowViews []string
@@ -693,7 +771,13 @@ func (m DashboardModel) View() string {
 		rowViews = append(rowViews, lipgloss.JoinHorizontal(lipgloss.Top, colViews...))
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, rowViews...)
+	// Render grid
+	grid := lipgloss.JoinVertical(lipgloss.Left, rowViews...)
+
+	// Render help text (dimmed, centered)
+	helpText := Styles.HelpText.Render(dashboardHelpText)
+
+	return lipgloss.JoinVertical(lipgloss.Left, grid, helpText)
 }
 
 // SetSize updates the dashboard dimensions and recalculates pane sizes.

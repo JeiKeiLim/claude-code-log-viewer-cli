@@ -378,21 +378,255 @@ func TestRenderPaneEntryAssistant(t *testing.T) {
 }
 
 func TestRenderPaneEntryTool(t *testing.T) {
+	// AC 5.7.2: Tool entries show short info format [T] ToolName: target
 	entry := types.LogEntry{
 		Type: types.EntryTypeAssistant,
 		Message: types.Message{
 			Content: []types.MessageContent{
-				{Type: types.ContentTypeToolUse, ToolName: "Read"},
+				{
+					Type:      types.ContentTypeToolUse,
+					ToolName:  "Read",
+					ToolInput: map[string]any{"file_path": "/path/to/file.go"},
+				},
 			},
 		},
 	}
 
 	rendered := renderPaneEntry(entry, 40, nil)
-	if !strings.Contains(rendered, AssistantIcon) {
-		t.Errorf("renderPaneEntry(tool) should contain AssistantIcon %q, got %q", AssistantIcon, rendered)
+	if !strings.Contains(rendered, PaneToolIcon) {
+		t.Errorf("renderPaneEntry(tool) should contain PaneToolIcon %q, got %q", PaneToolIcon, rendered)
 	}
-	if !strings.Contains(rendered, "[tool: Read]") {
-		t.Errorf("renderPaneEntry(tool) should show tool indicator, got %q", rendered)
+	if !strings.Contains(rendered, "Read:") {
+		t.Errorf("renderPaneEntry(tool) should contain tool name 'Read:', got %q", rendered)
+	}
+	// Should contain file path (or truncated version)
+	if !strings.Contains(rendered, "file.go") && !strings.Contains(rendered, "/path") {
+		t.Errorf("renderPaneEntry(tool) should contain file path info, got %q", rendered)
+	}
+}
+
+// Story 5.7 Tests
+
+func TestDashboardViewIncludesHelpText(t *testing.T) {
+	// AC 5.7.1: Dashboard view should include help text at bottom
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 20)
+
+	view := model.View()
+	if !strings.Contains(view, dashboardHelpText) {
+		t.Errorf("Dashboard View() should contain help text %q, got %q", dashboardHelpText, view)
+	}
+}
+
+func TestDashboardHelpTextConstant(t *testing.T) {
+	// Verify the help text constant contains expected keys
+	if !strings.Contains(dashboardHelpText, "nav") {
+		t.Error("dashboardHelpText should mention 'nav' for navigation")
+	}
+	if !strings.Contains(dashboardHelpText, "Enter") {
+		t.Error("dashboardHelpText should mention 'Enter' for opening")
+	}
+	if !strings.Contains(dashboardHelpText, "Esc") {
+		t.Error("dashboardHelpText should mention 'Esc' for going back")
+	}
+}
+
+func TestFormatPaneToolSummary(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		input    map[string]any
+		want     string
+	}{
+		{
+			name:     "Read with file_path",
+			toolName: "Read",
+			input:    map[string]any{"file_path": "/path/to/file.go"},
+			want:     "/path/to/file.go",
+		},
+		{
+			name:     "Write with file_path",
+			toolName: "Write",
+			input:    map[string]any{"file_path": "/path/to/output.md"},
+			want:     "/path/to/output.md",
+		},
+		{
+			name:     "Edit with file_path",
+			toolName: "Edit",
+			input:    map[string]any{"file_path": "/path/to/edit.go"},
+			want:     "/path/to/edit.go",
+		},
+		{
+			name:     "Bash with command",
+			toolName: "Bash",
+			input:    map[string]any{"command": "make build"},
+			want:     "make build",
+		},
+		{
+			name:     "Bash with multiline command",
+			toolName: "Bash",
+			input:    map[string]any{"command": "make build\nmake test"},
+			want:     "make build",
+		},
+		{
+			name:     "Glob with pattern",
+			toolName: "Glob",
+			input:    map[string]any{"pattern": "**/*.go"},
+			want:     "**/*.go",
+		},
+		{
+			name:     "Grep with pattern",
+			toolName: "Grep",
+			input:    map[string]any{"pattern": "func.*Test"},
+			want:     "func.*Test",
+		},
+		{
+			name:     "Task with description",
+			toolName: "Task",
+			input:    map[string]any{"description": "explore codebase"},
+			want:     "explore codebase",
+		},
+		{
+			name:     "WebFetch with url",
+			toolName: "WebFetch",
+			input:    map[string]any{"url": "https://example.com"},
+			want:     "https://example.com",
+		},
+		{
+			name:     "WebSearch with query",
+			toolName: "WebSearch",
+			input:    map[string]any{"query": "Go testing best practices"},
+			want:     "Go testing best practices",
+		},
+		{
+			name:     "Unknown tool",
+			toolName: "UnknownTool",
+			input:    map[string]any{"foo": "bar"},
+			want:     "",
+		},
+		{
+			name:     "Read with empty file_path",
+			toolName: "Read",
+			input:    map[string]any{"file_path": ""},
+			want:     "",
+		},
+		{
+			name:     "Read with nil input",
+			toolName: "Read",
+			input:    nil,
+			want:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatPaneToolSummary(tt.toolName, tt.input)
+			if got != tt.want {
+				t.Errorf("formatPaneToolSummary(%q, %v) = %q, want %q",
+					tt.toolName, tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderPaneEntryToolTruncation(t *testing.T) {
+	// Test that long file paths are truncated appropriately
+	entry := types.LogEntry{
+		Type: types.EntryTypeAssistant,
+		Message: types.Message{
+			Content: []types.MessageContent{
+				{
+					Type:      types.ContentTypeToolUse,
+					ToolName:  "Read",
+					ToolInput: map[string]any{"file_path": "/very/long/path/to/some/deeply/nested/directory/file.go"},
+				},
+			},
+		},
+	}
+
+	// With narrow width, should truncate
+	rendered := renderPaneEntry(entry, 25, nil)
+	if !strings.Contains(rendered, PaneToolIcon) {
+		t.Error("truncated tool entry should contain PaneToolIcon")
+	}
+	if !strings.Contains(rendered, "Read") {
+		t.Error("truncated tool entry should contain tool name")
+	}
+	// Should be truncated to fit width (with icon taking ~4 chars)
+	visualWidth := VisualWidth(rendered)
+	if visualWidth > 25 {
+		t.Errorf("rendered width %d exceeds max width 25", visualWidth)
+	}
+}
+
+func TestRenderPaneEntryToolNoSummary(t *testing.T) {
+	// Tool with no extractable summary should just show tool name
+	entry := types.LogEntry{
+		Type: types.EntryTypeAssistant,
+		Message: types.Message{
+			Content: []types.MessageContent{
+				{
+					Type:      types.ContentTypeToolUse,
+					ToolName:  "CustomTool",
+					ToolInput: map[string]any{"unknown_field": "value"},
+				},
+			},
+		},
+	}
+
+	rendered := renderPaneEntry(entry, 40, nil)
+	if !strings.Contains(rendered, PaneToolIcon) {
+		t.Error("tool entry should contain PaneToolIcon")
+	}
+	if !strings.Contains(rendered, "CustomTool") {
+		t.Errorf("tool entry should contain tool name 'CustomTool', got %q", rendered)
+	}
+}
+
+func TestRenderPaneEntryToolBeforeText(t *testing.T) {
+	// When entry has both tool use AND text, tool should be shown (appears first)
+	entry := types.LogEntry{
+		Type: types.EntryTypeAssistant,
+		Message: types.Message{
+			Content: []types.MessageContent{
+				{
+					Type:      types.ContentTypeToolUse,
+					ToolName:  "Read",
+					ToolInput: map[string]any{"file_path": "/test.go"},
+				},
+				{Type: types.ContentTypeText, Text: "Here is the file content"},
+			},
+		},
+	}
+
+	rendered := renderPaneEntry(entry, 40, nil)
+	// Should show tool info (since tool_use is checked first)
+	if !strings.Contains(rendered, PaneToolIcon) {
+		t.Errorf("entry with tool_use first should show tool icon, got %q", rendered)
+	}
+}
+
+func TestRenderPaneEntryUnknownContentType(t *testing.T) {
+	// Assistant entries with unknown content types should be handled gracefully
+	// Story 5.7 Task 2.5 allows skipping non-essential content types
+	entry := types.LogEntry{
+		Type: types.EntryTypeAssistant,
+		Message: types.Message{
+			Content: []types.MessageContent{
+				{
+					Type: types.ContentType("unknown_type"),
+					Text: "", // No text
+				},
+			},
+		},
+	}
+
+	rendered := renderPaneEntry(entry, 40, nil)
+	// Unknown content types should return empty (not panic or show garbage)
+	// since renderPaneEntry only handles tool_use, text, and thinking
+	if rendered != "" {
+		t.Errorf("unknown content type entry should return empty string, got %q", rendered)
 	}
 }
 
