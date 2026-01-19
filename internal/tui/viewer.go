@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/token"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
 )
@@ -124,6 +125,11 @@ type ViewerModel struct {
 	rawLines         []string // Cached raw JSONL lines
 	rawLineCount     int      // Total raw lines for gutter width
 	rawLinePositions []int    // Y offset for each raw line for navigation
+
+	// Token service for statistics display (Story 6.3)
+	tokenService       *token.Service // For token calculations
+	conversationTokens int            // Total tokens for conversation
+	tokensEstimated    bool           // True if any token was estimated
 }
 
 // calculateGutterWidth returns the width needed for line numbers.
@@ -175,7 +181,8 @@ func prependGutterStatic(entryNum int, content string, gutterWidth int) string {
 }
 
 // NewViewerModel creates a new viewer model with the given entries.
-func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opts RenderOptions) ViewerModel {
+// tokenSvc is optional; if nil, token statistics will not be displayed.
+func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opts RenderOptions, tokenSvc *token.Service) ViewerModel {
 	ti := textinput.New()
 	ti.Placeholder = "Search..."
 	ti.CharLimit = 100
@@ -240,6 +247,13 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 		rawLines:         nil,
 		rawLineCount:     0,
 		rawLinePositions: nil,
+		// Token service (Story 6.3)
+		tokenService: tokenSvc,
+	}
+
+	// Calculate conversation totals if service available (Story 6.3)
+	if tokenSvc != nil {
+		m.conversationTokens, m.tokensEstimated = tokenSvc.CalculateConversation(entries)
 	}
 
 	// Apply width override if specified
@@ -260,15 +274,17 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 }
 
 // NewViewerModelWithBack creates a new viewer that can return to a previous view.
-func NewViewerModelWithBack(entries []types.LogEntry, parseErrors int, title string, opts RenderOptions) ViewerModel {
-	m := NewViewerModel(entries, parseErrors, title, opts)
+// tokenSvc is optional; if nil, token statistics will not be displayed.
+func NewViewerModelWithBack(entries []types.LogEntry, parseErrors int, title string, opts RenderOptions, tokenSvc *token.Service) ViewerModel {
+	m := NewViewerModel(entries, parseErrors, title, opts, tokenSvc)
 	m.canGoBack = true
 	return m
 }
 
 // NewViewerModelWithBackNavigation is an alias for NewViewerModelWithBack.
-func NewViewerModelWithBackNavigation(entries []types.LogEntry, parseErrors int, title string, opts RenderOptions) ViewerModel {
-	return NewViewerModelWithBack(entries, parseErrors, title, opts)
+// tokenSvc is optional; if nil, token statistics will not be displayed.
+func NewViewerModelWithBackNavigation(entries []types.LogEntry, parseErrors int, title string, opts RenderOptions, tokenSvc *token.Service) ViewerModel {
+	return NewViewerModelWithBack(entries, parseErrors, title, opts, tokenSvc)
 }
 
 // SetSize sets the viewport size.
@@ -676,6 +692,18 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.entries = append(m.entries, msg.Entries...)
 		m.loadedCount = len(m.entries)
 
+		// Recalculate conversation tokens for new entries (Story 6.3)
+		if m.tokenService != nil {
+			for _, entry := range msg.Entries {
+				if !entry.Usage.IsEmpty() {
+					m.conversationTokens += entry.Usage.Total()
+				} else if entry.Type != types.EntryTypeFileHistorySnapshot {
+					m.conversationTokens += m.tokenService.CalculateEntry(entry)
+					m.tokensEstimated = true
+				}
+			}
+		}
+
 		// Recalculate gutterWidth if digit threshold crossed (Story 4.1)
 		newGutterWidth := calculateGutterWidth(len(m.entries))
 		if newGutterWidth != m.gutterWidth {
@@ -716,6 +744,12 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.loadedCount = len(m.entries)
 				m.parseErrors = result.ParseErrors
 				m.gutterWidth = calculateGutterWidth(len(m.entries)) // Recalculate gutter width (Story 4.1)
+
+				// Recalculate conversation totals on file reset (Story 6.3)
+				if m.tokenService != nil {
+					m.conversationTokens, m.tokensEstimated = m.tokenService.CalculateConversation(m.entries)
+				}
+
 				m.updateContent()
 			}
 		}
@@ -794,6 +828,7 @@ type rawLinesLoadedMsg struct {
 
 // markAllMessagesLoadedCmd returns a command that pre-renders all messages.
 // The expensive rendering happens in the command (goroutine) so the spinner can animate.
+// Note: token.Service is thread-safe (uses sync.RWMutex) so safe to use in goroutine (Story 6.3).
 func (m *ViewerModel) markAllMessagesLoadedCmd() tea.Cmd {
 	// Capture values needed for rendering
 	entries := m.entries
@@ -805,12 +840,13 @@ func (m *ViewerModel) markAllMessagesLoadedCmd() tea.Cmd {
 	mdRenderer := m.markdownRenderer // Capture for async rendering
 	showLineNumbers := m.showLineNumbers
 	gutterWidth := m.gutterWidth
+	tokenSvc := m.tokenService // Capture for async token info rendering (Story 6.3)
 
 	return func() tea.Msg {
 		// Pre-render all content in the goroutine (expensive operation)
 		var content strings.Builder
 		for i := 0; i < total; i++ {
-			rendered := renderEntryStatic(entries[i], width, showThinking, showToolInputs, opts, mdRenderer, gutterWidth)
+			rendered := renderEntryStatic(entries[i], width, showThinking, showToolInputs, opts, mdRenderer, gutterWidth, tokenSvc)
 			// Prepend line numbers if enabled (Story 4.1)
 			if showLineNumbers {
 				rendered = prependGutterStatic(i+1, rendered, gutterWidth) // 1-indexed line numbers
@@ -950,6 +986,20 @@ func (m ViewerModel) buildShortcutsSegment() string {
 	return strings.Join(parts, " • ")
 }
 
+// buildTokensSegment returns the conversation total tokens segment (Story 6.3).
+func (m ViewerModel) buildTokensSegment() string {
+	if m.tokenService == nil {
+		return "" // No token service, skip segment
+	}
+
+	var prefix string
+	if m.tokensEstimated {
+		prefix = "~"
+	}
+	formatted := formatWithCommas(m.conversationTokens)
+	return Styles.StatusBarSegment.Tokens.Render(fmt.Sprintf("Tokens: %s%s", prefix, formatted))
+}
+
 // View implements tea.Model.
 func (m ViewerModel) View() string {
 	if !m.ready {
@@ -988,6 +1038,7 @@ func (m ViewerModel) View() string {
 	modeSegment := m.buildModeSegment()
 	newEntriesSegment := m.buildNewEntriesSegment()
 	posSegment := m.buildPositionSegment()
+	tokensSegment := m.buildTokensSegment() // Story 6.3
 	shortcutsText := m.buildShortcutsSegment()
 
 	// Add search/status info to shortcuts text if applicable
@@ -1007,7 +1058,8 @@ func (m ViewerModel) View() string {
 	modeWidth := lipgloss.Width(modeSegment)
 	newEntriesWidth := lipgloss.Width(newEntriesSegment)
 	posWidth := lipgloss.Width(posSegment)
-	shortcutsWidth := m.width - modeWidth - newEntriesWidth - posWidth
+	tokensWidth := lipgloss.Width(tokensSegment)
+	shortcutsWidth := m.width - modeWidth - newEntriesWidth - posWidth - tokensWidth
 	if shortcutsWidth < 0 {
 		shortcutsWidth = 0
 	}
@@ -1022,19 +1074,19 @@ func (m ViewerModel) View() string {
 		toastSegment := toastStyle.Render(m.toast)
 		// Calculate remaining width for shortcuts
 		toastWidth := lipgloss.Width(toastSegment)
-		remainingWidth := m.width - modeWidth - newEntriesWidth - posWidth - toastWidth
+		remainingWidth := m.width - modeWidth - newEntriesWidth - posWidth - tokensWidth - toastWidth
 		if remainingWidth < 0 {
 			remainingWidth = 0
 		}
 		shortcutsSegment := Styles.StatusBarSegment.Shortcuts.
 			Width(remainingWidth).
 			Render(shortcutsText)
-		footer = lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, newEntriesSegment, posSegment, toastSegment, shortcutsSegment)
+		footer = lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, newEntriesSegment, posSegment, tokensSegment, toastSegment, shortcutsSegment)
 	} else {
 		shortcutsSegment := Styles.StatusBarSegment.Shortcuts.
 			Width(shortcutsWidth).
 			Render(shortcutsText + statusSuffix)
-		footer = lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, newEntriesSegment, posSegment, shortcutsSegment)
+		footer = lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, newEntriesSegment, posSegment, tokensSegment, shortcutsSegment)
 	}
 
 	normalView := fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), footer)
@@ -1258,11 +1310,17 @@ func (m *ViewerModel) renderEntry(entry types.LogEntry) string {
 // renderUserMessage renders a user message entry.
 func (m *ViewerModel) renderUserMessage(entry types.LogEntry) string {
 	timestamp := formatTimestamp(entry.Timestamp)
+	tokenInfo := formatTokenUsage(entry, m.tokenService)
+
 	header := fmt.Sprintf("%s %s  %s",
 		UserIcon,
 		Styles.UserHeader.Render("User"),
 		Styles.Timestamp.Render(timestamp),
 	)
+	// Add token info to header if available (Story 6.3)
+	if tokenInfo != "" {
+		header = fmt.Sprintf("%s  %s", header, Styles.TokenInfo.Render(tokenInfo))
+	}
 
 	// Wrap content to fit viewport width (with margin for styling and gutter)
 	gutterSpace := 0
@@ -1282,11 +1340,17 @@ func (m *ViewerModel) renderUserMessage(entry types.LogEntry) string {
 // renderAssistantMessage renders an assistant message entry.
 func (m *ViewerModel) renderAssistantMessage(entry types.LogEntry) string {
 	timestamp := formatTimestamp(entry.Timestamp)
+	tokenInfo := formatTokenUsage(entry, m.tokenService)
+
 	header := fmt.Sprintf("%s %s  %s",
 		AssistantIcon,
 		Styles.AssistantHeader.Render("Assistant"),
 		Styles.Timestamp.Render(timestamp),
 	)
+	// Add token info to header if available (Story 6.3)
+	if tokenInfo != "" {
+		header = fmt.Sprintf("%s  %s", header, Styles.TokenInfo.Render(tokenInfo))
+	}
 
 	var parts []string
 	parts = append(parts, header)
@@ -1388,12 +1452,13 @@ func formatToolInput(input map[string]any) string {
 
 // renderEntryStatic renders a single log entry without model state (for async rendering).
 // gutterWidth parameter accounts for line number gutter space (Story 4.1).
-func renderEntryStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions, mdRenderer *MarkdownRenderer, gutterWidth int) string {
+// tokenSvc parameter enables token info display (Story 6.3) - can be nil for graceful degradation.
+func renderEntryStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions, mdRenderer *MarkdownRenderer, gutterWidth int, tokenSvc *token.Service) string {
 	switch entry.Type {
 	case types.EntryTypeUser:
-		return renderUserMessageStatic(entry, width, gutterWidth)
+		return renderUserMessageStatic(entry, width, gutterWidth, tokenSvc)
 	case types.EntryTypeAssistant:
-		return renderAssistantMessageStatic(entry, width, showThinking, showToolInputs, opts, mdRenderer, gutterWidth)
+		return renderAssistantMessageStatic(entry, width, showThinking, showToolInputs, opts, mdRenderer, gutterWidth, tokenSvc)
 	default:
 		return ""
 	}
@@ -1401,13 +1466,20 @@ func renderEntryStatic(entry types.LogEntry, width int, showThinking, showToolIn
 
 // renderUserMessageStatic renders a user message entry without model state.
 // gutterWidth parameter accounts for line number gutter space (Story 4.1).
-func renderUserMessageStatic(entry types.LogEntry, width int, gutterWidth int) string {
+// tokenSvc parameter enables token info display (Story 6.3) - can be nil for graceful degradation.
+func renderUserMessageStatic(entry types.LogEntry, width int, gutterWidth int, tokenSvc *token.Service) string {
 	timestamp := formatTimestamp(entry.Timestamp)
+	tokenInfo := formatTokenUsage(entry, tokenSvc)
+
 	header := fmt.Sprintf("%s %s  %s",
 		UserIcon,
 		Styles.UserHeader.Render("User"),
 		Styles.Timestamp.Render(timestamp),
 	)
+	// Add token info to header if available (Story 6.3)
+	if tokenInfo != "" {
+		header = fmt.Sprintf("%s  %s", header, Styles.TokenInfo.Render(tokenInfo))
+	}
 
 	// Account for gutter width (Story 4.1)
 	gutterSpace := gutterWidth + len(GutterSeparator)
@@ -1423,13 +1495,20 @@ func renderUserMessageStatic(entry types.LogEntry, width int, gutterWidth int) s
 
 // renderAssistantMessageStatic renders an assistant message entry without model state.
 // gutterWidth parameter accounts for line number gutter space (Story 4.1).
-func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions, mdRenderer *MarkdownRenderer, gutterWidth int) string {
+// tokenSvc parameter enables token info display (Story 6.3) - can be nil for graceful degradation.
+func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking, showToolInputs bool, opts RenderOptions, mdRenderer *MarkdownRenderer, gutterWidth int, tokenSvc *token.Service) string {
 	timestamp := formatTimestamp(entry.Timestamp)
+	tokenInfo := formatTokenUsage(entry, tokenSvc)
+
 	header := fmt.Sprintf("%s %s  %s",
 		AssistantIcon,
 		Styles.AssistantHeader.Render("Assistant"),
 		Styles.Timestamp.Render(timestamp),
 	)
+	// Add token info to header if available (Story 6.3)
+	if tokenInfo != "" {
+		header = fmt.Sprintf("%s  %s", header, Styles.TokenInfo.Render(tokenInfo))
+	}
 
 	var parts []string
 	parts = append(parts, header)

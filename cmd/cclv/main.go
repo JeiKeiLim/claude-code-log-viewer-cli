@@ -238,8 +238,8 @@ func runPipelineMode(args []string, mode outputMode, opts tui.RenderOptions) err
 		return nil
 	}
 
-	// TUI mode
-	model := tui.NewViewerModel(result.Entries, result.ParseErrors, source, opts)
+	// TUI mode - nil token service for pipeline mode (no statistics needed)
+	model := tui.NewViewerModel(result.Entries, result.ParseErrors, source, opts, nil)
 
 	// Use alternate screen buffer for TUI
 	p := tea.NewProgram(model, tea.WithAltScreen())

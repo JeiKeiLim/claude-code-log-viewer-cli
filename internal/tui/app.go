@@ -212,7 +212,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		title := m.buildConversationTitle()
 		opts := RenderOptions{FilePath: msg.filePath}
-		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, opts)
+		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, opts, m.tokenService)
 		m.viewerModel.SetSize(m.width, m.height)
 		m.state = viewViewer
 		return m, nil
@@ -226,7 +226,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		title := m.buildConversationTitle()
 		opts := RenderOptions{WatchMode: true, FilePath: msg.filePath}
-		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, opts)
+		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, opts, m.tokenService)
 		m.viewerModel.SetSize(m.width, m.height)
 		m.state = viewViewer
 		return m, m.viewerModel.Init() // Return Init() to start watcher

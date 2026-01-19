@@ -3,10 +3,14 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/token"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
 
 // DefaultPlainModeWidth is the default rendering width for plain mode when no terminal is detected.
@@ -173,4 +177,52 @@ func overlaySpinnerView(background string, spinnerView string, spinnerText strin
 	}
 
 	return strings.Join(result, "\n")
+}
+
+// formatWithCommas formats an integer with thousand separators.
+// Examples: 999 -> "999", 1000 -> "1,000", 1234567 -> "1,234,567"
+func formatWithCommas(n int) string {
+	str := strconv.Itoa(n)
+	if n < 1000 {
+		return str
+	}
+
+	var result strings.Builder
+	offset := len(str) % 3
+	if offset > 0 {
+		result.WriteString(str[:offset])
+		if offset < len(str) {
+			result.WriteString(",")
+		}
+	}
+	for i := offset; i < len(str); i += 3 {
+		if i > offset {
+			result.WriteString(",")
+		}
+		result.WriteString(str[i : i+3])
+	}
+	return result.String()
+}
+
+// formatTokenUsage returns a formatted token string for display.
+// Returns empty string for FileHistorySnapshot entries or if token service is nil.
+func formatTokenUsage(entry types.LogEntry, svc *token.Service) string {
+	// Skip file-history-snapshot entries (no user-facing text)
+	if entry.Type == types.EntryTypeFileHistorySnapshot {
+		return ""
+	}
+
+	// Use actual usage from log if available
+	if !entry.Usage.IsEmpty() {
+		return fmt.Sprintf("Tokens: %s (from log)", formatWithCommas(entry.Usage.Total()))
+	}
+
+	// Service unavailable - graceful degradation
+	if svc == nil {
+		return ""
+	}
+
+	// Calculate token estimate
+	calculated := svc.CalculateEntry(entry)
+	return fmt.Sprintf("Tokens: ~%s (estimated)", formatWithCommas(calculated))
 }

@@ -140,11 +140,15 @@ var Styles = struct {
 	// Line number gutter (Story 4.1)
 	Gutter lipgloss.Style
 
+	// Token info display (Story 6.3)
+	TokenInfo lipgloss.Style
+
 	// Status bar segments
 	StatusBarSegment struct {
 		Mode      lipgloss.Style
 		Position  lipgloss.Style
 		Shortcuts lipgloss.Style
+		Tokens    lipgloss.Style // Story 6.3
 	}
 
 	// List item styles (for project/conversation lists)
@@ -254,10 +258,16 @@ var Styles = struct {
 	Gutter: lipgloss.NewStyle().
 		Foreground(dimColor),
 
+	// Token info display style (Story 6.3) - muted and italic
+	TokenInfo: lipgloss.NewStyle().
+		Foreground(dimColor).
+		Italic(true),
+
 	StatusBarSegment: struct {
 		Mode      lipgloss.Style
 		Position  lipgloss.Style
 		Shortcuts lipgloss.Style
+		Tokens    lipgloss.Style
 	}{
 		Mode: lipgloss.NewStyle().
 			Background(accentColor).
@@ -271,6 +281,10 @@ var Styles = struct {
 		Shortcuts: lipgloss.NewStyle().
 			Background(bgAltColor).
 			Foreground(textColor).
+			Padding(0, 1),
+		Tokens: lipgloss.NewStyle().
+			Background(primaryColor).
+			Foreground(whiteColor).
 			Padding(0, 1),
 	},
 

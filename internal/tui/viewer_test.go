@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/token"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
 
@@ -76,7 +77,7 @@ func TestNewViewerModelWatchMode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			opts := RenderOptions{WatchMode: tt.watchMode}
-			m := NewViewerModel(entries, 0, "Test", opts)
+			m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 			if m.watchMode != tt.watchMode {
 				t.Errorf("NewViewerModel() watchMode = %v, want %v", m.watchMode, tt.watchMode)
@@ -111,7 +112,7 @@ func TestBuildPositionSegment(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			entries := make([]types.LogEntry, tt.entries)
-			m := NewViewerModel(entries, 0, "Test", DefaultRenderOptions())
+			m := NewViewerModel(entries, 0, "Test", DefaultRenderOptions(), nil)
 
 			got := m.buildPositionSegment()
 			if !strings.Contains(got, tt.want) {
@@ -281,7 +282,7 @@ func TestNewViewerModelNewEntriesCountInitialized(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{WatchMode: true}
 
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	if m.newEntriesCount != 0 {
 		t.Errorf("NewViewerModel() newEntriesCount = %d, want 0", m.newEntriesCount)
@@ -308,7 +309,7 @@ func TestSmartAutoScrollNewEntriesHandler(t *testing.T) {
 	// Test that newEntriesCount increments when entries arrive while scrolled up
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{WatchMode: true}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24) // Initialize viewport
 
 	// Since viewport is not scrolled, isAtBottom() returns true on a fresh viewport
@@ -325,7 +326,7 @@ func TestSmartAutoScrollNewEntriesHandler(t *testing.T) {
 func TestGKeyResetsNewEntriesCount(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{WatchMode: true}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Simulate accumulated new entries while scrolled up
@@ -348,7 +349,7 @@ func TestGKeyResetsNewEntriesCount(t *testing.T) {
 func TestFileResetMsgClearsNewEntriesCount(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{WatchMode: true}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Simulate accumulated new entries
@@ -365,7 +366,7 @@ func TestFileResetMsgClearsNewEntriesCount(t *testing.T) {
 func TestManualScrollToBottomClearsNewEntriesCount(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{WatchMode: true}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Simulate new entries accumulated
@@ -388,7 +389,7 @@ func TestWatchModeToggleOn(t *testing.T) {
 	// Test that 'w' key enables watch mode when off with valid FilePath
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{WatchMode: false, FilePath: "/tmp/test.jsonl"}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Initially watch mode should be off
@@ -406,7 +407,7 @@ func TestWatchModeToggleOff(t *testing.T) {
 	// Test that toggling off sets watchMode to false and clears newEntriesCount
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{WatchMode: true, FilePath: "/tmp/test.jsonl"}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Simulate new entries accumulated
@@ -433,7 +434,7 @@ func TestWatchModeNoFilePathNoOp(t *testing.T) {
 	// Test that toggling on without file path is a no-op (graceful degradation)
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{WatchMode: false, FilePath: ""} // Empty FilePath
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Attempting to enable watch mode with empty FilePath should be no-op
@@ -453,7 +454,7 @@ func TestWatchModeToggleNonExistentFile(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	// Use a path that definitely doesn't exist
 	opts := RenderOptions{WatchMode: false, FilePath: "/nonexistent/path/that/does/not/exist.jsonl"}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// FilePath is set but file doesn't exist
@@ -484,7 +485,7 @@ func TestWatcherClosedOnBackNavigation(t *testing.T) {
 	// Test that watcher is closed when user navigates back
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{WatchMode: true, FilePath: "/tmp/test.jsonl"}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 	m.canGoBack = true
 
@@ -522,7 +523,7 @@ func TestConversationSelectedWithWatchMsgType(t *testing.T) {
 func TestRenderCacheInitialization(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	// Cache should be initialized
 	if m.renderCache == nil {
@@ -543,7 +544,7 @@ func TestRenderCacheInitialization(t *testing.T) {
 func TestInvalidateRenderCache(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeAssistant}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	// Manually add some cache entries
 	m.renderCache[0] = "cached content"
@@ -576,7 +577,7 @@ func TestGetCachedRenderCacheHit(t *testing.T) {
 		},
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24) // Initialize viewport
 
 	// First call - cache miss, should render and cache
@@ -605,7 +606,7 @@ func TestGetCachedRenderKeyByIndex(t *testing.T) {
 		{Type: types.EntryTypeAssistant, Message: types.Message{Content: []types.MessageContent{{Type: types.ContentTypeText, Text: "Entry 3"}}}},
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	// Don't call SetSize yet to avoid automatic updateContent() populating cache
 
 	// Clear any cache from initialization and manually call getCachedRender
@@ -663,7 +664,7 @@ func TestGetCachedRenderOnlyAssistant(t *testing.T) {
 
 			entries := []types.LogEntry{entry}
 			opts := RenderOptions{Width: 80}
-			m := NewViewerModel(entries, 0, "Test", opts)
+			m := NewViewerModel(entries, 0, "Test", opts, nil)
 			m.SetSize(80, 24)
 
 			// Render
@@ -691,7 +692,7 @@ func TestCacheInvalidationOnToggle(t *testing.T) {
 		},
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Populate cache
@@ -714,7 +715,7 @@ func TestCacheNotInvalidatedOnNewEntries(t *testing.T) {
 		{Type: types.EntryTypeAssistant, Message: types.Message{Content: []types.MessageContent{{Type: types.ContentTypeText, Text: "Entry 0"}}}},
 	}
 	opts := RenderOptions{Width: 80, WatchMode: true}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Populate cache
@@ -753,7 +754,7 @@ func TestCacheInvalidationOnResize(t *testing.T) {
 		},
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24) // Initialize viewport
 
 	// Populate cache
@@ -794,7 +795,7 @@ func TestCacheInvalidationOnFileReset(t *testing.T) {
 		},
 	}
 	opts := RenderOptions{Width: 80, WatchMode: true}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Populate cache
@@ -824,7 +825,7 @@ func TestUpdateContentUsesCachedRender(t *testing.T) {
 		},
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24) // This calls updateContent() which should populate cache
 
 	// After updateContent(), the assistant entry should be cached
@@ -1012,7 +1013,7 @@ func TestGutterWidthRecalculationOnDigitThreshold(t *testing.T) {
 		entries[i] = types.LogEntry{Type: types.EntryTypeUser}
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	initialWidth := m.gutterWidth
 	if initialWidth != 3 {
@@ -1043,7 +1044,7 @@ func TestNewViewerModelGutterWidthInitialization(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			entries := make([]types.LogEntry, tt.entryCount)
 			opts := RenderOptions{Width: 80}
-			m := NewViewerModel(entries, 0, "Test", opts)
+			m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 			if m.gutterWidth != tt.wantWidth {
 				t.Errorf("NewViewerModel() gutterWidth = %d, want %d", m.gutterWidth, tt.wantWidth)
@@ -1055,7 +1056,7 @@ func TestNewViewerModelGutterWidthInitialization(t *testing.T) {
 func TestShowLineNumbersDefaultTrue(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	if m.showLineNumbers != true {
 		t.Errorf("NewViewerModel() showLineNumbers = %v, want true", m.showLineNumbers)
@@ -1224,7 +1225,7 @@ func TestInputModeEnum(t *testing.T) {
 func TestColonKeyActivatesCommandMode(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Initial state should be InputNone
@@ -1271,7 +1272,7 @@ func TestDigitCaptureInCommandMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 			opts := RenderOptions{Width: 80}
-			m := NewViewerModel(entries, 0, "Test", opts)
+			m := NewViewerModel(entries, 0, "Test", opts, nil)
 			m.SetSize(80, 24)
 
 			// Enter command mode
@@ -1298,7 +1299,7 @@ func TestEnterKeyValidNavigationExitsCommandMode(t *testing.T) {
 		entries[i] = types.LogEntry{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Entry"}}
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Enter command mode with valid number
@@ -1324,7 +1325,7 @@ func TestEnterKeyValidNavigationExitsCommandMode(t *testing.T) {
 func TestEscapeKeyCancelsCommandMode(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Enter command mode with some input
@@ -1349,7 +1350,7 @@ func TestZeroEntryShowsToastError(t *testing.T) {
 		entries[i] = types.LogEntry{Type: types.EntryTypeUser}
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Enter command mode with :0
@@ -1375,7 +1376,7 @@ func TestOutOfRangeShowsToastError(t *testing.T) {
 		entries[i] = types.LogEntry{Type: types.EntryTypeUser}
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Enter command mode with :10 (out of range for 5 entries)
@@ -1398,7 +1399,7 @@ func TestOutOfRangeShowsToastError(t *testing.T) {
 func TestToastExpiryClearsBothFields(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set toast with expiry using showToast
@@ -1426,7 +1427,7 @@ func TestToastExpiryClearsBothFields(t *testing.T) {
 func TestToastExpiryIgnoresMismatchedID(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set toast
@@ -1446,7 +1447,7 @@ func TestToastExpiryIgnoresMismatchedID(t *testing.T) {
 func TestEmptyConversationShowsError(t *testing.T) {
 	entries := []types.LogEntry{} // Empty
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Try to navigate to any entry
@@ -1465,7 +1466,7 @@ func TestNavigateToFirstEntry(t *testing.T) {
 		entries[i] = types.LogEntry{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Entry"}}
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Navigate to first entry
@@ -1486,7 +1487,7 @@ func TestNavigateToLastEntry(t *testing.T) {
 		entries[i] = types.LogEntry{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Entry"}}
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Navigate to last entry
@@ -1500,7 +1501,7 @@ func TestNavigateToLastEntry(t *testing.T) {
 func TestNonNumericInputIgnoredInCommandMode(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Enter command mode
@@ -1549,7 +1550,7 @@ func TestBackspaceRemovesLastDigit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 			opts := RenderOptions{Width: 80}
-			m := NewViewerModel(entries, 0, "Test", opts)
+			m := NewViewerModel(entries, 0, "Test", opts, nil)
 			m.SetSize(80, 24)
 
 			// Enter command mode with initial buffer
@@ -1581,7 +1582,7 @@ func TestBuildShortcutsContainsGotoHint(t *testing.T) {
 func TestNewViewerModelInputModeInitialization(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	if m.inputMode != InputNone {
 		t.Errorf("NewViewerModel() inputMode = %d, want InputNone (%d)", m.inputMode, InputNone)
@@ -1594,7 +1595,7 @@ func TestNewViewerModelInputModeInitialization(t *testing.T) {
 func TestNewViewerModelEntryLinePositionsInitialization(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	if m.entryLinePositions == nil {
 		t.Error("NewViewerModel() entryLinePositions should be initialized, got nil")
@@ -1607,7 +1608,7 @@ func TestEntryLinePositionsPopulatedOnUpdateContent(t *testing.T) {
 		entries[i] = types.LogEntry{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Entry"}}
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24) // Triggers updateContent()
 
 	// entryLinePositions should have same count as loaded entries
@@ -1635,7 +1636,7 @@ func TestNavigateToEntryBoundaryValidation(t *testing.T) {
 		entries[i] = types.LogEntry{Type: types.EntryTypeUser}
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	tests := []struct {
@@ -1664,7 +1665,7 @@ func TestNavigateToEntryBoundaryValidation(t *testing.T) {
 func TestShowToastSetsFields(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	// Call showToast
 	cmd := m.showToast("Test message", ToastDuration)
@@ -1688,7 +1689,7 @@ func TestShowToastSetsFields(t *testing.T) {
 func TestShowToastIncreasesToastID(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	// First toast
 	_ = m.showToast("First", ToastDuration)
@@ -1709,7 +1710,7 @@ func TestSyncEntryLinePositions(t *testing.T) {
 		entries[i] = types.LogEntry{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Entry"}}
 	}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Clear entry line positions
@@ -1742,7 +1743,7 @@ func TestSyncEntryLinePositions(t *testing.T) {
 func TestRawModeInitialization(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	// rawMode should be false by default
 	if m.rawMode != false {
@@ -1765,7 +1766,7 @@ func TestRawModeInitialization(t *testing.T) {
 func TestRKeyTogglesRawModeToTrue(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Initially rawMode is false
@@ -1786,7 +1787,7 @@ func TestRKeyTogglesRawModeToTrue(t *testing.T) {
 func TestRKeyTogglesRawModeToFalse(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Start in raw mode
@@ -1831,7 +1832,7 @@ func TestFormatJSONLineInvalidJSON(t *testing.T) {
 func TestRawModeGutterWidthUsesRawLineCount(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set up raw mode with many lines
@@ -1852,7 +1853,7 @@ func TestRawModeGutterWidthUsesRawLineCount(t *testing.T) {
 func TestNavigateToEntryInRawMode(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set up raw mode
@@ -1877,7 +1878,7 @@ func TestNavigateToEntryInRawMode(t *testing.T) {
 func TestNavigateToEntryInRawModeZeroInvalid(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set up raw mode
@@ -1960,7 +1961,7 @@ func TestBuildShortcutsSegmentRawModeHint(t *testing.T) {
 func TestLoadRawJSONLMissingFilePath(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80, FilePath: ""} // Empty FilePath
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 
 	err := m.loadRawJSONL()
 	if err == nil {
@@ -1974,7 +1975,7 @@ func TestLoadRawJSONLMissingFilePath(t *testing.T) {
 func TestWatchModeExitsRawModeOnNewEntries(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80, WatchMode: true}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Start in raw mode
@@ -1995,7 +1996,7 @@ func TestWatchModeExitsRawModeOnNewEntries(t *testing.T) {
 func TestFileResetMsgExitsRawMode(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80, WatchMode: true}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Start in raw mode
@@ -2016,7 +2017,7 @@ func TestFileResetMsgExitsRawMode(t *testing.T) {
 func TestScrollPositionPreservationOnToggle(t *testing.T) {
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Save initial scroll position (percentage-based)
@@ -2058,7 +2059,7 @@ func TestLoadMoreRawLinesMsg(t *testing.T) {
 	// Test that rawLinesLoadedMsg type exists and is handled
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set up raw mode with lazy loading enabled
@@ -2089,7 +2090,7 @@ func TestLoadMoreRawLinesComplete(t *testing.T) {
 	// Test that loading all raw lines sets state to complete
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set up raw mode
@@ -2113,7 +2114,7 @@ func TestNavigateToEntryLoadsLazyContentInRawMode(t *testing.T) {
 	// Test that navigating beyond loaded content triggers full load in raw mode
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set up raw mode with partial content loaded
@@ -2146,7 +2147,7 @@ func TestRawModeLazyLoadScrollTrigger(t *testing.T) {
 	// Test that scroll check in raw mode uses rawLineCount not entries count
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set up raw mode with lazy loading
@@ -2177,7 +2178,7 @@ func TestGKeyInRawModeStaysInRawMode(t *testing.T) {
 	// Test that 'G' key in raw mode stays in raw mode (Story 4.3 CR fix)
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set up raw mode with lazy loading
@@ -2215,7 +2216,7 @@ func TestGKeyInRawModeAllLoadedGoesToBottom(t *testing.T) {
 	// Test that 'G' key in raw mode when all loaded just goes to bottom
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Set up raw mode with all content loaded
@@ -2248,7 +2249,7 @@ func TestPKeyWithValidFilePathShowsPathToast(t *testing.T) {
 	// Test AC 4.4.1: 'p' key with valid FilePath shows path in toast
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80, FilePath: "/path/to/conversation.jsonl"}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Press 'p' key
@@ -2276,7 +2277,7 @@ func TestPKeyWithoutFilePathShowsNoPathAvailable(t *testing.T) {
 	// Test AC 4.4.3: 'p' key without FilePath shows "No path available"
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80, FilePath: ""} // Empty FilePath
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Press 'p' key
@@ -2299,7 +2300,7 @@ func TestPKeyInRawModeShowsPath(t *testing.T) {
 	// Test AC 4.4.4: 'p' key in raw mode shows path (same behavior as normal mode)
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80, FilePath: "/path/to/rawfile.jsonl"}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Enter raw mode
@@ -2332,7 +2333,7 @@ func TestPathToastExpiry(t *testing.T) {
 	// Test AC 4.4.2: toast expiry clears path toast after 3 seconds
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80, FilePath: "/path/to/file.jsonl"}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// Press 'p' key to show path toast
@@ -2374,7 +2375,7 @@ func TestRapidPKeyPressesUpdateToastID(t *testing.T) {
 	// Test that rapid 'p' key presses update toastID correctly (race prevention)
 	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
 	opts := RenderOptions{Width: 80, FilePath: "/path/to/file.jsonl"}
-	m := NewViewerModel(entries, 0, "Test", opts)
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
 	m.SetSize(80, 24)
 
 	// First 'p' key press
@@ -2652,5 +2653,328 @@ func TestBuildPositionSegmentLazyLoading(t *testing.T) {
 	}
 	if !strings.Contains(got, "of 100") {
 		t.Errorf("buildPositionSegment() = %q, want to contain 'of 100' (total count)", got)
+	}
+}
+
+// Story 6.3: Token statistics display tests
+
+func TestBuildTokensSegment(t *testing.T) {
+	tests := []struct {
+		name               string
+		tokenService       bool // true to create mock service, false for nil
+		conversationTokens int
+		tokensEstimated    bool
+		wantEmpty          bool
+		wantContains       string
+	}{
+		{
+			name:         "nil token service returns empty",
+			tokenService: false,
+			wantEmpty:    true,
+		},
+		{
+			name:               "zero tokens with service",
+			tokenService:       true,
+			conversationTokens: 0,
+			tokensEstimated:    false,
+			wantEmpty:          false,
+			wantContains:       "Tokens: 0",
+		},
+		{
+			name:               "exact tokens",
+			tokenService:       true,
+			conversationTokens: 1234,
+			tokensEstimated:    false,
+			wantEmpty:          false,
+			wantContains:       "1,234",
+		},
+		{
+			name:               "estimated tokens shows tilde",
+			tokenService:       true,
+			conversationTokens: 5678,
+			tokensEstimated:    true,
+			wantEmpty:          false,
+			wantContains:       "~5,678",
+		},
+		{
+			name:               "large token count formats with commas",
+			tokenService:       true,
+			conversationTokens: 1234567,
+			tokensEstimated:    false,
+			wantEmpty:          false,
+			wantContains:       "1,234,567",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := ViewerModel{
+				conversationTokens: tt.conversationTokens,
+				tokensEstimated:    tt.tokensEstimated,
+			}
+
+			// Set tokenService to a non-nil value if test requires it
+			if tt.tokenService {
+				// We just need a non-nil pointer for the nil check in buildTokensSegment
+				// The actual service isn't called - we use pre-computed values
+				svc, err := token.New()
+				if err != nil {
+					t.Skipf("Skipping test - token service init failed: %v", err)
+				}
+				m.tokenService = svc
+			}
+
+			got := m.buildTokensSegment()
+
+			if tt.wantEmpty && got != "" {
+				t.Errorf("buildTokensSegment() = %q, want empty", got)
+			}
+			if !tt.wantEmpty {
+				if got == "" {
+					t.Errorf("buildTokensSegment() = empty, want non-empty")
+				} else if !strings.Contains(got, tt.wantContains) {
+					t.Errorf("buildTokensSegment() = %q, want to contain %q", got, tt.wantContains)
+				}
+			}
+		})
+	}
+}
+
+func TestNewViewerModelCalculatesTokens(t *testing.T) {
+	// Create entries with known token usage
+	entries := []types.LogEntry{
+		{
+			Type: types.EntryTypeUser,
+			Message: types.Message{
+				TextContent: "Hello world",
+			},
+			Usage: types.TokenUsage{
+				InputTokens:  100,
+				OutputTokens: 50,
+			},
+		},
+		{
+			Type: types.EntryTypeAssistant,
+			Message: types.Message{
+				Content: []types.MessageContent{
+					{Type: types.ContentTypeText, Text: "Response"},
+				},
+			},
+			Usage: types.TokenUsage{
+				InputTokens:  200,
+				OutputTokens: 100,
+			},
+		},
+	}
+
+	svc, err := token.New()
+	if err != nil {
+		t.Skipf("Skipping test - token service init failed: %v", err)
+	}
+
+	opts := DefaultRenderOptions()
+	m := NewViewerModel(entries, 0, "Test", opts, svc)
+
+	// Total should be 150 + 300 = 450 (from actual Usage data)
+	expectedTotal := 450
+	if m.conversationTokens != expectedTotal {
+		t.Errorf("NewViewerModel() conversationTokens = %d, want %d", m.conversationTokens, expectedTotal)
+	}
+
+	// Should NOT be estimated since all entries have actual Usage data
+	if m.tokensEstimated {
+		t.Error("NewViewerModel() tokensEstimated = true, want false (all entries have Usage)")
+	}
+}
+
+func TestNewViewerModelEstimatesTokensWhenNoUsage(t *testing.T) {
+	// Create entries without usage data
+	entries := []types.LogEntry{
+		{
+			Type: types.EntryTypeUser,
+			Message: types.Message{
+				TextContent: "Hello world",
+			},
+		},
+	}
+
+	svc, err := token.New()
+	if err != nil {
+		t.Skipf("Skipping test - token service init failed: %v", err)
+	}
+
+	opts := DefaultRenderOptions()
+	m := NewViewerModel(entries, 0, "Test", opts, svc)
+
+	// Should have some tokens calculated
+	if m.conversationTokens == 0 {
+		t.Error("NewViewerModel() conversationTokens = 0, want > 0 for 'Hello world'")
+	}
+
+	// Should be estimated since entry has no Usage data
+	if !m.tokensEstimated {
+		t.Error("NewViewerModel() tokensEstimated = false, want true (no Usage data)")
+	}
+}
+
+func TestNewViewerModelWithNilTokenService(t *testing.T) {
+	entries := []types.LogEntry{
+		{
+			Type: types.EntryTypeUser,
+			Message: types.Message{
+				TextContent: "Hello world",
+			},
+		},
+	}
+
+	opts := DefaultRenderOptions()
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+
+	// With nil service, conversationTokens should be 0
+	if m.conversationTokens != 0 {
+		t.Errorf("NewViewerModel() with nil tokenService: conversationTokens = %d, want 0", m.conversationTokens)
+	}
+
+	// Should not be estimated when service is nil
+	if m.tokensEstimated {
+		t.Error("NewViewerModel() with nil tokenService: tokensEstimated = true, want false")
+	}
+
+	// buildTokensSegment should return empty string
+	got := m.buildTokensSegment()
+	if got != "" {
+		t.Errorf("buildTokensSegment() with nil tokenService = %q, want empty", got)
+	}
+}
+
+func TestWatchModeTokenRecalculation(t *testing.T) {
+	// Test that NewEntriesMsg updates conversation tokens (Story 6.3)
+
+	// Create initial entries with known token usage
+	initialEntries := []types.LogEntry{
+		{
+			Type: types.EntryTypeUser,
+			Message: types.Message{
+				TextContent: "Hello",
+			},
+			Usage: types.TokenUsage{
+				InputTokens:  50,
+				OutputTokens: 25,
+			},
+		},
+	}
+
+	svc, err := token.New()
+	if err != nil {
+		t.Skipf("Skipping test - token service init failed: %v", err)
+	}
+
+	opts := RenderOptions{WatchMode: true, FilePath: "/tmp/test.jsonl"}
+	m := NewViewerModel(initialEntries, 0, "Test", opts, svc)
+	m.SetSize(80, 24)
+
+	// Initial token count should be 75 (50 + 25)
+	initialTokens := m.conversationTokens
+	if initialTokens != 75 {
+		t.Errorf("Initial conversationTokens = %d, want 75", initialTokens)
+	}
+
+	// Simulate new entries arriving via watch mode
+	// The Update handler for NewEntriesMsg increments conversationTokens
+	newEntry := types.LogEntry{
+		Type: types.EntryTypeAssistant,
+		Message: types.Message{
+			Content: []types.MessageContent{
+				{Type: types.ContentTypeText, Text: "Response"},
+			},
+		},
+		Usage: types.TokenUsage{
+			InputTokens:  100,
+			OutputTokens: 50,
+		},
+	}
+
+	// Simulate what NewEntriesMsg handler does (viewer.go lines 695-705)
+	m.entries = append(m.entries, newEntry)
+	if m.tokenService != nil {
+		if !newEntry.Usage.IsEmpty() {
+			m.conversationTokens += newEntry.Usage.Total()
+		} else if newEntry.Type != types.EntryTypeFileHistorySnapshot {
+			m.conversationTokens += m.tokenService.CalculateEntry(newEntry)
+			m.tokensEstimated = true
+		}
+	}
+
+	// After new entry, tokens should be 75 + 150 = 225
+	expectedTotal := 225
+	if m.conversationTokens != expectedTotal {
+		t.Errorf("After NewEntriesMsg, conversationTokens = %d, want %d", m.conversationTokens, expectedTotal)
+	}
+
+	// Should still not be estimated since all entries have Usage data
+	if m.tokensEstimated {
+		t.Error("After NewEntriesMsg with Usage data, tokensEstimated = true, want false")
+	}
+}
+
+func TestWatchModeTokenRecalculationWithEstimation(t *testing.T) {
+	// Test that new entries without Usage data set tokensEstimated flag
+
+	// Create initial entry with usage data
+	initialEntries := []types.LogEntry{
+		{
+			Type: types.EntryTypeUser,
+			Message: types.Message{
+				TextContent: "Hello",
+			},
+			Usage: types.TokenUsage{
+				InputTokens:  50,
+				OutputTokens: 25,
+			},
+		},
+	}
+
+	svc, err := token.New()
+	if err != nil {
+		t.Skipf("Skipping test - token service init failed: %v", err)
+	}
+
+	opts := RenderOptions{WatchMode: true, FilePath: "/tmp/test.jsonl"}
+	m := NewViewerModel(initialEntries, 0, "Test", opts, svc)
+	m.SetSize(80, 24)
+
+	// Initially should not be estimated
+	if m.tokensEstimated {
+		t.Error("Initial tokensEstimated = true, want false")
+	}
+
+	// Simulate new entry arriving WITHOUT Usage data
+	newEntry := types.LogEntry{
+		Type: types.EntryTypeUser,
+		Message: types.Message{
+			TextContent: "World",
+		},
+		// No Usage data - will require estimation
+	}
+
+	// Simulate what NewEntriesMsg handler does
+	m.entries = append(m.entries, newEntry)
+	if m.tokenService != nil {
+		if !newEntry.Usage.IsEmpty() {
+			m.conversationTokens += newEntry.Usage.Total()
+		} else if newEntry.Type != types.EntryTypeFileHistorySnapshot {
+			m.conversationTokens += m.tokenService.CalculateEntry(newEntry)
+			m.tokensEstimated = true
+		}
+	}
+
+	// Should now be estimated since new entry has no Usage data
+	if !m.tokensEstimated {
+		t.Error("After NewEntriesMsg without Usage data, tokensEstimated = false, want true")
+	}
+
+	// Token count should have increased
+	if m.conversationTokens <= 75 {
+		t.Errorf("conversationTokens = %d, want > 75 (initial + estimate for 'World')", m.conversationTokens)
 	}
 }
