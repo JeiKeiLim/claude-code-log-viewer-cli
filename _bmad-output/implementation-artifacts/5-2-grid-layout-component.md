@@ -562,3 +562,10 @@ N/A - no debug issues encountered
 | LOW | L1: dimColor vs Adaptive.Subtle naming | Functionally equivalent |
 | LOW | L2: Missing test for count > 9 | FIXED - added tests |
 | LOW | L3: Fragile string conversion in test | FIXED - use fmt.Sprintf |
+
+### Post-Review Fix (AI)
+
+**Date:** 2026-01-19
+**Issue:** First row title clipped with top border line
+**Root Cause:** `lipgloss.Height()` is unreliable (documented in docs/lessons-learned.md)
+**Fix:** Replaced `PaneBorderStyle.Height(p.height).Render(inner)` with manual border drawing using `addBorder()` utility function for reliable height control

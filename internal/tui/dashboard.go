@@ -2,6 +2,8 @@
 package tui
 
 import (
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -159,6 +161,8 @@ func calculatePaneDimensions(totalWidth, totalHeight, rows, cols int) (paneWidth
 }
 
 // View renders a single pane with border and project name header.
+// Uses manual border drawing (addBorder) instead of lipgloss.Height() which is unreliable.
+// See docs/lessons-learned.md for details.
 func (p PaneModel) View() string {
 	// Guard against invalid dimensions
 	if p.width < 4 || p.height < 3 {
@@ -175,28 +179,28 @@ func (p PaneModel) View() string {
 		displayName = displayName[:maxNameLen-3] + "..."
 	}
 
-	// Header with project name
+	// Header with project name (centered)
 	header := PaneHeaderStyle.
 		Width(innerWidth).
 		Render(displayName)
 
 	// Content area (empty for Story 5.2)
-	// Height calculation: total - header (1 line) - top/bottom border (2 lines)
-	contentHeight := p.height - 3
+	// Inner height: total - top border (1) - bottom border (1) = total - 2
+	// Content lines: inner height - header (1)
+	innerHeight := p.height - 2
+	contentHeight := innerHeight - 1
 	if contentHeight < 0 {
 		contentHeight = 0
 	}
-	content := lipgloss.NewStyle().
-		Width(innerWidth).
-		Height(contentHeight).
-		Render("")
 
-	// Combine header and content
-	inner := lipgloss.JoinVertical(lipgloss.Left, header, content)
+	// Build inner content: header + empty content lines
+	var lines []string
+	lines = append(lines, header)
+	for i := 0; i < contentHeight; i++ {
+		lines = append(lines, strings.Repeat(" ", innerWidth))
+	}
+	innerContent := strings.Join(lines, "\n")
 
-	// Wrap with border
-	return PaneBorderStyle.
-		Width(p.width).
-		Height(p.height).
-		Render(inner)
+	// Use manual border drawing for reliable height control
+	return addBorder(innerContent, p.width)
 }
