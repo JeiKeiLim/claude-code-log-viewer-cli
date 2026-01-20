@@ -125,3 +125,10 @@ development_status:
   7-6-plain-text-usage-output: done
   7-7-graceful-degradation: done
   epic-7-retrospective: done
+
+  # Epic 8: Plain Mode & Output Enhancements
+  epic-8: backlog
+  8-1-fix-plain-mode-first-line-spaces: backlog
+  8-2-collapsed-indicators-visibility-flags: backlog
+  8-3-streaming-plain-mode: backlog
+  epic-8-retrospective: optional
