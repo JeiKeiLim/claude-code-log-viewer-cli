@@ -168,6 +168,32 @@ cclv --version
 cclv -v
 ```
 
+### Usage Information
+
+Check your Claude Code API usage limits directly from the terminal:
+
+```bash
+# Show current usage (requires Claude Code credentials)
+cclv --usage
+cclv -u
+```
+
+This displays your daily token usage, reset time, and usage percentage. Useful for monitoring limits in scripts or checking before starting long sessions.
+
+### Streaming Plain Mode
+
+For integration with external tools, combine watch and plain modes:
+
+```bash
+# Stream formatted output continuously
+cclv --watch --plain conversation.jsonl
+
+# With color output for tools that support ANSI
+cclv --watch --plain --color=always conversation.jsonl
+```
+
+New entries appear formatted in real-time. The process continues until interrupted with Ctrl+C.
+
 ## Keyboard Shortcuts
 
 ### Project List

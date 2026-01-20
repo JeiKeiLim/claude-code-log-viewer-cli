@@ -131,4 +131,5 @@ development_status:
   8-1-fix-plain-mode-first-line-spaces: done
   8-2-collapsed-indicators-visibility-flags: done
   8-3-streaming-plain-mode: done
-  epic-8-retrospective: optional
+  8-4-graceful-non-conversation-entries: ready-for-dev
+  epic-8-retrospective: done

@@ -79,10 +79,17 @@ coverage: test
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
 
-# Run go vet
+# Run go vet (includes shadow check if available)
 vet:
 	@echo "Running go vet..."
 	$(GOVET) ./...
+	@echo "Checking for shadowed variables..."
+	@if command -v shadow >/dev/null 2>&1; then \
+		shadow ./...; \
+	else \
+		echo "shadow tool not installed, skipping shadow check."; \
+		echo "Install with: go install golang.org/x/tools/go/analysis/passes/shadow/cmd/shadow@latest"; \
+	fi
 
 # Format code
 fmt:

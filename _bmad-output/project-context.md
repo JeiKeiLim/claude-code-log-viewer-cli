@@ -149,6 +149,34 @@ viewProjects → [enter/l] → viewConversations → [enter/l] → viewViewer
      └────────[h/esc]─────────────┴──────────[h/esc]───────────┘
 ```
 
+### ViewerModel Constructor Threading Pattern
+
+ViewerModel uses constructor chaining - specialized constructors call the base constructor:
+
+```go
+// Base constructor - full initialization
+func NewViewerModel(entries, parseErrors, title, opts, tokenSvc) ViewerModel
+
+// Specialized - enables back navigation
+func NewViewerModelWithBack(...) ViewerModel {
+    m := NewViewerModel(...)  // Call base
+    m.canGoBack = true        // Add specialization
+    return m
+}
+
+// Alias for clarity
+func NewViewerModelWithBackNavigation(...) ViewerModel {
+    return NewViewerModelWithBack(...)
+}
+```
+
+**When to use which:**
+- `NewViewerModel` - Pipeline mode, direct file viewing (no back button)
+- `NewViewerModelWithBack` - From conversation list (can go back)
+- `NewViewerModelWithBackNavigation` - Alias, use either name
+
+**Pattern rule:** Always add new ViewerModel features to `NewViewerModel`. Specialized constructors only set flags.
+
 ### Styling Rules
 
 - **NO EMOJI** - Use text icons only: `[U]`, `[A]`, `[T]`, `[>]`
@@ -227,6 +255,7 @@ var BuildDate = "unknown"
 2. **TRUNCATE LIST OUTPUT** - `list.View()` lies about height, always truncate
 3. **USE MAKEFILE** - Never raw `go build/test`, version injection required
 4. **NO NEW DEPENDENCIES** - Constitution V: Charm stack only
+5. **CLI SMOKE TEST REQUIRED** - For any story adding/modifying CLI flags, agent MUST run actual command against real environment before marking done. Unit tests with mocks are not sufficient.
 
 ### Lazy Loading Thresholds
 
@@ -429,5 +458,5 @@ AI agents MUST NOT write meaningless tests to hit coverage:
 
 ---
 
-_Last Updated: 2026-01-19_
+_Last Updated: 2026-01-20_
 
