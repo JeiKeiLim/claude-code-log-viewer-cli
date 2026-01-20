@@ -260,11 +260,10 @@ func runPipelineMode(args []string, mode outputMode, opts tui.RenderOptions) err
 	// Parse the JSONL content
 	result := parser.ParseJSONL(reader)
 
-	if len(result.Entries) == 0 {
-		if result.ParseErrors > 0 {
-			return fmt.Errorf("no valid entries found (%d parse errors)", result.ParseErrors)
-		}
-		return fmt.Errorf("no entries found in input")
+	// Only error if ALL lines failed to parse (ParseErrors > 0 with no entries).
+	// Empty conversation list is OK if JSONL was valid (no parse errors).
+	if len(result.Entries) == 0 && result.ParseErrors > 0 {
+		return fmt.Errorf("no valid entries found (%d parse errors)", result.ParseErrors)
 	}
 
 	// Output based on mode

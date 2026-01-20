@@ -1,6 +1,6 @@
 # Story 8.4: Graceful Handling of Non-Conversation Entries
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -42,76 +42,49 @@ So that **piping mixed log content doesn't cause errors**.
 
 ## Tasks / Subtasks
 
-- [ ] Task 1: Update parser to skip unknown entry types (AC: #1, #3)
-  - [ ] Subtask 1.1: In `internal/parser/entry.go`, modify `ParseEntry()` to return `nil, nil` for unrecognized entries
-  - [ ] Subtask 1.2: In `internal/parser/jsonl.go`, skip nil entries in `ParseJSONL()` loop
-  - [ ] Subtask 1.3: Ensure parse error count does NOT increment for skipped entries
+- [x] Task 1: Update "no entries" error handling in main.go (AC: #2)
+  - [x] Subtask 1.1: In `cmd/cclv/main.go`, remove the "no entries found" error for valid JSONL
+  - [x] Subtask 1.2: Allow empty output (exit 0) when JSONL was valid but had no conversation entries
 
-- [ ] Task 2: Update "no entries" error handling (AC: #2)
-  - [ ] Subtask 2.1: In `cmd/cclv/main.go`, change error condition from "no entries" to "no valid JSONL lines"
-  - [ ] Subtask 2.2: Allow empty output (exit 0) when JSONL was valid but had no conversation entries
-
-- [ ] Task 3: Add tests for non-conversation entry handling (AC: #1-5)
-  - [ ] Subtask 3.1: Add `TestParseEntry_UnknownType_ReturnsNil` in `entry_test.go`
-  - [ ] Subtask 3.2: Add `TestParseJSONL_MixedEntries_SkipsUnknown` in `jsonl_test.go`
-  - [ ] Subtask 3.3: Add `TestParseJSONL_OnlyMetadata_NoError` in `jsonl_test.go`
-  - [ ] Subtask 3.4: Update streaming mode tests if needed
+- [x] Task 2: Add/verify tests for non-conversation entry handling (AC: #1-5)
+  - [x] Subtask 2.1: Add `TestParseJSONL_OnlyMetadata_NoError` in `jsonl_test.go` (if not exists)
+  - [x] Subtask 2.2: CLI smoke test for exit code behavior
 
 ## Dev Notes
 
 ### Root Cause Analysis
 
-**Current behavior in `internal/parser/entry.go`:**
-```go
-func ParseEntry(data []byte) (*types.LogEntry, error) {
-    var raw map[string]interface{}
-    if err := json.Unmarshal(data, &raw); err != nil {
-        return nil, err
-    }
+**IMPORTANT: The parser already handles non-conversation entries correctly.**
 
-    entryType, ok := raw["type"].(string)
-    if !ok {
-        return nil, fmt.Errorf("missing or invalid type field")
-    }
-    // ... switch on entryType
+**Current behavior in `internal/parser/jsonl.go` (lines 44-47):**
+```go
+// Only parse user and assistant entries
+if raw.Type != string(types.EntryTypeUser) && raw.Type != string(types.EntryTypeAssistant) {
+    continue  // Skips silently - no error, no ParseErrors increment
 }
 ```
 
-The `return nil, fmt.Errorf("missing or invalid type field")` causes:
-1. Parse error count to increment
-2. When ALL entries fail, "no entries found" error
+This means AC-1, AC-3, AC-4, and AC-5 are **already satisfied** by the existing code.
+
+**The actual problem is in `cmd/cclv/main.go` (lines 263-268):**
+```go
+if len(result.Entries) == 0 {
+    if result.ParseErrors > 0 {
+        return fmt.Errorf("no valid entries found (%d parse errors)", result.ParseErrors)
+    }
+    return fmt.Errorf("no entries found in input")  // <-- THIS IS THE BUG
+}
+```
+
+When piping JSONL that contains only session metadata (valid JSON, but no conversation entries), this returns exit code 1 with an error message. The fix is to treat empty conversation results as valid when the JSONL itself was valid.
 
 **Fix approach:**
 ```go
-func ParseEntry(data []byte) (*types.LogEntry, error) {
-    var raw map[string]interface{}
-    if err := json.Unmarshal(data, &raw); err != nil {
-        return nil, err // Still return error for invalid JSON
-    }
-
-    entryType, ok := raw["type"].(string)
-    if !ok {
-        // Not a conversation entry - skip silently (not an error)
-        return nil, nil
-    }
-    // ... switch on entryType
+// Remove the "no entries found" error entirely, or only error on parse failures
+if len(result.Entries) == 0 && result.ParseErrors > 0 {
+    return fmt.Errorf("no valid entries found (%d parse errors)", result.ParseErrors)
 }
-```
-
-**In `internal/parser/jsonl.go`:**
-```go
-for scanner.Scan() {
-    entry, err := ParseEntry(scanner.Bytes())
-    if err != nil {
-        result.ParseErrors++
-        continue
-    }
-    if entry == nil {
-        // Skipped entry (non-conversation) - don't count as error
-        continue
-    }
-    result.Entries = append(result.Entries, *entry)
-}
+// Empty entries with no parse errors = valid JSONL with no conversation content = exit 0
 ```
 
 ### Non-Conversation Entry Types
@@ -128,83 +101,45 @@ All lack the `type` field that conversation entries have.
 
 ### Exit Code Logic
 
-**Current (buggy):**
+**Current (buggy) in `cmd/cclv/main.go`:**
 ```go
 if len(result.Entries) == 0 {
-    return fmt.Errorf("no entries found in input")
+    if result.ParseErrors > 0 {
+        return fmt.Errorf("no valid entries found (%d parse errors)", result.ParseErrors)
+    }
+    return fmt.Errorf("no entries found in input")  // Bug: exits 1 for valid JSONL
 }
 ```
 
 **Fixed:**
 ```go
-// Only error if we couldn't parse ANY valid JSONL
-// Empty conversation list is OK if JSONL was valid
-if result.TotalLines == 0 {
-    return fmt.Errorf("no valid JSONL lines in input")
+// Only error if ALL lines failed to parse
+// Empty conversation list is OK if JSONL was valid (no parse errors)
+if len(result.Entries) == 0 && result.ParseErrors > 0 {
+    return fmt.Errorf("no valid entries found (%d parse errors)", result.ParseErrors)
 }
-// len(result.Entries) == 0 is fine - just means no conversation entries
+// len(result.Entries) == 0 with ParseErrors == 0 means valid JSONL with no conversation entries
 ```
 
 ### Files to Modify
 
 | File | Change |
 |------|--------|
-| `internal/parser/entry.go` | Return `nil, nil` for missing type field |
-| `internal/parser/jsonl.go` | Skip nil entries, don't count as error |
-| `cmd/cclv/main.go` | Update "no entries" error logic |
-| `internal/parser/entry_test.go` | Add test for unknown type handling |
-| `internal/parser/jsonl_test.go` | Add tests for mixed/metadata-only input |
+| `cmd/cclv/main.go` | Update "no entries" error logic (only error on parse failures) |
+| `internal/parser/jsonl_test.go` | Add test for metadata-only input (verify no ParseErrors) |
 
 ### Files to NOT Modify
 
+- `internal/parser/entry.go` - Already works correctly (no validation of type field)
+- `internal/parser/jsonl.go` - Already skips non-conversation entries silently
 - `internal/tui/` - No rendering changes needed
 - `internal/watcher/` - Streaming already uses parser, will inherit fix
 - `internal/types/` - No type changes needed
 
 ### Test Strategy
 
+**Parser tests (jsonl_test.go) - verify existing behavior:**
 ```go
-// entry_test.go
-func TestParseEntry_UnknownType_ReturnsNil(t *testing.T) {
-    tests := []struct {
-        name  string
-        input string
-    }{
-        {"session init", `{"parentUuid":"abc","isSidechain":false}`},
-        {"session metadata", `{"cwd":"/foo","timestamp":"2026-01-20"}`},
-        {"empty object", `{}`},
-        {"random fields", `{"foo":"bar","baz":123}`},
-    }
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            entry, err := ParseEntry([]byte(tt.input))
-            if err != nil {
-                t.Errorf("expected no error, got %v", err)
-            }
-            if entry != nil {
-                t.Errorf("expected nil entry for non-conversation JSONL")
-            }
-        })
-    }
-}
-
-// jsonl_test.go
-func TestParseJSONL_MixedEntries_SkipsUnknown(t *testing.T) {
-    input := strings.NewReader(
-        `{"parentUuid":"abc","isSidechain":false}` + "\n" +
-        `{"type":"user","message":{"content":"Hello"}}` + "\n" +
-        `{"cwd":"/foo"}` + "\n",
-    )
-    result := ParseJSONL(input)
-
-    if len(result.Entries) != 1 {
-        t.Errorf("expected 1 conversation entry, got %d", len(result.Entries))
-    }
-    if result.ParseErrors != 0 {
-        t.Errorf("expected 0 parse errors, got %d", result.ParseErrors)
-    }
-}
-
 func TestParseJSONL_OnlyMetadata_NoError(t *testing.T) {
     input := strings.NewReader(
         `{"parentUuid":"abc","isSidechain":false}` + "\n",
@@ -217,9 +152,11 @@ func TestParseJSONL_OnlyMetadata_NoError(t *testing.T) {
     if result.ParseErrors != 0 {
         t.Errorf("expected 0 parse errors, got %d", result.ParseErrors)
     }
-    // Result is valid - no error should occur downstream
+    // This confirms non-conversation entries are skipped without error
 }
 ```
+
+**Note:** `TestParseJSONL_MixedEntries_SkipsUnknown` may already exist - verify before adding.
 
 ### Manual Integration Test
 
@@ -253,25 +190,29 @@ echo '{"type":"user","message":{"role":"user","content":"Test"}}' >> test.jsonl
 ### Previous Story Learnings
 
 From Story 8.3:
-- Parser changes are low-risk
 - Streaming mode inherits parser behavior automatically
 - Test both file and stdin paths
 
+**Validation Finding (2026-01-20):**
+The original story incorrectly analyzed the parser. The parser already skips non-conversation entries silently (jsonl.go lines 44-47). Only the main.go error handling needed correction.
+
 ### Complexity Assessment
 
-**Low complexity** - Parser-only change:
-- Modify return value for unknown entries
-- Skip nil entries in loop
-- Update exit code logic
-- Add tests
+**Very low complexity** - Single file change:
+- Update error condition in `cmd/cclv/main.go` (1 line change)
+- Add/verify test in `jsonl_test.go`
+- CLI smoke test
+
+The parser already handles non-conversation entries correctly. Only the main.go error handling needs adjustment.
 
 ### Expected Commit Format
 
 ```
-fix: handle non-conversation JSONL entries gracefully (Story 8.4)
+fix: allow empty conversation output for valid JSONL (Story 8.4)
 
-Skip session metadata and other non-conversation entries silently
-instead of returning an error. Enables clean piping of mixed logs.
+Remove "no entries found" error when piping JSONL that contains only
+session metadata. Exit 0 when JSONL is valid but has no conversation
+entries. Enables clean piping of mixed logs from vibe-dash.
 
 Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 ```
@@ -283,6 +224,22 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 - [Source: internal/parser/entry.go] - Current ParseEntry implementation
 - [Source: internal/parser/jsonl.go] - Current ParseJSONL implementation
 - [Source: _bmad-output/project-context.md] - Critical rules
+
+## Dev Agent Record
+
+### File List
+
+| File | Change Type | Description |
+|------|-------------|-------------|
+| `cmd/cclv/main.go` | Modified | Updated error handling to allow empty entries with no parse errors (exit 0) |
+| `internal/parser/jsonl_test.go` | Added | New test file with 6 table-driven tests for non-conversation entry handling |
+
+### Change Log
+
+| Date | Change | Reason |
+|------|--------|--------|
+| 2026-01-20 | Updated main.go error condition | AC-2: Allow exit 0 for valid JSONL with no conversation entries |
+| 2026-01-20 | Added jsonl_test.go | AC-1 through AC-5: Verify parser behavior for non-conversation entries |
 
 ### Critical Rules (from project-context.md)
 
