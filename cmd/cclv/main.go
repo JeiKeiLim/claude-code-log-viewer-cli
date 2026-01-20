@@ -3,11 +3,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,6 +23,7 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/tui"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/usage"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
 )
 
 func init() {
@@ -163,6 +167,22 @@ func main() {
 	if watchMode && len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: --watch requires a file path argument (cannot watch stdin)\n")
 		os.Exit(1)
+	}
+
+	// Handle streaming plain mode (--watch --plain)
+	if watchMode && *plainFlag {
+		// Validate and apply width before streaming (color already configured at line 157)
+		validatedWidth := validateWidth(*widthFlag)
+		opts := tui.RenderOptions{
+			HideThoughts: *hideThoughtsFlag,
+			HideTools:    *hideToolsFlag,
+			Width:        validatedWidth,
+		}
+		if err := runStreamingPlainMode(args[0], opts); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// Determine output mode per data-model.md flow:
@@ -344,4 +364,64 @@ func runInteractiveMode() error {
 	}
 
 	return nil
+}
+
+// Polling interval for streaming mode
+const streamingPollInterval = 100 * time.Millisecond
+
+// runStreamingPlainMode outputs formatted entries continuously.
+// It renders existing entries, then watches for new ones.
+func runStreamingPlainMode(filePath string, opts tui.RenderOptions) error {
+	// 1. Parse and render existing entries
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path: %w", err)
+	}
+	file, err := os.Open(absPath)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+
+	result := parser.ParseJSONL(file)
+	endPos, _ := file.Seek(0, io.SeekCurrent)
+	_ = file.Close()
+
+	source := filepath.Base(filePath)
+	output := tui.RenderPlain(result.Entries, source, opts)
+	fmt.Print(output)
+	_ = os.Stdout.Sync()
+
+	// 2. Create watcher starting from current position
+	w, err := watcher.NewWithPosition(absPath, endPos)
+	if err != nil {
+		return fmt.Errorf("failed to create watcher: %w", err)
+	}
+	defer w.Close()
+
+	// 3. Set up signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// 4. Event loop using watcher's exported method
+	for {
+		select {
+		case <-sigChan:
+			signal.Stop(sigChan)
+			return nil // Clean exit
+		default:
+			entries, err := w.ReadNewEntries()
+			if err != nil {
+				if errors.Is(err, watcher.ErrFileTruncated) {
+					// File reset - not an error for streaming, continue watching
+					continue
+				}
+				return err
+			}
+			for _, entry := range entries {
+				fmt.Print(tui.RenderEntryPlain(entry, opts))
+				_ = os.Stdout.Sync()
+			}
+			time.Sleep(streamingPollInterval)
+		}
+	}
 }

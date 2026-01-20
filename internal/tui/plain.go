@@ -34,6 +34,18 @@ func RenderPlain(entries []types.LogEntry, source string, opts RenderOptions) st
 	return b.String()
 }
 
+// RenderEntryPlain renders a single log entry for plain text output.
+// Used by streaming mode to render entries individually.
+// Width is validated: if opts.Width is 0, DefaultPlainModeWidth is used.
+func RenderEntryPlain(entry types.LogEntry, opts RenderOptions) string {
+	width := opts.Width
+	if width == 0 {
+		width = DefaultPlainModeWidth
+	}
+	rendered := renderEntryPlain(entry, opts, width)
+	return rendered + "\n"
+}
+
 // renderEntryPlain renders a single log entry for plain text output.
 func renderEntryPlain(entry types.LogEntry, opts RenderOptions, width int) string {
 	switch entry.Type {

@@ -26,9 +26,10 @@ type Watcher struct {
 	closed      bool
 }
 
-// New creates a new file watcher for the given file path.
-// The watcher starts at the current end of file (skips existing content).
-func New(filePath string) (*Watcher, error) {
+// NewWithPosition creates a watcher starting from a specific file position.
+// Use position=0 to read from beginning (for streaming mode initial read).
+// Use position=fileSize to skip existing content (for TUI watch mode).
+func NewWithPosition(filePath string, position int64) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -37,17 +38,21 @@ func New(filePath string) (*Watcher, error) {
 		_ = fsw.Close()
 		return nil, err
 	}
-	// Initialize lastReadPos to current file size (skip existing content)
-	stat, err := os.Stat(filePath)
-	if err != nil {
-		_ = fsw.Close()
-		return nil, err
-	}
 	return &Watcher{
 		filePath:    filePath,
 		fsWatcher:   fsw,
-		lastReadPos: stat.Size(),
+		lastReadPos: position,
 	}, nil
+}
+
+// New creates a new file watcher for the given file path.
+// The watcher starts at the current end of file (skips existing content).
+func New(filePath string) (*Watcher, error) {
+	stat, err := os.Stat(filePath)
+	if err != nil {
+		return nil, err
+	}
+	return NewWithPosition(filePath, stat.Size())
 }
 
 // WaitForEvent returns a tea.Cmd that blocks until a file event occurs.
@@ -126,6 +131,12 @@ func (w *Watcher) readNewEntries() ([]types.LogEntry, error) {
 	w.lastReadPos = newPos
 
 	return result.Entries, nil
+}
+
+// ReadNewEntries reads and parses any new content appended to the file.
+// Exported for streaming plain mode. Returns ErrFileTruncated if file was truncated.
+func (w *Watcher) ReadNewEntries() ([]types.LogEntry, error) {
+	return w.readNewEntries()
 }
 
 // Close releases all resources associated with the watcher.

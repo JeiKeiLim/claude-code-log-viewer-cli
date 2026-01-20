@@ -268,3 +268,153 @@ func TestWaitForEvent(t *testing.T) {
 		t.Fatal("timeout waiting for file event")
 	}
 }
+
+// TestNewWithPosition tests the position-aware constructor for streaming mode (Story 8.3).
+func TestNewWithPosition(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	// Write initial content
+	initialContent := `{"type":"user","message":{"role":"user","content":"test"},"timestamp":"2026-01-16T10:00:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	pos := int64(len(initialContent))
+	w, err := NewWithPosition(testFile, pos)
+	if err != nil {
+		t.Fatalf("NewWithPosition failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Verify position was set correctly
+	w.mu.Lock()
+	if w.lastReadPos != pos {
+		t.Errorf("expected lastReadPos=%d, got %d", pos, w.lastReadPos)
+	}
+	w.mu.Unlock()
+
+	// Verify watcher fields are set
+	if w.filePath != testFile {
+		t.Errorf("expected filePath=%s, got %s", testFile, w.filePath)
+	}
+	if w.fsWatcher == nil {
+		t.Error("fsWatcher should not be nil")
+	}
+}
+
+// TestNewWithPosition_ZeroPosition tests starting from beginning of file.
+func TestNewWithPosition_ZeroPosition(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	// Write initial content
+	initialContent := `{"type":"user","message":{"role":"user","content":"test"},"timestamp":"2026-01-16T10:00:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Position 0 should read from beginning
+	w, err := NewWithPosition(testFile, 0)
+	if err != nil {
+		t.Fatalf("NewWithPosition(0) failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	w.mu.Lock()
+	if w.lastReadPos != 0 {
+		t.Errorf("expected lastReadPos=0, got %d", w.lastReadPos)
+	}
+	w.mu.Unlock()
+
+	// Reading should return the existing content
+	entries, err := w.ReadNewEntries()
+	if err != nil {
+		t.Fatalf("ReadNewEntries failed: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 entry from beginning, got %d", len(entries))
+	}
+}
+
+// TestReadNewEntries_Exported tests the exported ReadNewEntries method for streaming mode.
+func TestReadNewEntries_Exported(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	// Write initial content
+	initialContent := `{"type":"user","message":{"role":"user","content":"initial"},"timestamp":"2026-01-16T10:00:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Start watching from end (skip initial content)
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Initially no new entries
+	entries, err := w.ReadNewEntries()
+	if err != nil {
+		t.Fatalf("ReadNewEntries failed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries initially, got %d", len(entries))
+	}
+
+	// Append new content
+	newContent := `{"type":"user","message":{"role":"user","content":"new message"},"timestamp":"2026-01-16T10:01:00Z"}
+`
+	f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open file for append: %v", err)
+	}
+	if _, err := f.WriteString(newContent); err != nil {
+		t.Fatalf("failed to append to file: %v", err)
+	}
+	_ = f.Close()
+
+	// Should now read the new entry
+	entries, err = w.ReadNewEntries()
+	if err != nil {
+		t.Fatalf("ReadNewEntries failed: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 new entry, got %d", len(entries))
+	}
+	if len(entries) > 0 && entries[0].Message.TextContent != "new message" {
+		t.Errorf("expected content 'new message', got %q", entries[0].Message.TextContent)
+	}
+}
+
+// TestNewUsesNewWithPosition verifies that New() correctly delegates to NewWithPosition().
+func TestNewUsesNewWithPosition(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	// Write initial content
+	initialContent := `{"type":"user","message":{"role":"user","content":"test"},"timestamp":"2026-01-16T10:00:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// New() should set lastReadPos to file size (end of file)
+	expectedPos := int64(len(initialContent))
+	w.mu.Lock()
+	if w.lastReadPos != expectedPos {
+		t.Errorf("New() should set lastReadPos to file size, expected %d, got %d", expectedPos, w.lastReadPos)
+	}
+	w.mu.Unlock()
+}

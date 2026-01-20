@@ -520,3 +520,165 @@ func TestRenderUsagePlainColorModes(t *testing.T) {
 		}
 	})
 }
+
+// TestRenderEntryPlain tests the exported single-entry rendering function.
+// Used by streaming mode to render entries individually (Story 8.3).
+func TestRenderEntryPlain(t *testing.T) {
+	tests := []struct {
+		name     string
+		entry    types.LogEntry
+		opts     RenderOptions
+		contains []string
+	}{
+		{
+			name: "user message with default width",
+			entry: types.LogEntry{
+				Type:      types.EntryTypeUser,
+				Timestamp: time.Now(),
+				Message:   types.Message{TextContent: "Hello world"},
+			},
+			opts:     RenderOptions{Width: 0}, // Should use default
+			contains: []string{UserIcon, "Hello world"},
+		},
+		{
+			name: "user message with explicit width",
+			entry: types.LogEntry{
+				Type:      types.EntryTypeUser,
+				Timestamp: time.Now(),
+				Message:   types.Message{TextContent: "Test message"},
+			},
+			opts:     RenderOptions{Width: 100},
+			contains: []string{UserIcon, "Test message"},
+		},
+		{
+			name: "assistant with text content",
+			entry: types.LogEntry{
+				Type:      types.EntryTypeAssistant,
+				Timestamp: time.Now(),
+				Message: types.Message{
+					Content: []types.MessageContent{
+						{Type: types.ContentTypeText, Text: "Response text"},
+					},
+				},
+			},
+			opts:     RenderOptions{Width: 80},
+			contains: []string{AssistantIcon, "Response text"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := RenderEntryPlain(tt.entry, tt.opts)
+
+			for _, want := range tt.contains {
+				if !strings.Contains(output, want) {
+					t.Errorf("output missing %q, got:\n%s", want, output)
+				}
+			}
+
+			// Must end with newline for streaming mode line buffering
+			if !strings.HasSuffix(output, "\n") {
+				t.Error("RenderEntryPlain must end with newline for streaming mode")
+			}
+		})
+	}
+}
+
+// TestRenderEntryPlain_WithVisibilityFlags tests visibility flags work per AC-4.
+func TestRenderEntryPlain_WithVisibilityFlags(t *testing.T) {
+	entry := types.LogEntry{
+		Type:      types.EntryTypeAssistant,
+		Timestamp: time.Now(),
+		Message: types.Message{
+			Content: []types.MessageContent{
+				{Type: types.ContentTypeThinking, Thinking: "secret thinking"},
+				{
+					Type:      types.ContentTypeToolUse,
+					ToolName:  "Bash",
+					ToolInput: map[string]any{"command": "ls -la"},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name           string
+		opts           RenderOptions
+		wantContains   []string
+		wantNotContain []string
+	}{
+		{
+			name:           "hide thoughts shows collapsed indicator",
+			opts:           RenderOptions{Width: 80, HideThoughts: true},
+			wantContains:   []string{"[thinking collapsed]"},
+			wantNotContain: []string{"secret thinking"},
+		},
+		{
+			name:           "hide tools shows tool name but not input",
+			opts:           RenderOptions{Width: 80, HideTools: true},
+			wantContains:   []string{"Bash"},
+			wantNotContain: []string{"\"command\""},
+		},
+		{
+			name:           "both hidden shows both collapsed",
+			opts:           RenderOptions{Width: 80, HideThoughts: true, HideTools: true},
+			wantContains:   []string{"[thinking collapsed]", "Bash"},
+			wantNotContain: []string{"secret thinking", "\"command\""},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := RenderEntryPlain(entry, tt.opts)
+
+			for _, want := range tt.wantContains {
+				if !strings.Contains(output, want) {
+					t.Errorf("output should contain %q, got:\n%s", want, output)
+				}
+			}
+
+			for _, notWant := range tt.wantNotContain {
+				if strings.Contains(output, notWant) {
+					t.Errorf("output should NOT contain %q, got:\n%s", notWant, output)
+				}
+			}
+		})
+	}
+}
+
+// TestRenderEntryPlain_WithWidth tests width flag works per AC-5.
+func TestRenderEntryPlain_WithWidth(t *testing.T) {
+	// Create entry with long text that would wrap differently at different widths
+	longText := strings.Repeat("word ", 50) // 250 chars
+	entry := types.LogEntry{
+		Type:      types.EntryTypeUser,
+		Timestamp: time.Now(),
+		Message:   types.Message{TextContent: longText},
+	}
+
+	tests := []struct {
+		name  string
+		width int
+	}{
+		{"width 60", 60},
+		{"width 120", 120},
+		{"default width 0", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := RenderOptions{Width: tt.width}
+			output := RenderEntryPlain(entry, opts)
+
+			if len(output) == 0 {
+				t.Error("RenderEntryPlain returned empty output")
+			}
+
+			// Verify text wrapping occurred (multiple lines)
+			lines := strings.Split(output, "\n")
+			if len(lines) < 3 {
+				t.Errorf("expected wrapped output with multiple lines, got %d", len(lines))
+			}
+		})
+	}
+}

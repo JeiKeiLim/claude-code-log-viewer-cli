@@ -127,8 +127,8 @@ development_status:
   epic-7-retrospective: done
 
   # Epic 8: Plain Mode & Output Enhancements
-  epic-8: in-progress
+  epic-8: done
   8-1-fix-plain-mode-first-line-spaces: done
   8-2-collapsed-indicators-visibility-flags: done
-  8-3-streaming-plain-mode: backlog
+  8-3-streaming-plain-mode: done
   epic-8-retrospective: optional
