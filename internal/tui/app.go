@@ -2,8 +2,11 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +16,7 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/token"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/usage"
 )
 
 // viewState represents the current view in the application.
@@ -50,6 +54,24 @@ type AppModel struct {
 	spinner              spinner.Model
 	loading              bool
 	tokenService         *token.Service
+
+	// Usage monitoring (Story 7.4)
+	usageBar    *usage.UsageBarModel
+	usageClient *usage.Client
+}
+
+// newUsageBarStyles creates the usage bar styles from the TUI style exports (Story 7.4).
+func newUsageBarStyles() usage.UsageBarStyles {
+	stylesExport := GetUsageBarStyles()
+	return usage.UsageBarStyles{
+		Container: stylesExport.Container,
+		Label:     stylesExport.Label,
+		Normal:    stylesExport.Normal,
+		Warning:   stylesExport.Warning,
+		Critical:  stylesExport.Critical,
+		Dimmed:    stylesExport.Dimmed,
+		Stale:     stylesExport.Stale,
+	}
 }
 
 // NewAppModel creates a new application model with the project browser.
@@ -70,6 +92,8 @@ func NewAppModel(projects []types.Project) AppModel {
 		spinner:      s,
 		loading:      false,
 		tokenService: tokenSvc,
+		usageBar:     usage.NewUsageBarModel(newUsageBarStyles()),
+		usageClient:  usage.NewClient(),
 	}
 }
 
@@ -91,13 +115,16 @@ func NewAppModelWithError(err error) AppModel {
 		spinner:      s,
 		loading:      false,
 		tokenService: tokenSvc,
+		usageBar:     usage.NewUsageBarModel(newUsageBarStyles()),
+		usageClient:  usage.NewClient(),
 	}
 }
 
 // Init implements tea.Model.
 func (m AppModel) Init() tea.Cmd {
 	// Request window size to properly initialize the list dimensions
-	return tea.Batch(m.projectModel.Init(), tea.WindowSize())
+	// Add usage fetch on startup (Story 7.4 - async, non-blocking)
+	return tea.Batch(m.projectModel.Init(), tea.WindowSize(), m.fetchUsage())
 }
 
 // Update implements tea.Model.
@@ -126,26 +153,34 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Forward to current view
+
+		// Update usage bar width (Story 7.4)
+		m.usageBar.SetWidth(msg.Width)
+
+		// Calculate available height for child views (Story 7.4)
+		viewHeight := msg.Height - UsageBarHeight
+		childMsg := tea.WindowSizeMsg{Width: msg.Width, Height: viewHeight}
+
+		// Forward adjusted size to current view
 		switch m.state {
 		case viewProjects:
 			var cmd tea.Cmd
-			newModel, cmd := m.projectModel.Update(msg)
+			newModel, cmd := m.projectModel.Update(childMsg)
 			m.projectModel = newModel.(ProjectModel)
 			return m, cmd
 		case viewConversations:
 			var cmd tea.Cmd
-			newModel, cmd := m.conversationModel.Update(msg)
+			newModel, cmd := m.conversationModel.Update(childMsg)
 			m.conversationModel = newModel.(ConversationModel)
 			return m, cmd
 		case viewViewer:
 			var cmd tea.Cmd
-			newModel, cmd := m.viewerModel.Update(msg)
+			newModel, cmd := m.viewerModel.Update(childMsg)
 			m.viewerModel = newModel.(ViewerModel)
 			return m, cmd
 		case viewDashboard:
 			var cmd tea.Cmd
-			newModel, cmd := m.dashboardModel.Update(msg)
+			newModel, cmd := m.dashboardModel.Update(childMsg)
 			m.dashboardModel = newModel.(DashboardModel)
 			return m, cmd
 		}
@@ -164,10 +199,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Calculate adjusted height for child views (Story 7.4)
+		viewHeight := m.height - UsageBarHeight
+
 		if len(msg.conversations) == 0 {
 			// No conversations - show empty conversation list
 			m.conversationModel = NewConversationModel(msg.conversations, m.selectedProject.DisplayName)
-			m.conversationModel.SetSize(m.width, m.height)
+			m.conversationModel.SetSize(m.width, viewHeight)
 			m.state = viewConversations
 			return m, nil
 		}
@@ -179,7 +217,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.lazyEnabled,
 			msg.loadedCount,
 		)
-		m.conversationModel.SetSize(m.width, m.height)
+		m.conversationModel.SetSize(m.width, viewHeight)
 		m.state = viewConversations
 		return m, nil
 
@@ -210,10 +248,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Handle error - stay on conversation list
 			return m, nil
 		}
+		// Calculate adjusted height for child views (Story 7.4)
+		viewHeight := m.height - UsageBarHeight
 		title := m.buildConversationTitle()
 		opts := RenderOptions{FilePath: msg.filePath}
 		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, opts, m.tokenService)
-		m.viewerModel.SetSize(m.width, m.height)
+		m.viewerModel.SetSize(m.width, viewHeight)
 		m.state = viewViewer
 		return m, nil
 
@@ -224,10 +264,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Handle error - stay on conversation list
 			return m, nil
 		}
+		// Calculate adjusted height for child views (Story 7.4)
+		viewHeight := m.height - UsageBarHeight
 		title := m.buildConversationTitle()
 		opts := RenderOptions{WatchMode: true, FilePath: msg.filePath}
 		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, opts, m.tokenService)
-		m.viewerModel.SetSize(m.width, m.height)
+		m.viewerModel.SetSize(m.width, viewHeight)
 		m.state = viewViewer
 		return m, m.viewerModel.Init() // Return Init() to start watcher
 
@@ -257,7 +299,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedProjects = msg.Projects
 		var cmd tea.Cmd
 		m.dashboardModel, cmd = NewDashboardModel(msg.Projects)
-		m.dashboardModel.SetSize(m.width, m.height)
+		// Calculate adjusted height for child views (Story 7.4)
+		viewHeight := m.height - UsageBarHeight
+		m.dashboardModel.SetSize(m.width, viewHeight)
 		m.state = viewDashboard
 		return m, cmd
 
@@ -280,6 +324,27 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ShowToastMsg:
 		// For now, we just ignore toast messages since project view doesn't have toast UI
 		// TODO: Add toast UI to project view or AppModel in future stories
+		return m, nil
+
+	case usageFetchedMsg:
+		// Handle usage fetch result (Story 7.4)
+		if msg.err != nil {
+			// Handle specific error types
+			if errors.Is(msg.err, usage.ErrNoCredentials) ||
+				errors.Is(msg.err, usage.ErrKeychainNotFound) ||
+				errors.Is(msg.err, usage.ErrKeychainTimeout) {
+				m.usageBar.SetNotLoggedIn()
+			} else if errors.Is(msg.err, usage.ErrTokenExpired) {
+				m.usageBar.SetError("Session expired")
+			} else if msg.limits != nil {
+				// Error but have stale data
+				m.usageBar.SetLimits(msg.limits, true)
+			} else {
+				m.usageBar.SetError("Usage unavailable")
+			}
+		} else {
+			m.usageBar.SetLimits(msg.limits, msg.stale)
+		}
 		return m, nil
 	}
 
@@ -316,21 +381,28 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View implements tea.Model.
 func (m AppModel) View() string {
+	// Render usage bar at top (Story 7.4)
+	usageBarView := m.usageBar.View()
+
+	var contentView string
 	if m.loading {
-		return m.loadingView()
+		contentView = m.loadingView()
+	} else {
+		switch m.state {
+		case viewProjects:
+			contentView = m.projectModel.View()
+		case viewConversations:
+			contentView = m.conversationModel.View()
+		case viewViewer:
+			contentView = m.viewerModel.View()
+		case viewDashboard:
+			contentView = m.dashboardModel.View()
+		default:
+			contentView = m.projectModel.View()
+		}
 	}
-	switch m.state {
-	case viewProjects:
-		return m.projectModel.View()
-	case viewConversations:
-		return m.conversationModel.View()
-	case viewViewer:
-		return m.viewerModel.View()
-	case viewDashboard:
-		return m.dashboardModel.View()
-	default:
-		return m.projectModel.View()
-	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, usageBarView, contentView)
 }
 
 // loadingView renders the spinner during loading operations.
@@ -340,8 +412,10 @@ func (m AppModel) loadingView() string {
 	if m.width == 0 || m.height == 0 {
 		return loadingText
 	}
+	// Calculate available height for content (excluding usage bar - Story 7.4)
+	viewHeight := m.height - UsageBarHeight
 	return lipgloss.Place(
-		m.width, m.height,
+		m.width, viewHeight,
 		lipgloss.Center, lipgloss.Center,
 		loadingText,
 	)
@@ -368,6 +442,29 @@ type conversationLoadedWithWatchMsg struct {
 	parseErrors int
 	err         error
 	filePath    string
+}
+
+// usageFetchedMsg carries the result of a usage API fetch (Story 7.4).
+type usageFetchedMsg struct {
+	limits *usage.UsageLimits
+	stale  bool
+	err    error
+}
+
+// fetchUsage returns a command that fetches usage asynchronously (Story 7.4).
+func (m AppModel) fetchUsage() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		token, err := usage.GetOAuthToken()
+		if err != nil {
+			return usageFetchedMsg{err: err}
+		}
+
+		limits, stale, err := m.usageClient.FetchUsage(ctx, token)
+		return usageFetchedMsg{limits: limits, stale: stale, err: err}
+	}
 }
 
 // loadConversations loads conversations for the selected project.
@@ -457,4 +554,9 @@ func (m AppModel) loadConversationWithWatch(filePath string) tea.Cmd {
 			filePath:    filePath,
 		}
 	}
+}
+
+// UsageBarState returns the current state of the usage bar for testing (Story 7.4).
+func (m AppModel) UsageBarState() usage.UsageBarState {
+	return m.usageBar.State()
 }

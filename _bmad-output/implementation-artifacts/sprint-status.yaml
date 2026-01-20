@@ -119,8 +119,8 @@ development_status:
   epic-7: in-progress
   7-1-oauth-credential-access: done
   7-2-usage-api-client: done
-  7-3-usage-bar-component: backlog
-  7-4-app-model-wrapper: backlog
+  7-3-usage-bar-component: done
+  7-4-app-model-wrapper: done
   7-5-usage-bar-refresh: backlog
   7-6-plain-text-usage-output: done
   7-7-graceful-degradation: backlog
