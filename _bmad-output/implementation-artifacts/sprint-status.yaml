@@ -122,6 +122,6 @@ development_status:
   7-3-usage-bar-component: backlog
   7-4-app-model-wrapper: backlog
   7-5-usage-bar-refresh: backlog
-  7-6-plain-text-usage-output: backlog
+  7-6-plain-text-usage-output: done
   7-7-graceful-degradation: backlog
   epic-7-retrospective: optional

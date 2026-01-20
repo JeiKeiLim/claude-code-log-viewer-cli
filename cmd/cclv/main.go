@@ -2,11 +2,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -16,6 +18,7 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/tui"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/usage"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version"
 )
 
@@ -41,6 +44,7 @@ OPTIONS:
   --width=N         Set rendering width (40-500, 0=auto)
   --watch           Watch file for changes (real-time monitoring)
   --live            Alias for --watch
+  -u, --usage       Print usage limits and exit (no TUI)
   -v, --version     Print version information
   -h, --help        Show this help message
 
@@ -53,6 +57,8 @@ EXAMPLES:
   cclv --width=100 file.jsonl             Fixed 100-char width
   cclv --color=always file.jsonl | less -R  Force colors in pipe
   cclv --watch conversation.jsonl           Monitor live session
+  cclv --usage                              Quick check on limits
+  cclv -u                                   Shorthand for --usage
 
 KEYBOARD SHORTCUTS (TUI mode):
   Navigation:   j/k             Move up/down
@@ -121,6 +127,8 @@ func main() {
 	widthFlag := flag.Int("width", 0, "Override rendering width (0=auto-detect)")
 	watchFlag := flag.Bool("watch", false, "Watch file for changes (real-time monitoring)")
 	liveFlag := flag.Bool("live", false, "Alias for --watch")
+	usageFlag := flag.Bool("usage", false, "Print usage limits and exit")
+	usageShortFlag := flag.Bool("u", false, "Print usage limits and exit (shorthand)")
 	flag.Parse()
 
 	// Combine watch flags
@@ -129,6 +137,15 @@ func main() {
 	// Handle version flag - print and exit before any other processing
 	if *versionFlag || *versionShortFlag {
 		fmt.Println(version.String())
+		os.Exit(0)
+	}
+
+	// Handle usage flag - print usage limits and exit
+	if *usageFlag || *usageShortFlag {
+		if err := runUsageMode(*colorFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 
@@ -266,6 +283,33 @@ func configureColorOutput(colorMode string) {
 		// Invalid option, treat as auto
 		fmt.Fprintf(os.Stderr, "Warning: invalid --color value '%s', using 'auto'\n", colorMode)
 	}
+}
+
+// runUsageMode fetches and displays usage limits in plain text.
+func runUsageMode(colorMode string) error {
+	// Configure color output first
+	configureColorOutput(colorMode)
+
+	// Get OAuth token
+	token, err := usage.GetOAuthToken()
+	if err != nil {
+		return err
+	}
+
+	// Create client and fetch usage
+	client := usage.NewClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	limits, _, err := client.FetchUsage(ctx, token)
+	if err != nil {
+		return err
+	}
+
+	// Render and print
+	output := tui.RenderUsagePlain(limits)
+	fmt.Print(output)
+	return nil
 }
 
 // runInteractiveMode launches the interactive project browser.

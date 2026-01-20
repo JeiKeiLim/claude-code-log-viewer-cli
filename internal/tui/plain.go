@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/usage"
 )
 
 // RenderPlain renders log entries as plain text with ANSI colors for terminal output.
@@ -130,4 +132,64 @@ func formatToolInputPlain(input map[string]any) string {
 	}
 
 	return string(data)
+}
+
+// RenderUsagePlain renders usage limits as plain text for CLI output.
+// It respects the color settings configured via configureColorOutput().
+func RenderUsagePlain(limits *usage.UsageLimits) string {
+	var b strings.Builder
+
+	b.WriteString(Styles.Title.Render("Claude Code Usage") + "\n")
+
+	if limits.FiveHour != nil {
+		resetStr := ""
+		if limits.FiveHour.ResetsAt != nil {
+			remaining := time.Until(*limits.FiveHour.ResetsAt)
+			if remaining > 0 {
+				resetStr = fmt.Sprintf(" (resets in %s)", formatResetDuration(remaining))
+			}
+		}
+		b.WriteString(fmt.Sprintf("  5-hour:  %.0f%%%s\n",
+			limits.FiveHour.Utilization, resetStr))
+	}
+
+	if limits.SevenDay != nil {
+		b.WriteString(fmt.Sprintf("  7-day:   %.0f%%\n",
+			limits.SevenDay.Utilization))
+	}
+
+	// Only show Opus if utilization > 0 (most users don't have Opus quota)
+	if limits.SevenDayOpus != nil && limits.SevenDayOpus.Utilization > 0 {
+		b.WriteString(fmt.Sprintf("  Opus:    %.0f%%\n",
+			limits.SevenDayOpus.Utilization))
+	}
+
+	return b.String()
+}
+
+// formatResetDuration converts duration to human-readable format for usage reset times.
+// Input examples and expected outputs:
+//   - 0 or negative → "" (empty string)
+//   - 30s → "<1m"
+//   - 45*time.Minute → "45m"
+//   - 2*time.Hour + 15*time.Minute → "2h 15m"
+//   - 3*time.Hour → "3h"
+func formatResetDuration(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	if d < time.Minute {
+		return "<1m"
+	}
+
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+
+	if hours > 0 && minutes > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dm", minutes)
 }

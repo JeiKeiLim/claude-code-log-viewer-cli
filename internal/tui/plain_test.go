@@ -5,7 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/usage"
 )
 
 func TestRenderPlainWithWidth(t *testing.T) {
@@ -153,4 +157,190 @@ func TestRenderPlainWithHideOptions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// timePtr is a helper to create time.Time pointers for tests.
+func timePtr(t time.Time) *time.Time {
+	return &t
+}
+
+func TestRenderUsagePlain(t *testing.T) {
+	// Use a fixed reference time for consistent test results
+	now := time.Now()
+
+	tests := []struct {
+		name        string
+		limits      *usage.UsageLimits
+		wantContain []string
+		wantExclude []string
+	}{
+		{
+			name: "typical usage with reset time",
+			limits: &usage.UsageLimits{
+				FiveHour: &usage.UsageWindow{Utilization: 35.0, ResetsAt: timePtr(now.Add(2*time.Hour + 16*time.Minute))}, // +16m to tolerate test execution time
+				SevenDay: &usage.UsageWindow{Utilization: 12.0},
+			},
+			wantContain: []string{"Claude Code Usage", "5-hour:", "35%", "resets in", "2h", "7-day:", "12%"}, // Check "2h" not exact "2h 15m"
+			wantExclude: []string{"Opus:"},
+		},
+		{
+			name: "no reset time (nil)",
+			limits: &usage.UsageLimits{
+				FiveHour: &usage.UsageWindow{Utilization: 50.0, ResetsAt: nil},
+				SevenDay: &usage.UsageWindow{Utilization: 25.0},
+			},
+			wantContain: []string{"5-hour:", "50%", "7-day:", "25%"},
+			wantExclude: []string{"resets in", "Opus:"},
+		},
+		{
+			name: "reset time in past (should not show reset)",
+			limits: &usage.UsageLimits{
+				FiveHour: &usage.UsageWindow{Utilization: 60.0, ResetsAt: timePtr(now.Add(-5 * time.Minute))},
+				SevenDay: &usage.UsageWindow{Utilization: 30.0},
+			},
+			wantContain: []string{"5-hour:", "60%", "7-day:", "30%"},
+			wantExclude: []string{"resets in"},
+		},
+		{
+			name: "with Opus (non-zero)",
+			limits: &usage.UsageLimits{
+				FiveHour:     &usage.UsageWindow{Utilization: 10.0},
+				SevenDay:     &usage.UsageWindow{Utilization: 5.0},
+				SevenDayOpus: &usage.UsageWindow{Utilization: 2.0},
+			},
+			wantContain: []string{"5-hour:", "10%", "7-day:", "5%", "Opus:", "2%"},
+		},
+		{
+			name: "Opus at zero (hidden)",
+			limits: &usage.UsageLimits{
+				FiveHour:     &usage.UsageWindow{Utilization: 10.0},
+				SevenDay:     &usage.UsageWindow{Utilization: 5.0},
+				SevenDayOpus: &usage.UsageWindow{Utilization: 0.0},
+			},
+			wantContain: []string{"5-hour:", "10%", "7-day:", "5%"},
+			wantExclude: []string{"Opus:"},
+		},
+		{
+			name: "percentage rounding - uses Go banker's rounding",
+			limits: &usage.UsageLimits{
+				FiveHour: &usage.UsageWindow{Utilization: 35.5}, // 35.5 rounds to 36 (even)
+				SevenDay: &usage.UsageWindow{Utilization: 34.6}, // 34.6 rounds to 35
+			},
+			wantContain: []string{"5-hour:", "36%", "7-day:", "35%"},
+		},
+		{
+			name: "nil FiveHour (edge case)",
+			limits: &usage.UsageLimits{
+				FiveHour: nil,
+				SevenDay: &usage.UsageWindow{Utilization: 20.0},
+			},
+			wantContain: []string{"Claude Code Usage", "7-day:", "20%"},
+			wantExclude: []string{"5-hour:"},
+		},
+		{
+			name: "nil SevenDay (edge case)",
+			limits: &usage.UsageLimits{
+				FiveHour: &usage.UsageWindow{Utilization: 15.0},
+				SevenDay: nil,
+			},
+			wantContain: []string{"Claude Code Usage", "5-hour:", "15%"},
+			wantExclude: []string{"7-day:"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := RenderUsagePlain(tt.limits)
+
+			// Verify output ends with newline
+			if !strings.HasSuffix(output, "\n") {
+				t.Error("output should end with trailing newline")
+			}
+
+			// Check that required strings are present
+			for _, want := range tt.wantContain {
+				if !strings.Contains(output, want) {
+					t.Errorf("output should contain %q, got:\n%s", want, output)
+				}
+			}
+
+			// Check that excluded strings are absent
+			for _, exclude := range tt.wantExclude {
+				if strings.Contains(output, exclude) {
+					t.Errorf("output should NOT contain %q, got:\n%s", exclude, output)
+				}
+			}
+		})
+	}
+}
+
+func TestFormatResetDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		d    time.Duration
+		want string
+	}{
+		{"zero", 0, ""},
+		{"negative", -5 * time.Minute, ""},
+		{"less than minute (30s)", 30 * time.Second, "<1m"},
+		{"just under a minute (59s)", 59 * time.Second, "<1m"},
+		{"exactly one minute", 1 * time.Minute, "1m"},
+		{"exact minutes (45m)", 45 * time.Minute, "45m"},
+		{"hours and minutes (2h 15m)", 2*time.Hour + 15*time.Minute, "2h 15m"},
+		{"exact hours (3h)", 3 * time.Hour, "3h"},
+		{"one hour exactly", 1 * time.Hour, "1h"},
+		{"hours with zero minutes (2h)", 2*time.Hour + 0*time.Minute, "2h"},
+		{"one minute exact", 60 * time.Second, "1m"},
+		{"1 second less than 1 minute", 59*time.Second + 999*time.Millisecond, "<1m"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatResetDuration(tt.d)
+			if got != tt.want {
+				t.Errorf("formatResetDuration(%v) = %q, want %q", tt.d, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderUsagePlainColorModes(t *testing.T) {
+	// Test that RenderUsagePlain produces different output based on color profile
+	// This tests AC-5: Color Flag Compatibility
+	limits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+		SevenDay: &usage.UsageWindow{Utilization: 12.0},
+	}
+
+	// ANSI escape code pattern: ESC[...m
+	containsANSI := func(s string) bool {
+		return strings.Contains(s, "\x1b[")
+	}
+
+	t.Run("color=always produces ANSI codes", func(t *testing.T) {
+		// Save current profile and restore after test
+		// Force TrueColor profile for styled output
+		lipgloss.SetColorProfile(termenv.TrueColor)
+		output := RenderUsagePlain(limits)
+
+		if !containsANSI(output) {
+			t.Error("expected ANSI escape codes with TrueColor profile, got none")
+		}
+		if !strings.Contains(output, "Claude Code Usage") {
+			t.Error("output missing expected content")
+		}
+	})
+
+	t.Run("color=never produces no ANSI codes", func(t *testing.T) {
+		// Set Ascii profile (no colors)
+		lipgloss.SetColorProfile(termenv.Ascii)
+		output := RenderUsagePlain(limits)
+
+		if containsANSI(output) {
+			t.Errorf("expected no ANSI escape codes with Ascii profile, got:\n%q", output)
+		}
+		if !strings.Contains(output, "Claude Code Usage") {
+			t.Error("output missing expected content")
+		}
+	})
 }
