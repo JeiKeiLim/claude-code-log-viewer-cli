@@ -506,20 +506,26 @@ var usageBarStyles = struct {
 		Background(bgAltColor).
 		Padding(0, 1),
 	Label: lipgloss.NewStyle().
-		Foreground(mutedColor),
+		Foreground(mutedColor).
+		Background(bgAltColor),
 	Normal: lipgloss.NewStyle().
-		Foreground(textColor),
+		Foreground(textColor).
+		Background(bgAltColor),
 	Warning: lipgloss.NewStyle().
 		Foreground(WarningColor).
+		Background(bgAltColor).
 		Bold(true),
 	Critical: lipgloss.NewStyle().
 		Foreground(CriticalColor).
+		Background(bgAltColor).
 		Bold(true),
 	Dimmed: lipgloss.NewStyle().
 		Foreground(dimColor).
+		Background(bgAltColor).
 		Italic(true),
 	Stale: lipgloss.NewStyle().
 		Foreground(mutedColor).
+		Background(bgAltColor).
 		Italic(true),
 }
 

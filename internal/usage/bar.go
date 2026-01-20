@@ -143,21 +143,21 @@ func (m *UsageBarModel) renderUsage() string {
 
 	// 7-day window
 	if m.limits.SevenDay != nil {
-		sevenDayPart := m.renderWindow("7d", m.limits.SevenDay, false)
+		sevenDayPart := m.renderWindow("7d", m.limits.SevenDay, true)
 		parts = append(parts, sevenDayPart)
 	}
 
 	content := ""
 	for i, part := range parts {
 		if i > 0 {
-			content += " "
+			content += m.styles.Label.Render(" ") // Style the space to match background
 		}
 		content += part
 	}
 
 	// Add stale indicator
 	if m.state == StateStale {
-		content += " " + m.styles.Stale.Render("(stale)")
+		content += m.styles.Stale.Render(" (stale)")
 	}
 
 	return m.applyContainer(content)
@@ -168,16 +168,17 @@ func (m *UsageBarModel) renderWindow(label string, window *UsageWindow, showRese
 	utilStyle := m.getUtilizationStyle(window.Utilization)
 
 	// Format: [5h: 35% 2h 15m] or [7d: 12%]
-	labelPart := m.styles.Label.Render("[" + label + ":")
-	utilPart := utilStyle.Render(fmt.Sprintf(" %.0f%%", window.Utilization))
+	// All spaces must be inside styled regions to avoid background color gaps
+	labelPart := m.styles.Label.Render("[" + label + ": ")
+	utilPart := utilStyle.Render(fmt.Sprintf("%.0f%%", window.Utilization))
 
 	result := labelPart + utilPart
 
-	// Add reset time for 5-hour window if available
+	// Add reset time if available and requested
 	if showReset && window.ResetsAt != nil {
 		resetStr := formatDuration(window.ResetsAt)
 		if resetStr != "" {
-			result += " " + m.styles.Normal.Render(resetStr)
+			result += m.styles.Normal.Render(" " + resetStr)
 		}
 	}
 
@@ -217,9 +218,16 @@ func formatDuration(resetTime *time.Time) string {
 		return "soon"
 	}
 
-	hours := int(remaining.Hours())
+	days := int(remaining.Hours()) / 24
+	hours := int(remaining.Hours()) % 24
 	minutes := int(remaining.Minutes()) % 60
 
+	if days > 0 {
+		if hours > 0 {
+			return fmt.Sprintf("%dd %dh", days, hours)
+		}
+		return fmt.Sprintf("%dd", days)
+	}
 	if hours > 0 {
 		if minutes > 0 {
 			return fmt.Sprintf("%dh %dm", hours, minutes)

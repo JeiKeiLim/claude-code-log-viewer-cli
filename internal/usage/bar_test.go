@@ -456,7 +456,7 @@ func TestFormatDuration(t *testing.T) {
 		{
 			name:     "167 hours 30 minutes (7-day window)",
 			duration: 167*time.Hour + 30*time.Minute + buffer,
-			want:     "167h 30m",
+			want:     "6d 23h", // 167h = 6*24 + 23 = 6d 23h
 		},
 	}
 

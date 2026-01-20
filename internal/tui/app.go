@@ -402,7 +402,9 @@ func (m AppModel) View() string {
 		}
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, usageBarView, contentView)
+	// Use simple string concatenation to ensure usage bar stays at top
+	// (JoinVertical may have issues with viewport ANSI codes)
+	return usageBarView + "\n" + contentView
 }
 
 // loadingView renders the spinner during loading operations.

@@ -1006,12 +1006,15 @@ func (m ViewerModel) View() string {
 		return "Loading..."
 	}
 
-	// Header with contextual title
+	// Header with contextual title (truncated to prevent wrapping)
 	headerText := m.title
 	if headerText == "" {
 		headerText = "Claude Code Log Viewer"
 	}
 	header := Styles.Title.Render(headerText)
+	if m.width > 0 {
+		header = lipgloss.NewStyle().MaxWidth(m.width).Render(header)
+	}
 
 	// Command mode bar (Story 4.2) - show toast alongside command bar if active
 	if m.inputMode == InputCommand {
@@ -1025,23 +1028,48 @@ func (m ViewerModel) View() string {
 			toastSegment := toastStyle.Render(m.toast)
 			commandBar = lipgloss.JoinHorizontal(lipgloss.Top, commandBar, " ", toastSegment)
 		}
+		if m.width > 0 {
+			commandBar = lipgloss.NewStyle().MaxWidth(m.width).Render(commandBar)
+		}
 		return fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), commandBar)
 	}
 
 	// Search bar (if searching)
 	if m.inputMode == InputSearch {
 		searchBar := Styles.SearchInput.Render("/" + m.searchInput.View())
+		if m.width > 0 {
+			searchBar = lipgloss.NewStyle().MaxWidth(m.width).Render(searchBar)
+		}
 		return fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), searchBar)
 	}
 
-	// Build segmented footer
+	// Build segmented footer with progressive hiding for narrow terminals
 	modeSegment := m.buildModeSegment()
-	newEntriesSegment := m.buildNewEntriesSegment()
 	posSegment := m.buildPositionSegment()
-	tokensSegment := m.buildTokensSegment() // Story 6.3
-	shortcutsText := m.buildShortcutsSegment()
 
-	// Add search/status info to shortcuts text if applicable
+	// Calculate fixed segment widths (mode and position are always shown)
+	modeWidth := lipgloss.Width(modeSegment)
+	posWidth := lipgloss.Width(posSegment)
+	fixedWidth := modeWidth + posWidth
+
+	// Optional segments - only include if there's room
+	var tokensSegment, newEntriesSegment string
+	tokensWidth, newEntriesWidth := 0, 0
+
+	// Add tokens segment if there's room (priority 1 for optional)
+	if m.width > fixedWidth+20 { // Need at least 20 chars for shortcuts
+		tokensSegment = m.buildTokensSegment()
+		tokensWidth = lipgloss.Width(tokensSegment)
+	}
+
+	// Add new entries segment if there's room (priority 2 for optional)
+	if m.width > fixedWidth+tokensWidth+30 {
+		newEntriesSegment = m.buildNewEntriesSegment()
+		newEntriesWidth = lipgloss.Width(newEntriesSegment)
+	}
+
+	// Build shortcuts text with optional status suffix
+	shortcutsText := m.buildShortcutsSegment()
 	var statusSuffix string
 	if m.noResults && m.searchQuery != "" {
 		statusSuffix = fmt.Sprintf(" | No results for '%s'", m.searchQuery)
@@ -1054,14 +1082,27 @@ func (m ViewerModel) View() string {
 		statusSuffix += fmt.Sprintf(" (%d skipped)", m.parseErrors)
 	}
 
-	// Calculate width for shortcuts segment (fills remaining space)
-	modeWidth := lipgloss.Width(modeSegment)
-	newEntriesWidth := lipgloss.Width(newEntriesSegment)
-	posWidth := lipgloss.Width(posSegment)
-	tokensWidth := lipgloss.Width(tokensSegment)
-	shortcutsWidth := m.width - modeWidth - newEntriesWidth - posWidth - tokensWidth
+	// Calculate remaining width for shortcuts segment
+	// Shortcuts style has Padding(0, 1) = 2 chars of padding
+	usedWidth := fixedWidth + tokensWidth + newEntriesWidth
+	shortcutsWidth := m.width - usedWidth
 	if shortcutsWidth < 0 {
 		shortcutsWidth = 0
+	}
+	shortcutsContentWidth := shortcutsWidth - 2 // Account for padding
+	if shortcutsContentWidth < 0 {
+		shortcutsContentWidth = 0
+	}
+
+	// Build footer segments list
+	var segments []string
+	segments = append(segments, modeSegment)
+	if newEntriesSegment != "" {
+		segments = append(segments, newEntriesSegment)
+	}
+	segments = append(segments, posSegment)
+	if tokensSegment != "" {
+		segments = append(segments, tokensSegment)
 	}
 
 	// Toast rendering (Story 4.2) - replaces shortcuts segment when active
@@ -1072,22 +1113,41 @@ func (m ViewerModel) View() string {
 			Foreground(whiteColor).
 			Padding(0, 1)
 		toastSegment := toastStyle.Render(m.toast)
-		// Calculate remaining width for shortcuts
 		toastWidth := lipgloss.Width(toastSegment)
-		remainingWidth := m.width - modeWidth - newEntriesWidth - posWidth - tokensWidth - toastWidth
+		remainingWidth := shortcutsContentWidth - toastWidth
 		if remainingWidth < 0 {
 			remainingWidth = 0
 		}
+		// Truncate shortcuts text to fit available space
+		truncatedShortcuts := shortcutsText
+		if len(truncatedShortcuts) > remainingWidth {
+			if remainingWidth > 0 {
+				truncatedShortcuts = truncatedShortcuts[:remainingWidth]
+			} else {
+				truncatedShortcuts = ""
+			}
+		}
 		shortcutsSegment := Styles.StatusBarSegment.Shortcuts.
-			Width(remainingWidth).
-			Render(shortcutsText)
-		footer = lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, newEntriesSegment, posSegment, tokensSegment, toastSegment, shortcutsSegment)
+			Width(shortcutsWidth - toastWidth).
+			Render(truncatedShortcuts)
+		segments = append(segments, toastSegment, shortcutsSegment)
 	} else {
+		// Truncate shortcuts text + suffix to fit available space
+		fullText := shortcutsText + statusSuffix
+		if len(fullText) > shortcutsContentWidth {
+			if shortcutsContentWidth > 0 {
+				fullText = fullText[:shortcutsContentWidth]
+			} else {
+				fullText = ""
+			}
+		}
 		shortcutsSegment := Styles.StatusBarSegment.Shortcuts.
 			Width(shortcutsWidth).
-			Render(shortcutsText + statusSuffix)
-		footer = lipgloss.JoinHorizontal(lipgloss.Top, modeSegment, newEntriesSegment, posSegment, tokensSegment, shortcutsSegment)
+			Render(fullText)
+		segments = append(segments, shortcutsSegment)
 	}
+
+	footer = lipgloss.JoinHorizontal(lipgloss.Top, segments...)
 
 	normalView := fmt.Sprintf("%s\n%s\n%s", header, m.viewport.View(), footer)
 
