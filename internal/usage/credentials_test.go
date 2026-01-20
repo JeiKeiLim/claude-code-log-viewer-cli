@@ -20,8 +20,13 @@ func TestParseAndValidateCredentials(t *testing.T) {
 		wantErr error
 	}{
 		{
-			name: "valid credentials",
+			name: "valid credentials with RFC3339 string",
 			data: `{"claudeAiOauth":{"accessToken":"sk-ant-oauth-test","refreshToken":"refresh","expiresAt":"2099-01-01T00:00:00Z"}}`,
+			want: "sk-ant-oauth-test",
+		},
+		{
+			name: "valid credentials with Unix ms timestamp (Keychain format)",
+			data: `{"claudeAiOauth":{"accessToken":"sk-ant-oauth-test","refreshToken":"refresh","expiresAt":9999999999999}}`,
 			want: "sk-ant-oauth-test",
 		},
 		{
@@ -40,8 +45,13 @@ func TestParseAndValidateCredentials(t *testing.T) {
 			wantErr: ErrEmptyToken,
 		},
 		{
-			name:    "expired token",
+			name:    "expired token with RFC3339",
 			data:    `{"claudeAiOauth":{"accessToken":"sk-ant-oauth-test","refreshToken":"refresh","expiresAt":"2020-01-01T00:00:00Z"}}`,
+			wantErr: ErrTokenExpired,
+		},
+		{
+			name:    "expired token with Unix ms timestamp",
+			data:    `{"claudeAiOauth":{"accessToken":"sk-ant-oauth-test","refreshToken":"refresh","expiresAt":1000000000000}}`,
 			wantErr: ErrTokenExpired,
 		},
 		{
@@ -50,7 +60,7 @@ func TestParseAndValidateCredentials(t *testing.T) {
 			want: "sk-ant-oauth-test",
 		},
 		{
-			name: "malformed expiresAt - assumes valid",
+			name: "malformed expiresAt string - assumes valid",
 			data: `{"claudeAiOauth":{"accessToken":"sk-ant-oauth-test","refreshToken":"refresh","expiresAt":"invalid-date"}}`,
 			want: "sk-ant-oauth-test",
 		},
@@ -78,35 +88,49 @@ func TestParseAndValidateCredentials(t *testing.T) {
 
 func TestIsTokenExpired(t *testing.T) {
 	tests := []struct {
-		name      string
-		expiresAt string
-		want      bool
+		name         string
+		expiresAtRaw string // JSON representation of expiresAt
+		want         bool
 	}{
 		{
-			name:      "empty expiresAt - not expired",
-			expiresAt: "",
-			want:      false,
+			name:         "empty expiresAt - not expired",
+			expiresAtRaw: "",
+			want:         false,
 		},
 		{
-			name:      "future date - not expired",
-			expiresAt: time.Now().Add(24 * time.Hour).Format(time.RFC3339),
-			want:      false,
+			name:         "future RFC3339 string - not expired",
+			expiresAtRaw: `"` + time.Now().Add(24*time.Hour).Format(time.RFC3339) + `"`,
+			want:         false,
 		},
 		{
-			name:      "past date - expired",
-			expiresAt: time.Now().Add(-24 * time.Hour).Format(time.RFC3339),
-			want:      true,
+			name:         "past RFC3339 string - expired",
+			expiresAtRaw: `"` + time.Now().Add(-24*time.Hour).Format(time.RFC3339) + `"`,
+			want:         true,
 		},
 		{
-			name:      "malformed date - not expired (fallback)",
-			expiresAt: "not-a-date",
-			want:      false,
+			name:         "future Unix ms timestamp - not expired",
+			expiresAtRaw: "9999999999999", // Far future
+			want:         false,
+		},
+		{
+			name:         "past Unix ms timestamp - expired",
+			expiresAtRaw: "1000000000000", // Sept 2001
+			want:         true,
+		},
+		{
+			name:         "malformed string - not expired (fallback)",
+			expiresAtRaw: `"not-a-date"`,
+			want:         false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isTokenExpired(tt.expiresAt); got != tt.want {
+			oauth := &OAuthToken{
+				AccessToken:  "test-token",
+				ExpiresAtRaw: json.RawMessage(tt.expiresAtRaw),
+			}
+			if got := isTokenExpired(oauth); got != tt.want {
 				t.Errorf("isTokenExpired() = %v, want %v", got, tt.want)
 			}
 		})
@@ -295,28 +319,62 @@ func TestGetTokenFromFile_MalformedJSON(t *testing.T) {
 
 func TestCredentialsStruct(t *testing.T) {
 	// Test that Credentials struct properly unmarshals all fields
-	data := `{
-		"claudeAiOauth": {
-			"accessToken": "test-access",
-			"refreshToken": "test-refresh",
-			"expiresAt": "2099-12-31T23:59:59Z"
+	t.Run("RFC3339 string format", func(t *testing.T) {
+		data := `{
+			"claudeAiOauth": {
+				"accessToken": "test-access",
+				"refreshToken": "test-refresh",
+				"expiresAt": "2099-12-31T23:59:59Z"
+			}
+		}`
+
+		var creds Credentials
+		if err := json.Unmarshal([]byte(data), &creds); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
 		}
-	}`
 
-	var creds Credentials
-	if err := json.Unmarshal([]byte(data), &creds); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
+		if creds.ClaudeAiOauth.AccessToken != "test-access" {
+			t.Errorf("AccessToken = %q, want %q", creds.ClaudeAiOauth.AccessToken, "test-access")
+		}
+		if creds.ClaudeAiOauth.RefreshToken != "test-refresh" {
+			t.Errorf("RefreshToken = %q, want %q", creds.ClaudeAiOauth.RefreshToken, "test-refresh")
+		}
 
-	if creds.ClaudeAiOauth.AccessToken != "test-access" {
-		t.Errorf("AccessToken = %q, want %q", creds.ClaudeAiOauth.AccessToken, "test-access")
-	}
-	if creds.ClaudeAiOauth.RefreshToken != "test-refresh" {
-		t.Errorf("RefreshToken = %q, want %q", creds.ClaudeAiOauth.RefreshToken, "test-refresh")
-	}
-	if creds.ClaudeAiOauth.ExpiresAt != "2099-12-31T23:59:59Z" {
-		t.Errorf("ExpiresAt = %q, want %q", creds.ClaudeAiOauth.ExpiresAt, "2099-12-31T23:59:59Z")
-	}
+		// Check GetExpiresAtTime parses correctly
+		expiresAt := creds.ClaudeAiOauth.GetExpiresAtTime()
+		if expiresAt.Year() != 2099 {
+			t.Errorf("ExpiresAt year = %d, want 2099", expiresAt.Year())
+		}
+	})
+
+	t.Run("Unix ms timestamp format (actual Keychain format)", func(t *testing.T) {
+		data := `{
+			"claudeAiOauth": {
+				"accessToken": "test-access",
+				"refreshToken": "test-refresh",
+				"expiresAt": 1768889845550
+			}
+		}`
+
+		var creds Credentials
+		if err := json.Unmarshal([]byte(data), &creds); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+
+		if creds.ClaudeAiOauth.AccessToken != "test-access" {
+			t.Errorf("AccessToken = %q, want %q", creds.ClaudeAiOauth.AccessToken, "test-access")
+		}
+
+		// Check GetExpiresAtTime parses the Unix ms timestamp correctly
+		expiresAt := creds.ClaudeAiOauth.GetExpiresAtTime()
+		if expiresAt.IsZero() {
+			t.Error("ExpiresAt should not be zero for valid Unix timestamp")
+		}
+		// 1768889845550 ms = Jan 2026 (approximately)
+		if expiresAt.Year() < 2026 || expiresAt.Year() > 2030 {
+			t.Errorf("ExpiresAt year = %d, want ~2026", expiresAt.Year())
+		}
+	})
 }
 
 func TestSentinelErrors(t *testing.T) {

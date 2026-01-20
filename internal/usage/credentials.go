@@ -107,21 +107,18 @@ func parseAndValidateCredentials(data []byte) (string, error) {
 		return "", ErrEmptyToken
 	}
 
-	if isTokenExpired(creds.ClaudeAiOauth.ExpiresAt) {
+	if isTokenExpired(&creds.ClaudeAiOauth) {
 		return "", ErrTokenExpired
 	}
 
 	return token, nil
 }
 
-// isTokenExpired checks if the token has expired based on expiresAt timestamp.
-func isTokenExpired(expiresAt string) bool {
-	if expiresAt == "" {
-		return false // No expiry = assume valid
+// isTokenExpired checks if the token has expired using OAuthToken.GetExpiresAtTime().
+func isTokenExpired(oauth *OAuthToken) bool {
+	expiresAt := oauth.GetExpiresAtTime()
+	if expiresAt.IsZero() {
+		return false // No expiry or unparseable = assume valid
 	}
-	t, err := time.Parse(time.RFC3339, expiresAt)
-	if err != nil {
-		return false // Parse error = assume valid, let API reject
-	}
-	return time.Now().After(t)
+	return time.Now().After(expiresAt)
 }

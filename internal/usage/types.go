@@ -21,9 +21,40 @@ var (
 
 // OAuthToken represents the nested OAuth token structure in credentials.
 type OAuthToken struct {
-	AccessToken  string `json:"accessToken"`
-	RefreshToken string `json:"refreshToken"`
-	ExpiresAt    string `json:"expiresAt"`
+	AccessToken  string          `json:"accessToken"`
+	RefreshToken string          `json:"refreshToken"`
+	ExpiresAtRaw json.RawMessage `json:"expiresAt"` // Can be number (Unix ms) or string (RFC3339)
+}
+
+// GetExpiresAtTime parses the expiresAt field which can be:
+// - Unix timestamp in milliseconds (number): 1768889845550
+// - RFC3339 string: "2024-01-20T10:00:00Z"
+// Returns zero time if parsing fails or field is empty.
+func (t *OAuthToken) GetExpiresAtTime() time.Time {
+	if len(t.ExpiresAtRaw) == 0 {
+		return time.Time{}
+	}
+
+	raw := string(t.ExpiresAtRaw)
+
+	// Try as number (Unix timestamp in milliseconds)
+	var ms int64
+	if err := json.Unmarshal(t.ExpiresAtRaw, &ms); err == nil {
+		return time.UnixMilli(ms)
+	}
+
+	// Try as string (RFC3339 or numeric string)
+	var str string
+	if err := json.Unmarshal(t.ExpiresAtRaw, &str); err == nil {
+		// Try RFC3339 first
+		if parsed, err := time.Parse(time.RFC3339, str); err == nil {
+			return parsed
+		}
+	}
+
+	// Unparseable - treat as no expiry (let API reject if invalid)
+	_ = raw // silence unused warning
+	return time.Time{}
 }
 
 // Credentials represents the Claude Code credentials file format.
