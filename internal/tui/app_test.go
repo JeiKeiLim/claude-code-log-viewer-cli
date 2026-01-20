@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -1046,5 +1048,264 @@ func TestAppModel_RefreshBehavior_TableDriven(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Story 7.7 Tests: Graceful Degradation
+
+func TestGracefulDegradation(t *testing.T) {
+	tests := []struct {
+		name        string
+		fetchErr    error
+		staleLimits *usage.UsageLimits
+		wantState   usage.UsageBarState
+		wantErrMsg  string
+	}{
+		{
+			name:      "no credentials",
+			fetchErr:  usage.ErrNoCredentials,
+			wantState: usage.StateNotLoggedIn,
+		},
+		{
+			name:      "keychain not found",
+			fetchErr:  usage.ErrKeychainNotFound,
+			wantState: usage.StateNotLoggedIn,
+		},
+		{
+			name:      "keychain timeout",
+			fetchErr:  usage.ErrKeychainTimeout,
+			wantState: usage.StateNotLoggedIn,
+		},
+		{
+			name:      "invalid credentials",
+			fetchErr:  usage.ErrInvalidCredentials,
+			wantState: usage.StateNotLoggedIn,
+		},
+		{
+			name:      "empty token",
+			fetchErr:  usage.ErrEmptyToken,
+			wantState: usage.StateNotLoggedIn,
+		},
+		{
+			name:       "token expired",
+			fetchErr:   usage.ErrTokenExpired,
+			wantState:  usage.StateError,
+			wantErrMsg: "Session expired",
+		},
+		{
+			name:        "api timeout with stale data",
+			fetchErr:    usage.ErrAPITimeout,
+			staleLimits: &usage.UsageLimits{FiveHour: &usage.UsageWindow{Utilization: 50}},
+			wantState:   usage.StateStale,
+		},
+		{
+			name:       "api timeout without stale data",
+			fetchErr:   usage.ErrAPITimeout,
+			wantState:  usage.StateError,
+			wantErrMsg: "Unknown",
+		},
+		{
+			name:        "api error with stale data",
+			fetchErr:    usage.ErrAPIError,
+			staleLimits: &usage.UsageLimits{FiveHour: &usage.UsageWindow{Utilization: 25}},
+			wantState:   usage.StateStale,
+		},
+		{
+			name:       "api error without stale data",
+			fetchErr:   usage.ErrAPIError,
+			wantState:  usage.StateError,
+			wantErrMsg: "Unknown",
+		},
+		{
+			name:        "network error with stale data",
+			fetchErr:    errors.New("dial tcp: connect: network unreachable"),
+			staleLimits: &usage.UsageLimits{FiveHour: &usage.UsageWindow{Utilization: 30}},
+			wantState:   usage.StateStale,
+		},
+		{
+			name:       "network error without stale data",
+			fetchErr:   errors.New("dial tcp: connect: network unreachable"),
+			wantState:  usage.StateError,
+			wantErrMsg: "Unknown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create app model with empty projects
+			m := NewAppModel([]types.Project{})
+
+			// Simulate usageFetchedMsg
+			msg := usageFetchedMsg{
+				err:    tt.fetchErr,
+				limits: tt.staleLimits,
+				stale:  tt.staleLimits != nil,
+			}
+
+			result, _ := m.Update(msg)
+			newModel := result.(AppModel)
+
+			if newModel.UsageBarState() != tt.wantState {
+				t.Errorf("got state %v, want %v", newModel.UsageBarState(), tt.wantState)
+			}
+
+			// Verify error message if applicable
+			if tt.wantErrMsg != "" {
+				// Check bar contains expected message
+				view := newModel.usageBar.View()
+				if !strings.Contains(view, tt.wantErrMsg) {
+					t.Errorf("bar view %q does not contain %q", view, tt.wantErrMsg)
+				}
+			}
+		})
+	}
+}
+
+func TestNonBlockingInit(t *testing.T) {
+	// Create app model
+	m := NewAppModel([]types.Project{})
+
+	// Init() should return a tea.Batch (multiple commands)
+	cmd := m.Init()
+	if cmd == nil {
+		t.Error("Init() returned nil, expected tea.Batch with async fetch")
+	}
+
+	// Verify the app is immediately usable (not blocked)
+	// Project list should be accessible
+	if m.state != viewProjects {
+		t.Errorf("initial state %v, want viewProjects", m.state)
+	}
+}
+
+func TestGracefulDegradation_RefreshResetOnError(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.refreshInProgress = true
+
+	// Simulate any error
+	newModel, _ := model.Update(usageFetchedMsg{err: usage.ErrAPIError})
+	m := newModel.(AppModel)
+
+	// refreshInProgress should be reset to false even on error
+	if m.refreshInProgress {
+		t.Error("refreshInProgress should be false after error")
+	}
+}
+
+func TestGracefulDegradation_LastRefreshNotUpdatedOnError(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.refreshInProgress = true
+
+	// Simulate error
+	newModel, _ := model.Update(usageFetchedMsg{err: usage.ErrNoCredentials})
+	m := newModel.(AppModel)
+
+	// lastRefreshTime should NOT be updated on error
+	if !m.lastRefreshTime.IsZero() {
+		t.Error("lastRefreshTime should not be updated on error")
+	}
+}
+
+func TestGracefulDegradation_AppFunctionsWithoutCredentials(t *testing.T) {
+	// App should be usable even when credentials are missing
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model := NewAppModel(projects)
+
+	// Simulate no credentials
+	newModel, _ := model.Update(usageFetchedMsg{err: usage.ErrNoCredentials})
+	m := newModel.(AppModel)
+
+	// App should be in projects view (not crashed)
+	if m.state != viewProjects {
+		t.Errorf("state = %d, want viewProjects", m.state)
+	}
+
+	// Usage bar should show not logged in
+	if m.UsageBarState() != usage.StateNotLoggedIn {
+		t.Errorf("UsageBarState = %v, want StateNotLoggedIn", m.UsageBarState())
+	}
+
+	// View should render without panic
+	view := m.View()
+	if view == "" {
+		t.Error("View should not be empty")
+	}
+}
+
+func TestGracefulDegradation_NewErrorsMapToNotLoggedIn(t *testing.T) {
+	// Test the newly added error types (Story 7.7)
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"ErrInvalidCredentials", usage.ErrInvalidCredentials},
+		{"ErrEmptyToken", usage.ErrEmptyToken},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projects := []types.Project{{DisplayName: "proj1"}}
+			model := NewAppModel(projects)
+
+			newModel, _ := model.Update(usageFetchedMsg{err: tt.err})
+			m := newModel.(AppModel)
+
+			if m.UsageBarState() != usage.StateNotLoggedIn {
+				t.Errorf("UsageBarState for %s = %v, want StateNotLoggedIn", tt.name, m.UsageBarState())
+			}
+		})
+	}
+}
+
+func TestGracefulDegradation_ContextCanceled(t *testing.T) {
+	// Test context.Canceled is handled silently (Task 3.3)
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	// Set initial state to normal with some limits
+	initialLimits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}
+	model.usageBar.SetLimits(initialLimits, false)
+	initialState := model.UsageBarState()
+
+	// Simulate context.Canceled error
+	newModel, _ := model.Update(usageFetchedMsg{err: context.Canceled})
+	m := newModel.(AppModel)
+
+	// State should remain unchanged (not transition to error)
+	if m.UsageBarState() != initialState {
+		t.Errorf("context.Canceled should not change state, got %v, want %v",
+			m.UsageBarState(), initialState)
+	}
+}
+
+func TestGracefulDegradation_StaleIndicatorPresent(t *testing.T) {
+	// Test AC-2: stale data shows "(stale)" indicator
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	// Set dimensions
+	newModel, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m := newModel.(AppModel)
+
+	// Simulate stale data
+	limits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 50.0},
+	}
+	newModel2, _ := m.Update(usageFetchedMsg{limits: limits, stale: true})
+	m2 := newModel2.(AppModel)
+
+	// Verify state is stale
+	if m2.UsageBarState() != usage.StateStale {
+		t.Errorf("UsageBarState = %v, want StateStale", m2.UsageBarState())
+	}
+
+	// Verify bar view contains "(stale)" indicator
+	view := m2.usageBar.View()
+	if !strings.Contains(view, "(stale)") {
+		t.Errorf("stale bar view should contain '(stale)' indicator, got: %q", view)
 	}
 }

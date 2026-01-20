@@ -354,20 +354,29 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastRefreshTime = time.Now() // Only on success
 		}
 
-		// Handle usage fetch result (Story 7.4)
+		// Handle usage fetch result (Story 7.4, 7.7)
 		if msg.err != nil {
-			// Handle specific error types
+			// Log for debugging (AC-6) - goes to stderr
+			log.Printf("usage fetch error: %v", msg.err)
+
+			// Handle specific error types (expanded for Story 7.7)
 			if errors.Is(msg.err, usage.ErrNoCredentials) ||
 				errors.Is(msg.err, usage.ErrKeychainNotFound) ||
-				errors.Is(msg.err, usage.ErrKeychainTimeout) {
+				errors.Is(msg.err, usage.ErrKeychainTimeout) ||
+				errors.Is(msg.err, usage.ErrInvalidCredentials) ||
+				errors.Is(msg.err, usage.ErrEmptyToken) {
 				m.usageBar.SetNotLoggedIn()
 			} else if errors.Is(msg.err, usage.ErrTokenExpired) {
 				m.usageBar.SetError("Session expired")
+			} else if errors.Is(msg.err, context.Canceled) {
+				// Context canceled (e.g., app shutting down) - silently ignore (AC-4, Task 3.3)
+				// Keep current state, don't update bar
 			} else if msg.limits != nil {
-				// Error but have stale data
+				// Error but have stale data - show stale values with "(stale)" indicator (AC-2)
 				m.usageBar.SetLimits(msg.limits, true)
 			} else {
-				m.usageBar.SetError("Usage unavailable")
+				// No stale data available - show "Unknown" for first-time failures (AC-2)
+				m.usageBar.SetError("Unknown")
 			}
 		} else {
 			m.usageBar.SetLimits(msg.limits, msg.stale)
