@@ -175,12 +175,12 @@ func TestRenderUsagePlain(t *testing.T) {
 		wantExclude []string
 	}{
 		{
-			name: "typical usage with reset time",
+			name: "typical usage with reset times",
 			limits: &usage.UsageLimits{
 				FiveHour: &usage.UsageWindow{Utilization: 35.0, ResetsAt: timePtr(now.Add(2*time.Hour + 16*time.Minute))}, // +16m to tolerate test execution time
-				SevenDay: &usage.UsageWindow{Utilization: 12.0},
+				SevenDay: &usage.UsageWindow{Utilization: 12.0, ResetsAt: timePtr(now.Add(5*24*time.Hour + 12*time.Hour))},
 			},
-			wantContain: []string{"Claude Code Usage", "5-hour:", "35%", "resets in", "2h", "7-day:", "12%"}, // Check "2h" not exact "2h 15m"
+			wantContain: []string{"Claude Code Usage", "5-hour:", "35%", "resets in", "2h", "7-day:", "12%", "5d"}, // Check both reset times
 			wantExclude: []string{"Opus:"},
 		},
 		{
@@ -292,6 +292,12 @@ func TestFormatResetDuration(t *testing.T) {
 		{"hours with zero minutes (2h)", 2*time.Hour + 0*time.Minute, "2h"},
 		{"one minute exact", 60 * time.Second, "1m"},
 		{"1 second less than 1 minute", 59*time.Second + 999*time.Millisecond, "<1m"},
+		// Days support for 7-day reset times
+		{"days and hours (5d 12h)", 5*24*time.Hour + 12*time.Hour, "5d 12h"},
+		{"exact days (7d)", 7 * 24 * time.Hour, "7d"},
+		{"one day exactly", 24 * time.Hour, "1d"},
+		{"one day and hours (1d 5h)", 24*time.Hour + 5*time.Hour, "1d 5h"},
+		{"23 hours (no days)", 23 * time.Hour, "23h"},
 	}
 
 	for _, tt := range tests {

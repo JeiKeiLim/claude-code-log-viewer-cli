@@ -51,9 +51,9 @@ So that **I can use it in scripts or quick checks**.
    - Then plain uncolored output is produced
 
 6. **AC-6: Reset Time Formatting**
-   - Given reset time is available
+   - Given reset time is available (for both 5-hour and 7-day)
    - When displayed
-   - Then shows human-readable countdown: "2h 15m", "45m", "5m", "<1m"
+   - Then shows human-readable countdown: "2h 15m", "45m", "5m", "<1m", "5d 12h", "7d"
    - Given reset time is in the past or unavailable
    - When displayed
    - Then shows percentage only (no reset time)
@@ -126,7 +126,7 @@ if *usageFlag || *usageShortFlag {
 ```
 Claude Code Usage
   5-hour:  35% (resets in 2h 15m)
-  7-day:   12%
+  7-day:   12% (resets in 5d 12h)
 ```
 
 **Percentage Formatting:**
@@ -443,6 +443,9 @@ N/A
 6. Updated help text with new flag documentation and examples
 7. Note: Renamed `formatDuration` to `formatResetDuration` to avoid conflict with existing function in utils.go
 8. Go's `%.0f` uses banker's rounding (round half to even), which is documented in tests
+9. **Enhancement (2026-01-20):** Added 7-day reset time display - both 5-hour and 7-day now show reset countdown
+10. **Enhancement (2026-01-20):** `formatResetDuration()` now supports days (e.g., "5d 12h", "7d") for 7-day resets
+11. **Note for Stories 7-3/7-4/7-5:** When implementing TUI usage bar, use the same `formatResetDuration()` helper to ensure consistent reset time formatting across CLI and TUI
 
 ### File List
 

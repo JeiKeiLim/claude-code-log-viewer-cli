@@ -154,8 +154,15 @@ func RenderUsagePlain(limits *usage.UsageLimits) string {
 	}
 
 	if limits.SevenDay != nil {
-		b.WriteString(fmt.Sprintf("  7-day:   %.0f%%\n",
-			limits.SevenDay.Utilization))
+		resetStr := ""
+		if limits.SevenDay.ResetsAt != nil {
+			remaining := time.Until(*limits.SevenDay.ResetsAt)
+			if remaining > 0 {
+				resetStr = fmt.Sprintf(" (resets in %s)", formatResetDuration(remaining))
+			}
+		}
+		b.WriteString(fmt.Sprintf("  7-day:   %.0f%%%s\n",
+			limits.SevenDay.Utilization, resetStr))
 	}
 
 	// Only show Opus if utilization > 0 (most users don't have Opus quota)
@@ -174,6 +181,8 @@ func RenderUsagePlain(limits *usage.UsageLimits) string {
 //   - 45*time.Minute → "45m"
 //   - 2*time.Hour + 15*time.Minute → "2h 15m"
 //   - 3*time.Hour → "3h"
+//   - 5*24*time.Hour + 12*time.Hour → "5d 12h"
+//   - 7*24*time.Hour → "7d"
 func formatResetDuration(d time.Duration) string {
 	if d <= 0 {
 		return ""
@@ -182,9 +191,20 @@ func formatResetDuration(d time.Duration) string {
 		return "<1m"
 	}
 
-	hours := int(d.Hours())
+	totalHours := int(d.Hours())
+	days := totalHours / 24
+	hours := totalHours % 24
 	minutes := int(d.Minutes()) % 60
 
+	// Days + hours (for 7-day resets)
+	if days > 0 {
+		if hours > 0 {
+			return fmt.Sprintf("%dd %dh", days, hours)
+		}
+		return fmt.Sprintf("%dd", days)
+	}
+
+	// Hours + minutes (for 5-hour resets)
 	if hours > 0 && minutes > 0 {
 		return fmt.Sprintf("%dh %dm", hours, minutes)
 	}
