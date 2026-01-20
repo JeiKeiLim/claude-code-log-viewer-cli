@@ -17,6 +17,7 @@ const (
 	StateStale
 	StateNotLoggedIn
 	StateError
+	StateRefreshing // Story 7.5: manual refresh in progress
 )
 
 // UsageBarStyles contains styles for the usage bar component.
@@ -82,6 +83,16 @@ func (m *UsageBarModel) SetError(msg string) {
 	m.errMsg = msg
 }
 
+// SetRefreshing sets the bar to refreshing state (Story 7.5).
+// Preserves current limits to show during refresh.
+func (m *UsageBarModel) SetRefreshing() {
+	// Only set if we have limits to show during refresh
+	if m.limits != nil {
+		m.state = StateRefreshing
+	}
+	// If no limits, stay in current state (loading will handle it)
+}
+
 // SetWidth sets the available width for rendering.
 func (m *UsageBarModel) SetWidth(width int) {
 	m.width = width
@@ -106,6 +117,8 @@ func (m *UsageBarModel) View() string {
 		return m.renderNotLoggedIn()
 	case StateError:
 		return m.renderError()
+	case StateRefreshing:
+		return m.renderRefreshing()
 	case StateNormal, StateStale:
 		return m.renderUsage()
 	default:
@@ -128,20 +141,42 @@ func (m *UsageBarModel) renderError() string {
 	return m.applyContainer(content)
 }
 
+func (m *UsageBarModel) renderRefreshing() string {
+	if m.limits == nil {
+		return m.renderLoading()
+	}
+
+	// Render current values with refresh indicator
+	content := m.renderWindowParts()
+	content += m.styles.Dimmed.Render(" [R]")
+
+	return m.applyContainer(content)
+}
+
 func (m *UsageBarModel) renderUsage() string {
 	if m.limits == nil {
 		return m.renderLoading()
 	}
 
+	content := m.renderWindowParts()
+
+	// Add stale indicator
+	if m.state == StateStale {
+		content += m.styles.Stale.Render(" (stale)")
+	}
+
+	return m.applyContainer(content)
+}
+
+// renderWindowParts renders the common window parts for both normal and refreshing states.
+func (m *UsageBarModel) renderWindowParts() string {
 	var parts []string
 
-	// 5-hour window
 	if m.limits.FiveHour != nil {
 		fiveHourPart := m.renderWindow("5h", m.limits.FiveHour, true)
 		parts = append(parts, fiveHourPart)
 	}
 
-	// 7-day window
 	if m.limits.SevenDay != nil {
 		sevenDayPart := m.renderWindow("7d", m.limits.SevenDay, true)
 		parts = append(parts, sevenDayPart)
@@ -150,17 +185,12 @@ func (m *UsageBarModel) renderUsage() string {
 	content := ""
 	for i, part := range parts {
 		if i > 0 {
-			content += m.styles.Label.Render(" ") // Style the space to match background
+			content += m.styles.Label.Render(" ")
 		}
 		content += part
 	}
 
-	// Add stale indicator
-	if m.state == StateStale {
-		content += m.styles.Stale.Render(" (stale)")
-	}
-
-	return m.applyContainer(content)
+	return content
 }
 
 func (m *UsageBarModel) renderWindow(label string, window *UsageWindow, showReset bool) string {

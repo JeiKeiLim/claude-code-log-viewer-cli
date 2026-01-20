@@ -585,3 +585,87 @@ func TestUsageBarModel_DefaultState(t *testing.T) {
 		t.Errorf("Default View() = %q, want to contain 'Loading usage...'", got)
 	}
 }
+
+// Story 7.5 Tests: Refresh Indicator
+
+func TestUsageBarModel_SetRefreshing(t *testing.T) {
+	m := NewUsageBarModel(testStyles())
+
+	// Set limits first
+	m.SetLimits(&UsageLimits{
+		FiveHour: &UsageWindow{Utilization: 35},
+	}, false)
+
+	m.SetRefreshing()
+
+	if m.State() != StateRefreshing {
+		t.Errorf("State() = %v, want StateRefreshing", m.State())
+	}
+}
+
+func TestUsageBarModel_SetRefreshing_NoLimits(t *testing.T) {
+	m := NewUsageBarModel(testStyles())
+	// No limits set - stay in loading state
+
+	m.SetRefreshing()
+
+	// Should not change to refreshing without limits
+	if m.State() != StateLoading {
+		t.Errorf("State() = %v, want StateLoading (no change without limits)", m.State())
+	}
+}
+
+func TestUsageBarModel_View_Refreshing(t *testing.T) {
+	m := NewUsageBarModel(testStyles())
+	m.SetWidth(80)
+	m.SetLimits(&UsageLimits{
+		FiveHour: &UsageWindow{Utilization: 35},
+	}, false)
+	m.SetRefreshing()
+
+	view := m.View()
+
+	if !strings.Contains(view, "[R]") {
+		t.Error("expected refresh indicator [R] in view")
+	}
+	if !strings.Contains(view, "35%") {
+		t.Error("expected current usage values preserved during refresh")
+	}
+}
+
+func TestUsageBarModel_View_Refreshing_FallbackToLoading(t *testing.T) {
+	m := NewUsageBarModel(testStyles())
+	m.SetWidth(80)
+	// Force state to refreshing without limits (edge case)
+	m.state = StateRefreshing
+	// limits is nil
+
+	view := m.View()
+
+	// Should fallback to loading view
+	if !strings.Contains(view, "Loading usage...") {
+		t.Errorf("expected fallback to loading view, got %q", view)
+	}
+}
+
+func TestUsageBarModel_View_Refreshing_BothWindows(t *testing.T) {
+	m := NewUsageBarModel(testStyles())
+	m.SetWidth(80)
+	m.SetLimits(&UsageLimits{
+		FiveHour: &UsageWindow{Utilization: 35},
+		SevenDay: &UsageWindow{Utilization: 12},
+	}, false)
+	m.SetRefreshing()
+
+	view := m.View()
+
+	if !strings.Contains(view, "[R]") {
+		t.Error("expected refresh indicator [R] in view")
+	}
+	if !strings.Contains(view, "5h:") || !strings.Contains(view, "35%") {
+		t.Error("expected 5h window preserved during refresh")
+	}
+	if !strings.Contains(view, "7d:") || !strings.Contains(view, "12%") {
+		t.Error("expected 7d window preserved during refresh")
+	}
+}

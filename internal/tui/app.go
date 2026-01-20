@@ -29,6 +29,12 @@ const (
 	viewDashboard
 )
 
+// Usage refresh constants (Story 7.5)
+const (
+	refreshInterval = 60 * time.Second
+	refreshDebounce = 5 * time.Second
+)
+
 // NavigationSource tracks where the viewer was opened from.
 // Used by GoBackMsg handler to return to correct parent view.
 type NavigationSource int
@@ -58,6 +64,10 @@ type AppModel struct {
 	// Usage monitoring (Story 7.4)
 	usageBar    *usage.UsageBarModel
 	usageClient *usage.Client
+
+	// Usage refresh state (Story 7.5)
+	lastRefreshTime   time.Time
+	refreshInProgress bool
 }
 
 // newUsageBarStyles creates the usage bar styles from the TUI style exports (Story 7.4).
@@ -124,7 +134,8 @@ func NewAppModelWithError(err error) AppModel {
 func (m AppModel) Init() tea.Cmd {
 	// Request window size to properly initialize the list dimensions
 	// Add usage fetch on startup (Story 7.4 - async, non-blocking)
-	return tea.Batch(m.projectModel.Init(), tea.WindowSize(), m.fetchUsage())
+	// Add periodic refresh scheduling (Story 7.5)
+	return tea.Batch(m.projectModel.Init(), tea.WindowSize(), m.fetchUsage(), scheduleUsageTick())
 }
 
 // Update implements tea.Model.
@@ -326,7 +337,23 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// TODO: Add toast UI to project view or AppModel in future stories
 		return m, nil
 
+	case usageTickMsg:
+		// Periodic refresh trigger (Story 7.5)
+		// Only refresh if not already in progress and not in loading state
+		if !m.refreshInProgress && m.usageBar.State() != usage.StateLoading {
+			m.refreshInProgress = true
+			return m, tea.Batch(m.fetchUsage(), scheduleUsageTick())
+		}
+		// Reschedule even if skipped
+		return m, scheduleUsageTick()
+
 	case usageFetchedMsg:
+		// Update refresh state (Story 7.5)
+		m.refreshInProgress = false // ALWAYS reset, even on error
+		if msg.err == nil {
+			m.lastRefreshTime = time.Now() // Only on success
+		}
+
 		// Handle usage fetch result (Story 7.4)
 		if msg.err != nil {
 			// Handle specific error types
@@ -346,6 +373,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.usageBar.SetLimits(msg.limits, msg.stale)
 		}
 		return m, nil
+
+	case tea.KeyMsg:
+		// Global key handlers (Story 7.5)
+		if msg.String() == "R" {
+			return m.handleManualRefresh()
+		}
+		// Fall through to route to child views
 	}
 
 	// Route updates to current view
@@ -451,6 +485,16 @@ type usageFetchedMsg struct {
 	limits *usage.UsageLimits
 	stale  bool
 	err    error
+}
+
+// usageTickMsg triggers periodic usage refresh (Story 7.5).
+type usageTickMsg struct{}
+
+// scheduleUsageTick schedules the next periodic refresh (Story 7.5).
+func scheduleUsageTick() tea.Cmd {
+	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
+		return usageTickMsg{}
+	})
 }
 
 // fetchUsage returns a command that fetches usage asynchronously (Story 7.4).
@@ -561,4 +605,28 @@ func (m AppModel) loadConversationWithWatch(filePath string) tea.Cmd {
 // UsageBarState returns the current state of the usage bar for testing (Story 7.4).
 func (m AppModel) UsageBarState() usage.UsageBarState {
 	return m.usageBar.State()
+}
+
+// handleManualRefresh handles the R key for manual usage refresh (Story 7.5).
+func (m AppModel) handleManualRefresh() (tea.Model, tea.Cmd) {
+	// Skip if already refreshing
+	if m.refreshInProgress {
+		return m, nil
+	}
+
+	// Skip if in loading state
+	if m.usageBar.State() == usage.StateLoading {
+		return m, nil
+	}
+
+	// Skip if within debounce window
+	if time.Since(m.lastRefreshTime) < refreshDebounce {
+		return m, nil
+	}
+
+	// Trigger manual refresh
+	m.usageClient.InvalidateCache() // Force fresh fetch
+	m.refreshInProgress = true
+	m.usageBar.SetRefreshing() // Show indicator (Story 7.5)
+	return m, m.fetchUsage()
 }

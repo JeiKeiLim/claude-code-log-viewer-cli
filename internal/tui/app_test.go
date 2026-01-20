@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -575,5 +576,475 @@ func TestAppModel_DashboardSelectedMsg_AdjustsHeight(t *testing.T) {
 	// Verify state changed to dashboard
 	if m2.state != viewDashboard {
 		t.Errorf("state = %d, want viewDashboard", m2.state)
+	}
+}
+
+// Story 7.5 Tests: Usage Bar Refresh
+
+func TestAppModel_RefreshStateFields(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	// Initial state: refreshInProgress should be false
+	if model.refreshInProgress {
+		t.Error("Initial refreshInProgress should be false")
+	}
+
+	// lastRefreshTime should be zero value
+	if !model.lastRefreshTime.IsZero() {
+		t.Error("Initial lastRefreshTime should be zero")
+	}
+}
+
+func TestRefreshConstants(t *testing.T) {
+	// Verify constants are defined with expected values
+	if refreshInterval.Seconds() != 60 {
+		t.Errorf("refreshInterval = %v, want 60s", refreshInterval)
+	}
+	if refreshDebounce.Seconds() != 5 {
+		t.Errorf("refreshDebounce = %v, want 5s", refreshDebounce)
+	}
+}
+
+func TestAppModel_UsageTickMsg_TriggersRefresh(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	// Set usageBar to normal state (not loading) to allow refresh
+	model.usageBar.SetLimits(&usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}, false)
+	model.refreshInProgress = false
+
+	newModel, cmd := model.Update(usageTickMsg{})
+	m := newModel.(AppModel)
+
+	if !m.refreshInProgress {
+		t.Error("expected refreshInProgress to be true after tick")
+	}
+	if cmd == nil {
+		t.Error("expected cmd to include fetchUsage and reschedule")
+	}
+}
+
+func TestAppModel_UsageTickMsg_ReschedulesEvenWhenSkipped(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.refreshInProgress = true // Already refreshing
+
+	newModel, cmd := model.Update(usageTickMsg{})
+	m := newModel.(AppModel)
+
+	// refreshInProgress should remain true (not changed)
+	if !m.refreshInProgress {
+		t.Error("refreshInProgress should still be true")
+	}
+
+	// Should still return a command (the reschedule tick)
+	if cmd == nil {
+		t.Error("expected reschedule tick command even when refresh is skipped")
+	}
+}
+
+func TestAppModel_UsageTickMsg_SkippedDuringLoading(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	// Initial state is loading - should skip refresh
+
+	newModel, cmd := model.Update(usageTickMsg{})
+	m := newModel.(AppModel)
+
+	// Should not set refreshInProgress since we're in loading state
+	if m.refreshInProgress {
+		t.Error("should not start refresh during loading state")
+	}
+
+	// Should still reschedule
+	if cmd == nil {
+		t.Error("expected reschedule tick command")
+	}
+}
+
+func TestAppModel_ManualRefresh_R_Key(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	// Simulate successful initial fetch
+	model.usageBar.SetLimits(&usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}, false)
+	// Wait for debounce (set lastRefreshTime to 10s ago)
+	model.lastRefreshTime = time.Now().Add(-10 * time.Second)
+
+	// Press R key (shift+r)
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	newModel, cmd := model.Update(keyMsg)
+	m := newModel.(AppModel)
+
+	if !m.refreshInProgress {
+		t.Error("expected manual refresh to trigger")
+	}
+	if cmd == nil {
+		t.Error("expected fetchUsage command")
+	}
+}
+
+func TestAppModel_ManualRefresh_Debounce(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	model.usageBar.SetLimits(&usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}, false)
+	model.lastRefreshTime = time.Now() // Just refreshed
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	newModel, cmd := model.Update(keyMsg)
+	m := newModel.(AppModel)
+
+	if m.refreshInProgress {
+		t.Error("expected refresh to be blocked by debounce")
+	}
+	if cmd != nil {
+		t.Error("expected no command when debounced")
+	}
+}
+
+func TestAppModel_ManualRefresh_IgnoredDuringLoading(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	// Initial state is loading (no usageFetchedMsg received)
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	newModel, cmd := model.Update(keyMsg)
+	m := newModel.(AppModel)
+
+	if m.refreshInProgress {
+		t.Error("expected no refresh during loading state")
+	}
+	if cmd != nil {
+		t.Error("expected no command during loading state")
+	}
+}
+
+func TestAppModel_ManualRefresh_LowercaseR_Ignored(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	model.usageBar.SetLimits(&usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}, false)
+	model.lastRefreshTime = time.Now().Add(-10 * time.Second)
+
+	// lowercase 'r' should NOT trigger refresh (only 'R' does)
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	newModel, _ := model.Update(keyMsg)
+	m := newModel.(AppModel)
+
+	if m.refreshInProgress {
+		t.Error("lowercase 'r' should not trigger refresh")
+	}
+	// cmd may be non-nil due to forwarding to child views, so we check refreshInProgress instead
+}
+
+func TestAppModel_ManualRefresh_IgnoredWhenInProgress(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	model.usageBar.SetLimits(&usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}, false)
+	model.refreshInProgress = true
+	model.lastRefreshTime = time.Now().Add(-10 * time.Second)
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	newModel, cmd := model.Update(keyMsg)
+	m := newModel.(AppModel)
+
+	// refreshInProgress should still be true (unchanged)
+	if !m.refreshInProgress {
+		t.Error("refreshInProgress should remain true")
+	}
+	if cmd != nil {
+		t.Error("expected no additional refresh when already in progress")
+	}
+}
+
+func TestAppModel_UsageFetchedMsg_UpdatesRefreshState(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.refreshInProgress = true
+
+	limits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}
+
+	newModel, _ := model.Update(usageFetchedMsg{limits: limits, stale: false})
+	m := newModel.(AppModel)
+
+	// refreshInProgress should be reset to false
+	if m.refreshInProgress {
+		t.Error("refreshInProgress should be false after successful fetch")
+	}
+
+	// lastRefreshTime should be updated
+	if m.lastRefreshTime.IsZero() {
+		t.Error("lastRefreshTime should be set after successful fetch")
+	}
+}
+
+func TestAppModel_UsageFetchedMsg_ResetsRefreshOnError(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.refreshInProgress = true
+
+	// Simulate error without stale data
+	newModel, _ := model.Update(usageFetchedMsg{err: usage.ErrAPIError})
+	m := newModel.(AppModel)
+
+	// refreshInProgress should be reset to false EVEN on error
+	if m.refreshInProgress {
+		t.Error("refreshInProgress should be false even after error")
+	}
+
+	// lastRefreshTime should NOT be updated on error
+	if !m.lastRefreshTime.IsZero() {
+		t.Error("lastRefreshTime should not be updated on error")
+	}
+}
+
+func TestAppModel_UsageFetchedMsg_UpdatesLastRefreshTimeOnSuccess(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.refreshInProgress = true
+
+	before := time.Now()
+	limits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}
+
+	newModel, _ := model.Update(usageFetchedMsg{limits: limits, stale: false})
+	m := newModel.(AppModel)
+	after := time.Now()
+
+	// lastRefreshTime should be between before and after
+	if m.lastRefreshTime.Before(before) || m.lastRefreshTime.After(after) {
+		t.Errorf("lastRefreshTime = %v, expected between %v and %v",
+			m.lastRefreshTime, before, after)
+	}
+}
+
+func TestAppModel_ManualRefresh_SetsRefreshingState(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	// Set initial state with limits
+	model.usageBar.SetLimits(&usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}, false)
+	model.lastRefreshTime = time.Now().Add(-10 * time.Second)
+
+	// Press R key
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	newModel, _ := model.Update(keyMsg)
+	m := newModel.(AppModel)
+
+	// Should be in refreshing state
+	if m.UsageBarState() != usage.StateRefreshing {
+		t.Errorf("UsageBarState = %v, want StateRefreshing", m.UsageBarState())
+	}
+}
+
+func TestAppModel_StateRefreshing_ToNormal_OnSuccess(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	// Set to refreshing state
+	model.usageBar.SetLimits(&usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}, false)
+	model.usageBar.SetRefreshing()
+	model.refreshInProgress = true
+
+	// Simulate successful fetch
+	newModel, _ := model.Update(usageFetchedMsg{
+		limits: &usage.UsageLimits{FiveHour: &usage.UsageWindow{Utilization: 40.0}},
+		stale:  false,
+	})
+	m := newModel.(AppModel)
+
+	if m.UsageBarState() != usage.StateNormal {
+		t.Errorf("UsageBarState = %v, want StateNormal after successful fetch", m.UsageBarState())
+	}
+	if m.refreshInProgress {
+		t.Error("refreshInProgress should be false after fetch")
+	}
+}
+
+func TestAppModel_StateRefreshing_ToStale_OnError(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	// Set to refreshing state with existing limits
+	existingLimits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}
+	model.usageBar.SetLimits(existingLimits, false)
+	model.usageBar.SetRefreshing()
+	model.refreshInProgress = true
+
+	// Simulate error with stale cached data
+	newModel, _ := model.Update(usageFetchedMsg{
+		limits: existingLimits,
+		stale:  true,
+		err:    usage.ErrAPITimeout,
+	})
+	m := newModel.(AppModel)
+
+	if m.UsageBarState() != usage.StateStale {
+		t.Errorf("UsageBarState = %v, want StateStale after error with cached data", m.UsageBarState())
+	}
+}
+
+func TestAppModel_Init_SchedulesUsageTick(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	cmd := model.Init()
+
+	// Init should return a batch command
+	if cmd == nil {
+		t.Fatal("Init() should return a command")
+	}
+
+	// Verify that a batch was returned (indirect test)
+	// The batch includes scheduleUsageTick which will produce usageTickMsg after 60s
+	// We can't easily test timing, but verify the command exists
+}
+
+func TestScheduleUsageTick_ReturnsCmd(t *testing.T) {
+	cmd := scheduleUsageTick()
+	if cmd == nil {
+		t.Fatal("scheduleUsageTick() should return a non-nil command")
+	}
+	// Note: We can't easily test the timing behavior, but we verify it returns a cmd
+}
+
+func TestAppModel_ManualRefresh_CacheInvalidation(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	// Set up state to allow refresh
+	model.usageBar.SetLimits(&usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}, false)
+	model.lastRefreshTime = time.Now().Add(-10 * time.Second)
+
+	// Trigger manual refresh
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	newModel, cmd := model.Update(keyMsg)
+	m := newModel.(AppModel)
+
+	// Verify refresh was triggered
+	if !m.refreshInProgress {
+		t.Error("refreshInProgress should be true")
+	}
+	if cmd == nil {
+		t.Error("should return fetchUsage command")
+	}
+
+	// Note: Cache invalidation happens via m.usageClient.InvalidateCache()
+	// which we can't directly verify without mocking, but the test
+	// verifies the code path is executed
+}
+
+func TestAppModel_RefreshBehavior_TableDriven(t *testing.T) {
+	tests := []struct {
+		name                string
+		setupModel          func(*AppModel)
+		expectRefresh       bool
+		expectRefreshState  bool
+		checkRefreshBlocked bool
+	}{
+		{
+			name: "normal state allows refresh",
+			setupModel: func(m *AppModel) {
+				m.usageBar.SetLimits(&usage.UsageLimits{
+					FiveHour: &usage.UsageWindow{Utilization: 35.0},
+				}, false)
+				m.lastRefreshTime = time.Now().Add(-10 * time.Second)
+			},
+			expectRefresh:      true,
+			expectRefreshState: true,
+		},
+		{
+			name: "loading state blocks refresh",
+			setupModel: func(m *AppModel) {
+				// Initial state is loading
+			},
+			expectRefresh:       false,
+			checkRefreshBlocked: true,
+		},
+		{
+			name: "debounce window blocks refresh",
+			setupModel: func(m *AppModel) {
+				m.usageBar.SetLimits(&usage.UsageLimits{
+					FiveHour: &usage.UsageWindow{Utilization: 35.0},
+				}, false)
+				m.lastRefreshTime = time.Now() // Just refreshed
+			},
+			expectRefresh:       false,
+			checkRefreshBlocked: true,
+		},
+		{
+			name: "in-progress blocks refresh",
+			setupModel: func(m *AppModel) {
+				m.usageBar.SetLimits(&usage.UsageLimits{
+					FiveHour: &usage.UsageWindow{Utilization: 35.0},
+				}, false)
+				m.refreshInProgress = true
+				m.lastRefreshTime = time.Now().Add(-10 * time.Second)
+			},
+			expectRefresh:       false,
+			checkRefreshBlocked: true,
+		},
+		{
+			name: "stale state allows refresh",
+			setupModel: func(m *AppModel) {
+				m.usageBar.SetLimits(&usage.UsageLimits{
+					FiveHour: &usage.UsageWindow{Utilization: 35.0},
+				}, true) // stale
+				m.lastRefreshTime = time.Now().Add(-10 * time.Second)
+			},
+			expectRefresh:      true,
+			expectRefreshState: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projects := []types.Project{{DisplayName: "proj1"}}
+			model := NewAppModel(projects)
+			tt.setupModel(&model)
+
+			keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+			newModel, cmd := model.Update(keyMsg)
+			m := newModel.(AppModel)
+
+			if tt.expectRefresh {
+				if cmd == nil {
+					t.Error("expected refresh command")
+				}
+				if tt.expectRefreshState && m.UsageBarState() != usage.StateRefreshing {
+					t.Errorf("UsageBarState = %v, want StateRefreshing", m.UsageBarState())
+				}
+			}
+
+			if tt.checkRefreshBlocked {
+				if cmd != nil {
+					t.Error("expected no command when refresh blocked")
+				}
+			}
+		})
 	}
 }
