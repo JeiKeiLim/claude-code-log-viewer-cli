@@ -101,6 +101,10 @@ var (
 	// Constant colors
 	whiteColor = DefaultTheme.White
 	blackColor = DefaultTheme.Black
+
+	// Usage bar colors (Story 7.3)
+	WarningColor  = lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#F59E0B"} // Amber
+	CriticalColor = lipgloss.AdaptiveColor{Light: "#B91C1C", Dark: "#EF4444"} // Red
 )
 
 // Styles defines all the lipgloss styles used in the application.
@@ -329,6 +333,9 @@ var Styles = struct {
 // GutterSeparator is the string between gutter numbers and content (Story 4.1).
 const GutterSeparator = " "
 
+// UsageBarHeight is the height of the usage bar in lines (Story 7.3).
+const UsageBarHeight = 1
+
 // Icons for different message types (text-based, no emoji per FR-017)
 const (
 	UserIcon      = "[U]"
@@ -482,4 +489,97 @@ func (m *MarkdownRenderer) Width() int {
 		return 0
 	}
 	return m.width
+}
+
+// UsageBarStyles contains styles for the usage bar component (Story 7.3).
+// Returned by GetUsageBarStyles() for dependency injection into internal/usage package.
+var usageBarStyles = struct {
+	Container lipgloss.Style
+	Label     lipgloss.Style
+	Normal    lipgloss.Style
+	Warning   lipgloss.Style
+	Critical  lipgloss.Style
+	Dimmed    lipgloss.Style
+	Stale     lipgloss.Style
+}{
+	Container: lipgloss.NewStyle().
+		Background(bgAltColor).
+		Padding(0, 1),
+	Label: lipgloss.NewStyle().
+		Foreground(mutedColor),
+	Normal: lipgloss.NewStyle().
+		Foreground(textColor),
+	Warning: lipgloss.NewStyle().
+		Foreground(WarningColor).
+		Bold(true),
+	Critical: lipgloss.NewStyle().
+		Foreground(CriticalColor).
+		Bold(true),
+	Dimmed: lipgloss.NewStyle().
+		Foreground(dimColor).
+		Italic(true),
+	Stale: lipgloss.NewStyle().
+		Foreground(mutedColor).
+		Italic(true),
+}
+
+// GetUsageBarContainer returns the container style for the usage bar.
+func GetUsageBarContainer() lipgloss.Style {
+	return usageBarStyles.Container
+}
+
+// GetUsageBarLabel returns the label style for the usage bar.
+func GetUsageBarLabel() lipgloss.Style {
+	return usageBarStyles.Label
+}
+
+// GetUsageBarNormal returns the normal style for the usage bar.
+func GetUsageBarNormal() lipgloss.Style {
+	return usageBarStyles.Normal
+}
+
+// GetUsageBarWarning returns the warning style for the usage bar.
+func GetUsageBarWarning() lipgloss.Style {
+	return usageBarStyles.Warning
+}
+
+// GetUsageBarCritical returns the critical style for the usage bar.
+func GetUsageBarCritical() lipgloss.Style {
+	return usageBarStyles.Critical
+}
+
+// GetUsageBarDimmed returns the dimmed style for the usage bar.
+func GetUsageBarDimmed() lipgloss.Style {
+	return usageBarStyles.Dimmed
+}
+
+// GetUsageBarStale returns the stale style for the usage bar.
+func GetUsageBarStale() lipgloss.Style {
+	return usageBarStyles.Stale
+}
+
+// UsageBarStylesExport is a struct matching usage.UsageBarStyles for export.
+// This avoids circular import between tui and usage packages.
+type UsageBarStylesExport struct {
+	Container lipgloss.Style
+	Label     lipgloss.Style
+	Normal    lipgloss.Style
+	Warning   lipgloss.Style
+	Critical  lipgloss.Style
+	Dimmed    lipgloss.Style
+	Stale     lipgloss.Style
+}
+
+// GetUsageBarStyles returns all usage bar styles as a single struct.
+// This is the preferred way to get styles for the usage bar component.
+func GetUsageBarStyles() UsageBarStylesExport {
+	return UsageBarStylesExport{
+		Container: usageBarStyles.Container,
+		Label:     usageBarStyles.Label,
+		Normal:    usageBarStyles.Normal,
+		Warning:   usageBarStyles.Warning,
+		Critical:  usageBarStyles.Critical,
+		Dimmed:    usageBarStyles.Dimmed,
+		Stale:     usageBarStyles.Stale,
+	}
 }
