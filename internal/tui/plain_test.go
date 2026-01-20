@@ -310,6 +310,113 @@ func TestFormatResetDuration(t *testing.T) {
 	}
 }
 
+func TestRenderPlain_NoSpuriousWhitespace(t *testing.T) {
+	// Create multiple test entries - verifies AC-2: no space-only lines
+	// Tests both single and multiple entries to catch whitespace between entries
+	entries := []types.LogEntry{
+		{
+			Type:      types.EntryTypeUser,
+			Timestamp: time.Now(),
+			Message: types.Message{
+				TextContent: "Hello world",
+			},
+		},
+		{
+			Type:      types.EntryTypeAssistant,
+			Timestamp: time.Now(),
+			Message: types.Message{
+				Content: []types.MessageContent{
+					{Type: types.ContentTypeText, Text: "Response text"},
+				},
+			},
+		},
+	}
+
+	result := RenderPlain(entries, "test.jsonl", RenderOptions{})
+
+	// Check no line is entirely whitespace (except intended blank lines which should be empty)
+	lines := strings.Split(result, "\n")
+	for i, line := range lines {
+		// A line with only whitespace (but not empty) indicates the bug
+		if len(line) > 0 && strings.TrimSpace(line) == "" {
+			t.Errorf("line %d contains only whitespace (%d chars): %q", i, len(line), line)
+		}
+	}
+}
+
+func TestRenderPlain_EmptyEntries(t *testing.T) {
+	// Edge case: empty entries array should still produce valid output
+	entries := []types.LogEntry{}
+
+	result := RenderPlain(entries, "test.jsonl", RenderOptions{})
+
+	// Should have header and blank line, no spurious whitespace
+	lines := strings.Split(result, "\n")
+	for i, line := range lines {
+		if len(line) > 0 && strings.TrimSpace(line) == "" {
+			t.Errorf("line %d contains only whitespace (%d chars): %q", i, len(line), line)
+		}
+	}
+
+	// Should still contain the header
+	if !strings.Contains(result, "===") {
+		t.Error("expected header in output even with empty entries")
+	}
+}
+
+func TestRenderPlain_HeaderFollowedByBlankLine(t *testing.T) {
+	// Verifies AC-1: header followed by exactly one blank line
+	entries := []types.LogEntry{
+		{
+			Type:      types.EntryTypeUser,
+			Timestamp: time.Now(),
+			Message: types.Message{
+				TextContent: "Test message",
+			},
+		},
+	}
+
+	result := RenderPlain(entries, "test.jsonl", RenderOptions{})
+
+	// The pattern should be: styled "=== test.jsonl ===" followed by \n\n
+	// Since styling may wrap the header, we check the raw content:
+	// After the header line, there should be exactly one empty line (two consecutive \n)
+	lines := strings.Split(result, "\n")
+
+	// Find the header line (contains ===)
+	headerIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, "===") {
+			headerIdx = i
+			break
+		}
+	}
+
+	if headerIdx == -1 {
+		t.Fatal("header line not found in output")
+	}
+
+	// The line after header should be empty (the blank line)
+	if headerIdx+1 >= len(lines) {
+		t.Fatal("no line after header")
+	}
+
+	blankLine := lines[headerIdx+1]
+	if blankLine != "" {
+		t.Errorf("expected empty line after header, got %q (%d chars)", blankLine, len(blankLine))
+	}
+
+	// The line after the blank line should have content (the first entry)
+	if headerIdx+2 >= len(lines) {
+		t.Fatal("no content after blank line")
+	}
+
+	contentLine := lines[headerIdx+2]
+	if strings.TrimSpace(contentLine) == "" {
+		t.Error("expected content line after blank line, got empty")
+	}
+}
+
 func TestRenderUsagePlainColorModes(t *testing.T) {
 	// Test that RenderUsagePlain produces different output based on color profile
 	// This tests AC-5: Color Flag Compatibility

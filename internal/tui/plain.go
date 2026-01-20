@@ -22,8 +22,8 @@ func RenderPlain(entries []types.LogEntry, source string, opts RenderOptions) st
 	var b strings.Builder
 
 	// Header showing source
-	header := fmt.Sprintf("=== %s ===\n\n", source)
-	b.WriteString(Styles.Title.Render(header))
+	header := fmt.Sprintf("=== %s ===", source)
+	b.WriteString(Styles.Title.Render(header) + "\n\n")
 
 	for _, entry := range entries {
 		rendered := renderEntryPlain(entry, opts, width)
