@@ -188,34 +188,44 @@ func TestRenderPlainWithOptions(t *testing.T) {
 	}
 
 	tests := []struct {
-		name         string
-		opts         RenderOptions
-		wantThinking bool
-		wantTool     bool
+		name                   string
+		opts                   RenderOptions
+		wantThinkingContent    bool // Full thinking content
+		wantToolContent        bool // Full tool input
+		wantThinkingCollapsed  bool // Collapsed indicator for thinking
+		wantToolCollapsed      bool // Collapsed indicator for tool (shows tool name + summary)
 	}{
 		{
-			name:         "default shows all",
-			opts:         DefaultRenderOptions(),
-			wantThinking: true,
-			wantTool:     true,
+			name:                   "default shows all",
+			opts:                   DefaultRenderOptions(),
+			wantThinkingContent:    true,
+			wantToolContent:        true,
+			wantThinkingCollapsed:  false,
+			wantToolCollapsed:      false,
 		},
 		{
-			name:         "hide thoughts only",
-			opts:         RenderOptions{HideThoughts: true, HideTools: false},
-			wantThinking: false,
-			wantTool:     true,
+			name:                   "hide thoughts shows collapsed indicator",
+			opts:                   RenderOptions{HideThoughts: true, HideTools: false},
+			wantThinkingContent:    false,
+			wantToolContent:        true,
+			wantThinkingCollapsed:  true,
+			wantToolCollapsed:      false,
 		},
 		{
-			name:         "hide tools only",
-			opts:         RenderOptions{HideThoughts: false, HideTools: true},
-			wantThinking: true,
-			wantTool:     false,
+			name:                   "hide tools shows collapsed summary",
+			opts:                   RenderOptions{HideThoughts: false, HideTools: true},
+			wantThinkingContent:    true,
+			wantToolContent:        false,
+			wantThinkingCollapsed:  false,
+			wantToolCollapsed:      true,
 		},
 		{
-			name:         "hide both",
-			opts:         RenderOptions{HideThoughts: true, HideTools: true},
-			wantThinking: false,
-			wantTool:     false,
+			name:                   "hide both shows collapsed indicators",
+			opts:                   RenderOptions{HideThoughts: true, HideTools: true},
+			wantThinkingContent:    false,
+			wantToolContent:        false,
+			wantThinkingCollapsed:  true,
+			wantToolCollapsed:      true,
 		},
 	}
 
@@ -223,17 +233,237 @@ func TestRenderPlainWithOptions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			output := RenderPlain(entries, "test", tt.opts)
 
-			hasThinking := strings.Contains(output, "Thinking")
-			hasTool := strings.Contains(output, "Tool")
-
-			if hasThinking != tt.wantThinking {
-				t.Errorf("RenderPlain() thinking=%v, want %v", hasThinking, tt.wantThinking)
+			// Check for full thinking content ("Some thinking")
+			hasThinkingContent := strings.Contains(output, "Some thinking")
+			if hasThinkingContent != tt.wantThinkingContent {
+				t.Errorf("RenderPlain() thinkingContent=%v, want %v", hasThinkingContent, tt.wantThinkingContent)
 			}
-			if hasTool != tt.wantTool {
-				t.Errorf("RenderPlain() tool=%v, want %v", hasTool, tt.wantTool)
+
+			// Check for thinking collapsed indicator
+			hasThinkingCollapsed := strings.Contains(output, "[thinking collapsed]")
+			if hasThinkingCollapsed != tt.wantThinkingCollapsed {
+				t.Errorf("RenderPlain() thinkingCollapsed=%v, want %v", hasThinkingCollapsed, tt.wantThinkingCollapsed)
+			}
+
+			// Check for full tool input (contains file_path in JSON)
+			hasToolContent := strings.Contains(output, "file_path")
+			if hasToolContent != tt.wantToolContent {
+				t.Errorf("RenderPlain() toolContent=%v, want %v", hasToolContent, tt.wantToolContent)
+			}
+
+			// Check for tool collapsed summary (tool name present but not full input)
+			hasToolCollapsed := strings.Contains(output, "Read") && strings.Contains(output, "test.go") && !hasToolContent
+			if tt.wantToolCollapsed && !hasToolCollapsed {
+				// When collapsed, should have tool name and summary but not full JSON input
+				if !strings.Contains(output, "Read") {
+					t.Error("RenderPlain() collapsed tool should show tool name 'Read'")
+				}
 			}
 		})
 	}
+}
+
+// TestRenderAssistantMessage_HideThoughtsFlag tests AC-1: TUI --hide-thoughts shows collapsed indicator.
+func TestRenderAssistantMessage_HideThoughtsFlag(t *testing.T) {
+	entry := types.LogEntry{
+		Type: types.EntryTypeAssistant,
+		Message: types.Message{
+			Content: []types.MessageContent{
+				{Type: types.ContentTypeThinking, Thinking: "secret thinking content"},
+			},
+		},
+	}
+
+	tests := []struct {
+		name                  string
+		hideThoughts          bool
+		wantCollapsedIndicator bool
+		wantThinkingContent   bool
+	}{
+		{
+			name:                  "without flag shows thinking content",
+			hideThoughts:          false,
+			wantCollapsedIndicator: false,
+			wantThinkingContent:   true,
+		},
+		{
+			name:                  "with flag shows collapsed indicator",
+			hideThoughts:          true,
+			wantCollapsedIndicator: true,
+			wantThinkingContent:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := RenderOptions{HideThoughts: tt.hideThoughts}
+			mdRenderer, err := NewMarkdownRenderer(80)
+			if err != nil {
+				t.Fatalf("NewMarkdownRenderer failed: %v", err)
+			}
+			output := renderAssistantMessageStatic(entry, 80, true, true, opts, mdRenderer, 0, nil)
+
+			hasCollapsedIndicator := strings.Contains(output, "[thinking collapsed]")
+			hasThinkingContent := strings.Contains(output, "secret thinking content")
+
+			if hasCollapsedIndicator != tt.wantCollapsedIndicator {
+				t.Errorf("collapsed indicator: got %v, want %v", hasCollapsedIndicator, tt.wantCollapsedIndicator)
+			}
+			if hasThinkingContent != tt.wantThinkingContent {
+				t.Errorf("thinking content: got %v, want %v", hasThinkingContent, tt.wantThinkingContent)
+			}
+		})
+	}
+}
+
+// TestRenderAssistantMessage_HideToolsFlag tests AC-2: TUI --hide-tools shows collapsed summary.
+func TestRenderAssistantMessage_HideToolsFlag(t *testing.T) {
+	entry := types.LogEntry{
+		Type: types.EntryTypeAssistant,
+		Message: types.Message{
+			Content: []types.MessageContent{
+				{
+					Type:      types.ContentTypeToolUse,
+					ToolName:  "Read",
+					ToolInput: map[string]any{"file_path": "/test/file.go"},
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		hideTools        bool
+		wantToolHeader   bool
+		wantToolSummary  bool
+		wantFullInput    bool
+	}{
+		{
+			name:             "without flag shows full tool input",
+			hideTools:        false,
+			wantToolHeader:   true,
+			wantToolSummary:  false, // Full input, not summary
+			wantFullInput:    true,
+		},
+		{
+			name:             "with flag shows collapsed summary",
+			hideTools:        true,
+			wantToolHeader:   true,
+			wantToolSummary:  true,  // Summary (file.go)
+			wantFullInput:    false, // No JSON input
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := RenderOptions{HideTools: tt.hideTools}
+			mdRenderer, err := NewMarkdownRenderer(80)
+			if err != nil {
+				t.Fatalf("NewMarkdownRenderer failed: %v", err)
+			}
+			output := renderAssistantMessageStatic(entry, 80, true, true, opts, mdRenderer, 0, nil)
+
+			hasToolHeader := strings.Contains(output, "Tool") && strings.Contains(output, "Read")
+			hasToolSummary := strings.Contains(output, "file.go") && !strings.Contains(output, "\"file_path\"")
+			hasFullInput := strings.Contains(output, "\"file_path\"")
+
+			if hasToolHeader != tt.wantToolHeader {
+				t.Errorf("tool header: got %v, want %v", hasToolHeader, tt.wantToolHeader)
+			}
+			if tt.wantToolSummary && !hasToolSummary {
+				t.Errorf("tool summary: expected summary with file.go but not JSON")
+			}
+			if hasFullInput != tt.wantFullInput {
+				t.Errorf("full input: got %v, want %v", hasFullInput, tt.wantFullInput)
+			}
+		})
+	}
+}
+
+// TestRenderAssistantMessage_BothFlagsShowCollapsed tests AC-6: message with only hidden content shows indicators.
+func TestRenderAssistantMessage_BothFlagsShowCollapsed(t *testing.T) {
+	entry := types.LogEntry{
+		Type: types.EntryTypeAssistant,
+		Message: types.Message{
+			Content: []types.MessageContent{
+				{Type: types.ContentTypeThinking, Thinking: "hidden thinking"},
+				{
+					Type:      types.ContentTypeToolUse,
+					ToolName:  "Bash",
+					ToolInput: map[string]any{"command": "ls"},
+				},
+			},
+		},
+	}
+
+	opts := RenderOptions{HideThoughts: true, HideTools: true}
+	mdRenderer, err := NewMarkdownRenderer(80)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer failed: %v", err)
+	}
+	output := renderAssistantMessageStatic(entry, 80, true, true, opts, mdRenderer, 0, nil)
+
+	// Both collapsed indicators should be present
+	if !strings.Contains(output, "[thinking collapsed]") {
+		t.Error("expected thinking collapsed indicator")
+	}
+	if !strings.Contains(output, "Bash") {
+		t.Error("expected tool name 'Bash' in collapsed output")
+	}
+
+	// Full content should be hidden
+	if strings.Contains(output, "hidden thinking") {
+		t.Error("thinking content should be hidden")
+	}
+	if strings.Contains(output, "\"command\"") {
+		t.Error("tool input JSON should be hidden")
+	}
+}
+
+// TestRenderAssistantMessage_FlagVsToggleConsistency tests AC-5:
+// Both flag (--hide-thoughts) and toggle ('t' key) produce collapsed state (content hidden).
+// The difference is the text hint: flag shows "collapsed", toggle shows "press 't' to expand".
+func TestRenderAssistantMessage_FlagVsToggleConsistency(t *testing.T) {
+	entry := types.LogEntry{
+		Type: types.EntryTypeAssistant,
+		Message: types.Message{
+			Content: []types.MessageContent{
+				{Type: types.ContentTypeThinking, Thinking: "deep analysis of the problem"},
+			},
+		},
+	}
+
+	mdRenderer, err := NewMarkdownRenderer(80)
+	if err != nil {
+		t.Fatalf("NewMarkdownRenderer failed: %v", err)
+	}
+
+	// Flag behavior: HideThoughts=true, showThinking=true (toggle state ignored)
+	flagOutput := renderAssistantMessageStatic(entry, 80, true, true, RenderOptions{HideThoughts: true}, mdRenderer, 0, nil)
+
+	// Toggle behavior: HideThoughts=false, showThinking=false (toggle collapsed)
+	toggleOutput := renderAssistantMessageStatic(entry, 80, false, true, RenderOptions{HideThoughts: false}, mdRenderer, 0, nil)
+
+	// Both should hide the actual thinking content
+	if strings.Contains(flagOutput, "deep analysis of the problem") {
+		t.Error("flag output should hide thinking content")
+	}
+	if strings.Contains(toggleOutput, "deep analysis of the problem") {
+		t.Error("toggle output should hide thinking content")
+	}
+
+	// Flag should show "collapsed" text
+	if !strings.Contains(flagOutput, "[thinking collapsed]") {
+		t.Error("flag output should show 'collapsed' text")
+	}
+
+	// Toggle should show "press 't' to expand" text
+	if !strings.Contains(toggleOutput, "press 't' to expand") {
+		t.Error("toggle output should show 'press t to expand' text")
+	}
+
+	// Both are collapsed states - neither should show full content
+	// This validates AC-5: consistent behavior between flag and toggle
 }
 
 func TestBuildNewEntriesSegment(t *testing.T) {

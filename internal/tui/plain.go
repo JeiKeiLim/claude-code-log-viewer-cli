@@ -94,7 +94,11 @@ func renderAssistantMessagePlain(entry types.LogEntry, opts RenderOptions, width
 
 		case types.ContentTypeThinking:
 			if opts.HideThoughts {
-				continue // Skip thinking blocks when hidden
+				// Show collapsed indicator instead of skipping
+				parts = append(parts, Styles.CollapsedIndicator.Render(
+					fmt.Sprintf("%s [thinking collapsed]", ThinkingIcon),
+				))
+				continue
 			}
 			// Show thinking content expanded in plain mode
 			thinkingHeader := fmt.Sprintf("%s %s", ThinkingIcon, Styles.ThinkingHeader.Render("Thinking"))
@@ -103,7 +107,17 @@ func renderAssistantMessagePlain(entry types.LogEntry, opts RenderOptions, width
 
 		case types.ContentTypeToolUse:
 			if opts.HideTools {
-				continue // Skip tool blocks when hidden
+				// Show collapsed summary instead of skipping
+				toolHeader := fmt.Sprintf("%s %s: %s",
+					ToolIcon,
+					Styles.ToolHeader.Render("Tool"),
+					content.ToolName,
+				)
+				summary := formatToolSummary(content.ToolName, content.ToolInput)
+				parts = append(parts, Styles.ToolBlock.Render(
+					toolHeader+" "+Styles.CollapsedIndicator.Render(summary),
+				))
+				continue
 			}
 			// Show tool use with inputs in plain mode
 			toolHeader := fmt.Sprintf("%s %s: %s",

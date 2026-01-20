@@ -1426,13 +1426,27 @@ func (m *ViewerModel) renderAssistantMessage(entry types.LogEntry) string {
 
 		case types.ContentTypeThinking:
 			if m.renderOpts.HideThoughts {
-				continue // Skip thinking blocks when hidden
+				// Show collapsed indicator (flag behavior - not expandable)
+				parts = append(parts, Styles.CollapsedIndicator.Render(
+					fmt.Sprintf("%s [thinking collapsed]", ThinkingIcon),
+				))
+				continue
 			}
 			parts = append(parts, m.renderThinkingBlock(content))
 
 		case types.ContentTypeToolUse:
 			if m.renderOpts.HideTools {
-				continue // Skip tool blocks when hidden
+				// Show collapsed summary (same format as toggle state)
+				toolHeader := fmt.Sprintf("%s %s: %s",
+					ToolIcon,
+					Styles.ToolHeader.Render("Tool"),
+					content.ToolName,
+				)
+				summary := formatToolSummary(content.ToolName, content.ToolInput)
+				parts = append(parts, Styles.ToolBlock.Render(
+					toolHeader+" "+Styles.CollapsedIndicator.Render(summary),
+				))
+				continue
 			}
 			parts = append(parts, m.renderToolUseBlock(content))
 		}
@@ -1584,13 +1598,27 @@ func renderAssistantMessageStatic(entry types.LogEntry, width int, showThinking,
 
 		case types.ContentTypeThinking:
 			if opts.HideThoughts {
-				continue // Skip thinking blocks when hidden
+				// Show collapsed indicator (flag behavior - not expandable)
+				parts = append(parts, Styles.CollapsedIndicator.Render(
+					fmt.Sprintf("%s [thinking collapsed]", ThinkingIcon),
+				))
+				continue
 			}
 			parts = append(parts, renderThinkingBlockStatic(content, width, showThinking, gutterWidth))
 
 		case types.ContentTypeToolUse:
 			if opts.HideTools {
-				continue // Skip tool blocks when hidden
+				// Show collapsed summary (same format as toggle state)
+				toolHeader := fmt.Sprintf("%s %s: %s",
+					ToolIcon,
+					Styles.ToolHeader.Render("Tool"),
+					content.ToolName,
+				)
+				summary := formatToolSummary(content.ToolName, content.ToolInput)
+				parts = append(parts, Styles.ToolBlock.Render(
+					toolHeader+" "+Styles.CollapsedIndicator.Render(summary),
+				))
+				continue
 			}
 			parts = append(parts, renderToolUseBlockStatic(content, width, showToolInputs, gutterWidth))
 		}

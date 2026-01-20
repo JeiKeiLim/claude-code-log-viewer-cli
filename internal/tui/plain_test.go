@@ -125,16 +125,18 @@ func TestRenderPlainWithHideOptions(t *testing.T) {
 	}
 
 	tests := []struct {
-		name         string
-		hideThoughts bool
-		hideTools    bool
-		wantThinking bool
-		wantTool     bool
+		name                  string
+		hideThoughts          bool
+		hideTools             bool
+		wantThinkingContent   bool // Full thinking content visible
+		wantToolContent       bool // Full tool input visible
+		wantThinkingCollapsed bool // Collapsed indicator visible
+		wantToolCollapsed     bool // Collapsed summary visible
 	}{
-		{"show all", false, false, true, true},
-		{"hide thoughts", true, false, false, true},
-		{"hide tools", false, true, true, false},
-		{"hide both", true, true, false, false},
+		{"show all", false, false, true, true, false, false},
+		{"hide thoughts shows collapsed", true, false, false, true, true, false},
+		{"hide tools shows collapsed", false, true, true, false, false, true},
+		{"hide both shows collapsed", true, true, false, false, true, true},
 	}
 
 	for _, tt := range tests {
@@ -146,16 +148,77 @@ func TestRenderPlainWithHideOptions(t *testing.T) {
 			}
 			output := RenderPlain(entries, "test", opts)
 
-			hasThinking := strings.Contains(output, "Thinking")
-			hasTool := strings.Contains(output, "Read")
-
-			if hasThinking != tt.wantThinking {
-				t.Errorf("thinking visibility: got %v, want %v", hasThinking, tt.wantThinking)
+			// Check for full thinking content
+			hasThinkingContent := strings.Contains(output, "Thinking about something")
+			if hasThinkingContent != tt.wantThinkingContent {
+				t.Errorf("thinking content: got %v, want %v", hasThinkingContent, tt.wantThinkingContent)
 			}
-			if hasTool != tt.wantTool {
-				t.Errorf("tool visibility: got %v, want %v", hasTool, tt.wantTool)
+
+			// Check for thinking collapsed indicator
+			hasThinkingCollapsed := strings.Contains(output, "[thinking collapsed]")
+			if hasThinkingCollapsed != tt.wantThinkingCollapsed {
+				t.Errorf("thinking collapsed: got %v, want %v", hasThinkingCollapsed, tt.wantThinkingCollapsed)
+			}
+
+			// Check for full tool input (JSON format with file_path key)
+			hasToolContent := strings.Contains(output, "\"file_path\"")
+			if hasToolContent != tt.wantToolContent {
+				t.Errorf("tool content: got %v, want %v", hasToolContent, tt.wantToolContent)
+			}
+
+			// Check for tool collapsed summary (has tool name but not full JSON)
+			hasToolCollapsed := strings.Contains(output, "Read") && strings.Contains(output, "test.txt") && !hasToolContent
+			if tt.wantToolCollapsed && !hasToolCollapsed {
+				if !strings.Contains(output, "Read") {
+					t.Errorf("collapsed tool should show tool name 'Read', got:\n%s", output)
+				}
 			}
 		})
+	}
+}
+
+// TestRenderPlain_BothFlagsShowsCollapsedIndicators verifies AC-6:
+// A message with ONLY thinking/tool content shows collapsed indicators, not empty box.
+func TestRenderPlain_BothFlagsShowsCollapsedIndicators(t *testing.T) {
+	// Entry with ONLY thinking and tool content (no text)
+	entries := []types.LogEntry{
+		{
+			Type:      types.EntryTypeAssistant,
+			Timestamp: time.Now(),
+			Message: types.Message{
+				Content: []types.MessageContent{
+					{Type: types.ContentTypeThinking, Thinking: "secret thinking content"},
+					{
+						Type:      types.ContentTypeToolUse,
+						ToolName:  "Bash",
+						ToolInput: map[string]any{"command": "ls -la"},
+					},
+				},
+			},
+		},
+	}
+
+	opts := RenderOptions{
+		Width:        80,
+		HideThoughts: true,
+		HideTools:    true,
+	}
+	output := RenderPlain(entries, "test.jsonl", opts)
+
+	// Verify collapsed indicators present (not empty box)
+	if !strings.Contains(output, "[thinking collapsed]") {
+		t.Error("expected thinking collapsed indicator")
+	}
+	if !strings.Contains(output, "Bash") {
+		t.Error("expected tool name 'Bash' in collapsed output")
+	}
+
+	// Verify actual content is hidden
+	if strings.Contains(output, "secret thinking content") {
+		t.Error("thinking content should be hidden")
+	}
+	if strings.Contains(output, "\"command\"") {
+		t.Error("tool input JSON should be hidden")
 	}
 }
 
