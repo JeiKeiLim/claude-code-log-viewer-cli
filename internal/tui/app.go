@@ -356,9 +356,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Handle usage fetch result (Story 7.4, 7.7)
 		if msg.err != nil {
-			// Log for debugging (AC-6) - goes to stderr
-			log.Printf("usage fetch error: %v", msg.err)
-
 			// Handle specific error types (expanded for Story 7.7)
 			if errors.Is(msg.err, usage.ErrNoCredentials) ||
 				errors.Is(msg.err, usage.ErrKeychainNotFound) ||
@@ -367,7 +364,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				errors.Is(msg.err, usage.ErrEmptyToken) {
 				m.usageBar.SetNotLoggedIn()
 			} else if errors.Is(msg.err, usage.ErrTokenExpired) {
-				m.usageBar.SetError("Session expired")
+				// Token expired - show actionable message (no log, expected behavior)
+				m.usageBar.SetError("Run 'claude' to refresh")
 			} else if errors.Is(msg.err, context.Canceled) {
 				// Context canceled (e.g., app shutting down) - silently ignore (AC-4, Task 3.3)
 				// Keep current state, don't update bar
@@ -375,7 +373,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Error but have stale data - show stale values with "(stale)" indicator (AC-2)
 				m.usageBar.SetLimits(msg.limits, true)
 			} else {
-				// No stale data available - show "Unknown" for first-time failures (AC-2)
+				// No stale data available - log unexpected error and show "Unknown" (AC-2)
+				log.Printf("usage fetch error: %v", msg.err)
 				m.usageBar.SetError("Unknown")
 			}
 		} else {

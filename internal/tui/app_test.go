@@ -1090,7 +1090,7 @@ func TestGracefulDegradation(t *testing.T) {
 			name:       "token expired",
 			fetchErr:   usage.ErrTokenExpired,
 			wantState:  usage.StateError,
-			wantErrMsg: "Session expired",
+			wantErrMsg: "Run 'claude' to refresh",
 		},
 		{
 			name:        "api timeout with stale data",

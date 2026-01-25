@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -36,9 +37,24 @@ func NewClient() *Client {
 }
 
 // NewClientWithTimeout creates a new usage API client with configurable timeout.
+// Uses a custom Transport with connection pool settings to prevent stale connections
+// during long-running sessions.
 func NewClientWithTimeout(timeout time.Duration) *Client {
+	transport := &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     30 * time.Second,
+		ForceAttemptHTTP2:   true,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+	}
 	return &Client{
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{
+			Timeout:   timeout,
+			Transport: transport,
+		},
 	}
 }
 
