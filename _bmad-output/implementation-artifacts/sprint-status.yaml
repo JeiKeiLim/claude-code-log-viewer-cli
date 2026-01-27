@@ -33,7 +33,7 @@
 # - SM typically creates next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
-generated: 2026-01-20
+generated: 2026-01-27
 project: cclv (Phase 2 + Phase 3 + Phase 4)
 project_key: cclv
 tracking_system: file-system
@@ -133,3 +133,14 @@ development_status:
   8-3-streaming-plain-mode: done
   8-4-graceful-non-conversation-entries: done
   epic-8-retrospective: done
+
+  # ============================================
+  # PHASE 4: Stability & Resource Management
+  # ============================================
+
+  # Epic 9: Dashboard File Descriptor Leak Fix
+  epic-9: backlog
+  9-1-explicit-watcher-cleanup: backlog
+  9-2-dashboard-subscription-model: backlog
+  9-3-stress-test-long-running: backlog
+  epic-9-retrospective: optional
