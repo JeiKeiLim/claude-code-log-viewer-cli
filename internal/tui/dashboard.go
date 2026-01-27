@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,10 +27,13 @@ type GoBackToProjectsFromDashboardMsg struct{}
 
 // DashboardModel represents the multi-project dashboard view.
 type DashboardModel struct {
-	panes      []PaneModel
-	focusIndex int
-	width      int
-	height     int
+	panes               []PaneModel
+	focusIndex          int
+	width               int
+	height              int
+	ctx                 context.Context    // Story 9.2: Context for subscription goroutine cancellation
+	cancel              context.CancelFunc // Story 9.2: Cancel function to stop subscription goroutines
+	subscriptionsActive bool               // Story 9.2: Controls polling termination
 }
 
 // PaneModel represents a single pane in the dashboard grid.
@@ -50,6 +54,10 @@ type PaneModel struct {
 	dirWatcher       *fsnotify.Watcher // Directory watcher for new conversations
 	watchingDir      string            // Directory path being watched
 	showNewIndicator bool              // Visual indicator for new conversation
+
+	// Story 9.2: Subscription channels for event delivery
+	fileEventChan chan paneWatcherEventMsg    // Channel for file watcher events
+	dirEventChan  chan paneDirWatcherEventMsg // Channel for directory watcher events
 }
 
 // paneContentLoadedMsg signals content has been loaded for a specific pane.
@@ -101,6 +109,14 @@ type OpenViewerFromDashboardMsg struct {
 	FilePath string        // Full path to conversation JSONL file
 	Project  types.Project // Project for building viewer title
 }
+
+// subscriptionTickMsg is sent periodically to poll subscription channels.
+// Story 9.2: Bubbletea has no native subscription support, so we poll channels.
+type subscriptionTickMsg struct{}
+
+// subscriptionChannelBuffer is the buffer size for subscription channels.
+// Sufficient for ~10 events/sec; larger wastes memory.
+const subscriptionChannelBuffer = 10
 
 // paneIndicatorExpiredMsg signals that the new conversation indicator should be cleared.
 type paneIndicatorExpiredMsg struct {
@@ -366,9 +382,15 @@ func NewDashboardModel(projects []types.Project) (DashboardModel, tea.Cmd) {
 		cmds[i] = loadPaneContentCmd(i, p.DirPath)
 	}
 
+	// Story 9.2: Initialize context for subscription goroutine management
+	ctx, cancel := context.WithCancel(context.Background())
+
 	model := DashboardModel{
-		panes:      panes,
-		focusIndex: 0,
+		panes:               panes,
+		focusIndex:          0,
+		ctx:                 ctx,
+		cancel:              cancel,
+		subscriptionsActive: true, // Story 9.2: Enable polling on init
 	}
 
 	if len(cmds) > 0 {
@@ -380,6 +402,10 @@ func NewDashboardModel(projects []types.Project) (DashboardModel, tea.Cmd) {
 // Init implements tea.Model.
 func (m DashboardModel) Init() tea.Cmd {
 	// Content loading is initiated from NewDashboardModel
+	// Story 9.2: Start subscription polling if active
+	if m.subscriptionsActive {
+		return m.subscriptionTickCmd()
+	}
 	return nil
 }
 
@@ -473,7 +499,8 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err == nil {
 					pane.watcher = w
 					pane.conversation = types.Conversation{FilePath: msg.filePath}
-					cmds = append(cmds, m.waitForPaneWatcher(msg.paneIndex))
+					// Story 9.2: Start subscription goroutine instead of chained commands
+					m.startFileWatcherSubscription(m.ctx, msg.paneIndex)
 				}
 				// Watcher creation failed - continue without live updates
 			}
@@ -493,29 +520,30 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			pane := &m.panes[msg.paneIndex]
 			pane.dirWatcher = msg.watcher
 			pane.watchingDir = msg.watchDir
-			// Start waiting for directory events
-			return m, m.waitForDirEvent(msg.paneIndex)
+			// Story 9.2: Start subscription goroutine instead of chained commands
+			m.startDirWatcherSubscription(m.ctx, msg.paneIndex)
 		}
 		return m, nil
 
 	case paneDirWatcherEventMsg:
 		// Handle new file creation in watched directory
+		// Story 9.2: No longer chains another watcher wait - subscription goroutine handles all events
 		if msg.paneIndex >= 0 && msg.paneIndex < len(m.panes) {
 			pane := &m.panes[msg.paneIndex]
 
 			// Check if this is actually a newer file than current conversation
 			newInfo, err := os.Stat(msg.newFilePath)
 			if err != nil {
-				// File disappeared - continue watching
-				return m, m.waitForDirEvent(msg.paneIndex)
+				// File disappeared - subscription continues watching
+				return m, nil
 			}
 
 			// If we have a current conversation, compare timestamps
 			if pane.conversation.FilePath != "" {
 				currInfo, err := os.Stat(pane.conversation.FilePath)
 				if err == nil && !newInfo.ModTime().After(currInfo.ModTime()) {
-					// New file is not newer - continue watching
-					return m, m.waitForDirEvent(msg.paneIndex)
+					// New file is not newer - subscription continues watching
+					return m, nil
 				}
 			}
 
@@ -526,23 +554,17 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case paneDirWatcherErrorMsg:
-		// Continue watching on error (graceful degradation)
-		if msg.paneIndex >= 0 && msg.paneIndex < len(m.panes) {
-			return m, m.waitForDirEvent(msg.paneIndex)
-		}
-		return m, nil
-
 	case paneNewConversationMsg:
 		// Handle switching to a new conversation
 		if msg.paneIndex >= 0 && msg.paneIndex < len(m.panes) {
 			pane := &m.panes[msg.paneIndex]
 
-			// Close existing file watcher
+			// Close existing file watcher (subscription goroutine will exit on channel close)
 			if pane.watcher != nil {
 				_ = pane.watcher.Close()
 				pane.watcher = nil
 			}
+			pane.fileEventChan = nil // Clear channel reference
 
 			// Reset pane state
 			pane.entries = nil
@@ -556,11 +578,10 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Update conversation path
 			pane.conversation = types.Conversation{FilePath: msg.newFilePath}
 
-			// Batch: load new content, clear indicator after timeout, continue dir watching
+			// Story 9.2: No need to restart dir watcher - subscription goroutine continues
 			return m, tea.Batch(
 				loadPaneContentCmd(msg.paneIndex, pane.project.DirPath),
 				paneIndicatorTimeoutCmd(msg.paneIndex, 2*time.Second),
-				m.waitForDirEvent(msg.paneIndex),
 			)
 		}
 		return m, nil
@@ -572,8 +593,31 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case subscriptionTickMsg:
+		// Story 9.2: Poll subscription channels for events
+		if !m.subscriptionsActive {
+			return m, nil // Stop polling when inactive
+		}
+
+		// Poll all subscription channels (non-blocking)
+		if polledMsg := m.pollSubscriptionChannels(); polledMsg != nil {
+			// Process the event
+			newModel, eventCmd := m.Update(polledMsg)
+			updatedModel := newModel.(DashboardModel)
+			// CRITICAL: Must continue polling after processing event (H1 fix)
+			// Without this, the polling chain breaks after the first event
+			if updatedModel.subscriptionsActive {
+				return updatedModel, tea.Batch(eventCmd, updatedModel.subscriptionTickCmd())
+			}
+			return updatedModel, eventCmd
+		}
+
+		// No events - schedule next tick to continue polling
+		return m, m.subscriptionTickCmd()
+
 	case paneWatcherEventMsg:
 		// Route watcher event to correct pane
+		// Story 9.2: No longer chains another watcher wait - subscription goroutine handles all events
 		if msg.paneIndex >= 0 && msg.paneIndex < len(m.panes) {
 			pane := &m.panes[msg.paneIndex]
 
@@ -582,16 +626,15 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Append new entries
 				pane.entries = append(pane.entries, event.Entries...)
 				pane.content = pane.renderPaneContent()
-				// Chain next watcher wait
-				return m, m.waitForPaneWatcher(msg.paneIndex)
+				return m, nil // Story 9.2: Subscription goroutine continues watching
 
 			case watcher.FileResetMsg:
 				// File was truncated - reload full content
 				return m, loadPaneContentCmd(msg.paneIndex, pane.project.DirPath)
 
 			case watcher.WatcherErrorMsg:
-				// Continue watching on error (graceful degradation)
-				return m, m.waitForPaneWatcher(msg.paneIndex)
+				// Continue - subscription goroutine handles retries
+				return m, nil
 			}
 		}
 		return m, nil
@@ -599,60 +642,118 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// waitForPaneWatcher returns a command that waits for the next watcher event.
-// Wraps the event with pane index for routing.
-func (m *DashboardModel) waitForPaneWatcher(paneIndex int) tea.Cmd {
+// startFileWatcherSubscription starts a long-lived goroutine that listens to file watcher events.
+// Story 9.2: Replaces waitForPaneWatcher() to prevent goroutine accumulation.
+// CRITICAL: Channel must be assigned BEFORE goroutine starts to prevent nil-send race.
+func (m *DashboardModel) startFileWatcherSubscription(ctx context.Context, paneIndex int) {
 	if paneIndex < 0 || paneIndex >= len(m.panes) {
-		return nil
+		return
 	}
-	w := m.panes[paneIndex].watcher
-	if w == nil {
-		return nil
+	pane := &m.panes[paneIndex]
+	if pane.watcher == nil {
+		return
 	}
-	return func() tea.Msg {
-		cmd := w.WaitForEvent()
-		event := cmd() // Execute the blocking wait
-		if event == nil {
-			return nil // Watcher closed
-		}
-		return paneWatcherEventMsg{paneIndex: paneIndex, event: event}
-	}
-}
 
-// waitForDirEvent returns a command that waits for directory watcher events.
-// Filters for Create events on .jsonl files only.
-func (m *DashboardModel) waitForDirEvent(paneIndex int) tea.Cmd {
-	if paneIndex < 0 || paneIndex >= len(m.panes) {
-		return nil
-	}
-	w := m.panes[paneIndex].dirWatcher
-	if w == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		// This runs in a goroutine - blocking is safe
+	// Create buffered channel BEFORE starting goroutine (prevents nil-send race)
+	ch := make(chan paneWatcherEventMsg, subscriptionChannelBuffer)
+	pane.fileEventChan = ch
+
+	go func() {
+		defer close(ch)
+		events := pane.watcher.EventsChan()
+		errors := pane.watcher.ErrorsChan()
+
 		for {
 			select {
+			case <-ctx.Done():
+				return // Clean exit on context cancel
+			case event, ok := <-events:
+				if !ok {
+					return // Watcher closed
+				}
+				if event.Has(fsnotify.Write) {
+					entries, err := pane.watcher.ReadNewEntries()
+					var msg paneWatcherEventMsg
+					if err == watcher.ErrFileTruncated {
+						msg = paneWatcherEventMsg{paneIndex: paneIndex, event: watcher.FileResetMsg{}}
+					} else if err != nil {
+						msg = paneWatcherEventMsg{paneIndex: paneIndex, event: watcher.WatcherErrorMsg{Err: err}}
+					} else if len(entries) > 0 {
+						msg = paneWatcherEventMsg{paneIndex: paneIndex, event: watcher.NewEntriesMsg{Entries: entries}}
+					} else {
+						continue // No new entries, skip sending
+					}
+					// Non-blocking send with context check
+					select {
+					case ch <- msg:
+					case <-ctx.Done():
+						return
+					}
+				}
+			case err, ok := <-errors:
+				if !ok {
+					return // Watcher closed
+				}
+				msg := paneWatcherEventMsg{paneIndex: paneIndex, event: watcher.WatcherErrorMsg{Err: err}}
+				select {
+				case ch <- msg:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+}
+
+// startDirWatcherSubscription starts a long-lived goroutine that listens to directory watcher events.
+// Story 9.2: Replaces waitForDirEvent() to prevent goroutine accumulation.
+// CRITICAL: Channel must be assigned BEFORE goroutine starts to prevent nil-send race.
+func (m *DashboardModel) startDirWatcherSubscription(ctx context.Context, paneIndex int) {
+	if paneIndex < 0 || paneIndex >= len(m.panes) {
+		return
+	}
+	pane := &m.panes[paneIndex]
+	if pane.dirWatcher == nil {
+		return
+	}
+
+	// Create buffered channel BEFORE starting goroutine (prevents nil-send race)
+	ch := make(chan paneDirWatcherEventMsg, subscriptionChannelBuffer)
+	pane.dirEventChan = ch
+
+	go func() {
+		defer close(ch)
+		w := pane.dirWatcher
+
+		for {
+			select {
+			case <-ctx.Done():
+				return // Clean exit on context cancel
 			case event, ok := <-w.Events:
 				if !ok {
-					return nil // Watcher closed
+					return // Watcher closed
 				}
 				if event.Op&fsnotify.Create != 0 {
 					if strings.HasSuffix(event.Name, ".jsonl") {
 						// Verify file still exists (Task 10.3)
 						if _, err := os.Stat(event.Name); err == nil {
-							return paneDirWatcherEventMsg{paneIndex: paneIndex, newFilePath: event.Name}
+							msg := paneDirWatcherEventMsg{paneIndex: paneIndex, newFilePath: event.Name}
+							select {
+							case ch <- msg:
+							case <-ctx.Done():
+								return
+							}
 						}
 					}
 				}
-			case err, ok := <-w.Errors:
+			case _, ok := <-w.Errors:
 				if !ok {
-					return nil // Watcher closed
+					return // Watcher closed
 				}
-				return paneDirWatcherErrorMsg{paneIndex: paneIndex, err: err}
+				// Continue on errors - graceful degradation
 			}
 		}
-	}
+	}()
 }
 
 // paneIndicatorTimeoutCmd returns a command that fires after the given duration.
@@ -662,11 +763,60 @@ func paneIndicatorTimeoutCmd(paneIndex int, duration time.Duration) tea.Cmd {
 	})
 }
 
+// subscriptionTickCmd returns a command that schedules the next polling tick.
+// Story 9.2: Polls every 100ms for events from subscription channels.
+func (m *DashboardModel) subscriptionTickCmd() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return subscriptionTickMsg{}
+	})
+}
+
+// pollSubscriptionChannels checks all subscription channels for events (non-blocking).
+// Story 9.2: Returns the first event found, or nil if no events pending.
+func (m *DashboardModel) pollSubscriptionChannels() tea.Msg {
+	for i := range m.panes {
+		// Check file event channel
+		if ch := m.panes[i].fileEventChan; ch != nil {
+			select {
+			case msg, ok := <-ch:
+				if ok {
+					return msg
+				}
+			default:
+				// No event pending
+			}
+		}
+		// Check directory event channel
+		if ch := m.panes[i].dirEventChan; ch != nil {
+			select {
+			case msg, ok := <-ch:
+				if ok {
+					return msg
+				}
+			default:
+				// No event pending
+			}
+		}
+	}
+	return nil
+}
+
 // closeAllWatchers closes all pane watchers (file and directory) to prevent resource leaks.
 // CRITICAL: On macOS, fsnotify uses kqueue which opens a file descriptor for EACH
 // watched path. We must call Remove() on each watched path before Close() to properly
 // release all file descriptors.
+// Story 9.2: Updated for context-aware shutdown sequence.
 func (m *DashboardModel) closeAllWatchers() {
+	// 1. Stop polling chain
+	m.subscriptionsActive = false
+
+	// 2. Signal subscription goroutines to exit
+	if m.cancel != nil {
+		m.cancel()
+	}
+
+	// 3. Close watchers and nil out channels
+	// Goroutines will detect ctx.Done() and exit, closing their channels via defer
 	for i := range m.panes {
 		// Close file content watcher (uses watcher.Watcher which handles cleanup internally)
 		if m.panes[i].watcher != nil {
@@ -681,27 +831,38 @@ func (m *DashboardModel) closeAllWatchers() {
 			_ = m.panes[i].dirWatcher.Close()
 			m.panes[i].dirWatcher = nil
 		}
+		// 4. Nil out channel references (channels closed by goroutines via defer)
+		m.panes[i].fileEventChan = nil
+		m.panes[i].dirEventChan = nil
 	}
 }
 
-// ResumeWatchers returns commands to restart all active watcher event chains.
+// ResumeWatchers restarts subscription goroutines and polling for active watchers.
+// Story 9.2: Creates new context (old one is cancelled) and restarts subscriptions.
 // Called when returning to dashboard from viewer to resume file/directory watching.
 func (m *DashboardModel) ResumeWatchers() tea.Cmd {
-	var cmds []tea.Cmd
+	// 1. Create new context for resumed watchers (old context is cancelled)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.ctx = ctx
+	m.cancel = cancel
+
+	// 2. Enable subscriptions
+	m.subscriptionsActive = true
+
+	// 3. Restart subscription goroutines for all panes with active watchers
 	for i := range m.panes {
-		// Resume file content watcher if active
+		// Restart file watcher subscription if watcher is active
 		if m.panes[i].watcher != nil {
-			cmds = append(cmds, m.waitForPaneWatcher(i))
+			m.startFileWatcherSubscription(ctx, i)
 		}
-		// Resume directory watcher if active (Story 5.4)
+		// Restart directory watcher subscription if watcher is active
 		if m.panes[i].dirWatcher != nil {
-			cmds = append(cmds, m.waitForDirEvent(i))
+			m.startDirWatcherSubscription(ctx, i)
 		}
 	}
-	if len(cmds) == 0 {
-		return nil
-	}
-	return tea.Batch(cmds...)
+
+	// 4. Return initial polling tick command
+	return m.subscriptionTickCmd()
 }
 
 // moveFocus calculates new focus index for given direction.

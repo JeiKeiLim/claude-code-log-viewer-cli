@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func TestNew(t *testing.T) {
@@ -498,5 +500,89 @@ func TestCloseWithNilFsWatcher(t *testing.T) {
 
 	if !w.IsClosed() {
 		t.Error("expected IsClosed() to return true")
+	}
+}
+
+// Story 9.2 Tests: Channel Access Methods
+
+// TestEventsChanReturnsChannel tests EventsChan() returns the fsnotify events channel.
+func TestEventsChanReturnsChannel(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	if err := os.WriteFile(testFile, []byte(""), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	ch := w.EventsChan()
+	if ch == nil {
+		t.Error("EventsChan() should return non-nil channel")
+	}
+}
+
+// TestErrorsChanReturnsChannel tests ErrorsChan() returns the fsnotify errors channel.
+func TestErrorsChanReturnsChannel(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	if err := os.WriteFile(testFile, []byte(""), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	ch := w.ErrorsChan()
+	if ch == nil {
+		t.Error("ErrorsChan() should return non-nil channel")
+	}
+}
+
+// TestEventsChanReceivesEvents tests that EventsChan() can receive actual file events.
+func TestEventsChanReceivesEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	if err := os.WriteFile(testFile, []byte("initial"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	ch := w.EventsChan()
+
+	// Modify the file
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return
+		}
+		_, _ = f.WriteString("new content")
+		_ = f.Close()
+	}()
+
+	// Wait for event with timeout
+	select {
+	case event := <-ch:
+		// Should receive a Write event
+		if !event.Has(fsnotify.Write) {
+			t.Errorf("expected Write event, got %v", event.Op)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event from EventsChan()")
 	}
 }

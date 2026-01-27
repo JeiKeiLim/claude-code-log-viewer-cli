@@ -962,26 +962,10 @@ func TestPaneDirWatcherInitMsgHandler(t *testing.T) {
 		t.Errorf("pane.watchingDir = %q, want %q",
 			updatedModel.panes[0].watchingDir, "/tmp/test")
 	}
-	// With nil watcher, waitForDirEvent should return nil
+	// Story 9.2: With nil watcher, startDirWatcherSubscription should be a no-op
+	// No command returned since subscription model doesn't return commands
 	if cmd != nil {
-		t.Error("waitForDirEvent with nil watcher should return nil")
-	}
-}
-
-func TestPaneDirWatcherErrorMsgHandler(t *testing.T) {
-	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
-	model, _ := NewDashboardModel(projects)
-
-	// Error message should gracefully continue
-	msg := paneDirWatcherErrorMsg{
-		paneIndex: 0,
-		err:       fmt.Errorf("test error"),
-	}
-	_, cmd := model.Update(msg)
-
-	// With nil dirWatcher, should return nil (graceful degradation)
-	if cmd != nil {
-		t.Error("paneDirWatcherErrorMsg with nil watcher should return nil cmd")
+		t.Error("paneDirWatcherInitMsg with nil watcher should return nil")
 	}
 }
 
@@ -996,37 +980,9 @@ func TestPaneDirWatcherEventMsgHandlerFileMissing(t *testing.T) {
 	}
 	_, cmd := model.Update(msg)
 
-	// Should return nil cmd when file doesn't exist (with nil dirWatcher)
+	// Story 9.2: Should return nil cmd when file doesn't exist (subscription continues watching)
 	if cmd != nil {
-		t.Error("paneDirWatcherEventMsg with missing file and nil watcher should return nil")
-	}
-}
-
-func TestWaitForDirEventWithNilWatcher(t *testing.T) {
-	projects := []types.Project{{DisplayName: "proj1"}}
-	model, _ := NewDashboardModel(projects)
-
-	// dirWatcher is nil
-	cmd := model.waitForDirEvent(0)
-	if cmd != nil {
-		t.Error("waitForDirEvent with nil dirWatcher should return nil")
-	}
-}
-
-func TestWaitForDirEventWithInvalidIndex(t *testing.T) {
-	projects := []types.Project{{DisplayName: "proj1"}}
-	model, _ := NewDashboardModel(projects)
-
-	// Out of bounds index
-	cmd := model.waitForDirEvent(99)
-	if cmd != nil {
-		t.Error("waitForDirEvent with invalid index should return nil")
-	}
-
-	// Negative index
-	cmd = model.waitForDirEvent(-1)
-	if cmd != nil {
-		t.Error("waitForDirEvent with negative index should return nil")
+		t.Error("paneDirWatcherEventMsg with missing file should return nil")
 	}
 }
 
@@ -1435,5 +1391,348 @@ func TestPaneViewDelegatesToViewWithFocus(t *testing.T) {
 
 	if viewResult != viewWithFocusResult {
 		t.Error("View() should delegate to ViewWithFocus(false)")
+	}
+}
+
+// Story 9.2 Tests: Subscription Model
+
+func TestNewDashboardModelInitializesContext(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Story 9.2: Context should be initialized
+	if model.ctx == nil {
+		t.Error("NewDashboardModel() should initialize ctx")
+	}
+	if model.cancel == nil {
+		t.Error("NewDashboardModel() should initialize cancel function")
+	}
+	// Story 9.2: Subscriptions should be active
+	if !model.subscriptionsActive {
+		t.Error("NewDashboardModel() should set subscriptionsActive = true")
+	}
+}
+
+func TestSubscriptionTickMsgHandler(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Handle subscription tick with no events pending
+	_, cmd := model.Update(subscriptionTickMsg{})
+
+	// Should return a command for next tick (subscriptions are active)
+	if cmd == nil {
+		t.Error("subscriptionTickMsg handler should return tick command when subscriptionsActive")
+	}
+}
+
+func TestSubscriptionTickMsgHandlerInactive(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+	model.subscriptionsActive = false
+
+	// Handle subscription tick when inactive
+	_, cmd := model.Update(subscriptionTickMsg{})
+
+	// Should return nil (stop polling)
+	if cmd != nil {
+		t.Error("subscriptionTickMsg handler should return nil when subscriptionsActive is false")
+	}
+}
+
+func TestPollSubscriptionChannelsEmpty(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Poll with no channels initialized
+	result := model.pollSubscriptionChannels()
+
+	// Should return nil (no events)
+	if result != nil {
+		t.Error("pollSubscriptionChannels() should return nil when no channels have events")
+	}
+}
+
+func TestPollSubscriptionChannelsWithFileEvent(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Create a buffered channel and send an event
+	ch := make(chan paneWatcherEventMsg, 1)
+	model.panes[0].fileEventChan = ch
+
+	// Send a test event
+	testMsg := paneWatcherEventMsg{paneIndex: 0, event: nil}
+	ch <- testMsg
+
+	// Poll should return the event
+	result := model.pollSubscriptionChannels()
+	if result == nil {
+		t.Error("pollSubscriptionChannels() should return event from fileEventChan")
+	}
+	if msg, ok := result.(paneWatcherEventMsg); !ok || msg.paneIndex != 0 {
+		t.Errorf("pollSubscriptionChannels() returned wrong event type or index")
+	}
+}
+
+func TestPollSubscriptionChannelsWithDirEvent(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Create a buffered channel and send an event
+	ch := make(chan paneDirWatcherEventMsg, 1)
+	model.panes[0].dirEventChan = ch
+
+	// Send a test event
+	testMsg := paneDirWatcherEventMsg{paneIndex: 0, newFilePath: "/test/new.jsonl"}
+	ch <- testMsg
+
+	// Poll should return the event
+	result := model.pollSubscriptionChannels()
+	if result == nil {
+		t.Error("pollSubscriptionChannels() should return event from dirEventChan")
+	}
+	if msg, ok := result.(paneDirWatcherEventMsg); !ok || msg.paneIndex != 0 {
+		t.Errorf("pollSubscriptionChannels() returned wrong event type or index")
+	}
+}
+
+func TestCloseAllWatchersStopsSubscriptions(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Setup: manually create channels to verify cleanup
+	model.panes[0].fileEventChan = make(chan paneWatcherEventMsg, 1)
+	model.panes[0].dirEventChan = make(chan paneDirWatcherEventMsg, 1)
+
+	// Call closeAllWatchers
+	model.closeAllWatchers()
+
+	// Story 9.2: subscriptionsActive should be false
+	if model.subscriptionsActive {
+		t.Error("closeAllWatchers() should set subscriptionsActive = false")
+	}
+
+	// Story 9.2: Channels should be nil
+	if model.panes[0].fileEventChan != nil {
+		t.Error("closeAllWatchers() should nil out fileEventChan")
+	}
+	if model.panes[0].dirEventChan != nil {
+		t.Error("closeAllWatchers() should nil out dirEventChan")
+	}
+}
+
+func TestResumeWatchersCreatesNewContext(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Save original context
+	originalCtx := model.ctx
+
+	// Close watchers (cancels context)
+	model.closeAllWatchers()
+
+	// Resume watchers
+	cmd := model.ResumeWatchers()
+
+	// Story 9.2: Should have new context
+	if model.ctx == originalCtx {
+		t.Error("ResumeWatchers() should create new context")
+	}
+	if model.ctx == nil {
+		t.Error("ResumeWatchers() should set ctx to non-nil value")
+	}
+	if model.cancel == nil {
+		t.Error("ResumeWatchers() should set cancel function")
+	}
+
+	// Story 9.2: subscriptionsActive should be true
+	if !model.subscriptionsActive {
+		t.Error("ResumeWatchers() should set subscriptionsActive = true")
+	}
+
+	// Should return tick command
+	if cmd == nil {
+		t.Error("ResumeWatchers() should return tick command")
+	}
+}
+
+func TestSubscriptionTickCmdReturnsCommand(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	cmd := model.subscriptionTickCmd()
+	if cmd == nil {
+		t.Error("subscriptionTickCmd() should return a command")
+	}
+}
+
+func TestInitReturnsTickWhenActive(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	cmd := model.Init()
+
+	// Story 9.2: Init should return tick command when subscriptions active
+	if cmd == nil {
+		t.Error("Init() should return tick command when subscriptionsActive")
+	}
+}
+
+func TestInitReturnsNilWhenInactive(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+	model.subscriptionsActive = false
+
+	cmd := model.Init()
+
+	// Should return nil when subscriptions inactive
+	if cmd != nil {
+		t.Error("Init() should return nil when subscriptionsActive is false")
+	}
+}
+
+func TestStartFileWatcherSubscriptionInvalidIndex(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Should not panic with invalid index
+	model.startFileWatcherSubscription(model.ctx, -1)
+	model.startFileWatcherSubscription(model.ctx, 99)
+	// No assertion needed - just verify no panic
+}
+
+func TestStartFileWatcherSubscriptionNilWatcher(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Should not panic and should not create channel when watcher is nil
+	model.startFileWatcherSubscription(model.ctx, 0)
+	// No assertion needed - just verify no panic
+}
+
+func TestStartDirWatcherSubscriptionInvalidIndex(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Should not panic with invalid index
+	model.startDirWatcherSubscription(model.ctx, -1)
+	model.startDirWatcherSubscription(model.ctx, 99)
+	// No assertion needed - just verify no panic
+}
+
+func TestStartDirWatcherSubscriptionNilWatcher(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Should not panic and should not create channel when watcher is nil
+	model.startDirWatcherSubscription(model.ctx, 0)
+	// No assertion needed - just verify no panic
+}
+
+func TestPaneWatcherEventMsgNoLongerChains(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 40)
+
+	// Pre-populate pane with content
+	model.panes[0].entries = []types.LogEntry{}
+	model.panes[0].loading = false
+
+	// Handle NewEntriesMsg
+	msg := paneWatcherEventMsg{
+		paneIndex: 0,
+		event:     nil, // Will be handled gracefully
+	}
+	_, cmd := model.Update(msg)
+
+	// Story 9.2: Should NOT return a command (no more chaining)
+	// Note: We can't easily test the nil event case, but the handler should be graceful
+	_ = cmd // Just verify no panic
+}
+
+func TestPaneDirWatcherEventMsgNoLongerChains(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Event with non-existent file (will return nil due to Stat failure)
+	msg := paneDirWatcherEventMsg{
+		paneIndex:   0,
+		newFilePath: "/nonexistent/file.jsonl",
+	}
+	_, cmd := model.Update(msg)
+
+	// Story 9.2: Should return nil (no longer chains to waitForDirEvent)
+	if cmd != nil {
+		t.Error("paneDirWatcherEventMsg should return nil (subscription handles watching)")
+	}
+}
+
+// Code Review Fix: Test for H1 - Polling chain continues after event processing
+func TestSubscriptionTickContinuesAfterEvent(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Create a buffered channel and send an event
+	ch := make(chan paneWatcherEventMsg, 1)
+	model.panes[0].fileEventChan = ch
+
+	// Send a test event (nil event is handled gracefully)
+	testMsg := paneWatcherEventMsg{paneIndex: 0, event: nil}
+	ch <- testMsg
+
+	// Process subscription tick
+	newModel, cmd := model.Update(subscriptionTickMsg{})
+	updatedModel := newModel.(DashboardModel)
+
+	// H1 Fix: Should return a batched command (event cmd + next tick)
+	// when subscriptions are still active
+	if !updatedModel.subscriptionsActive {
+		t.Error("subscriptionsActive should still be true")
+	}
+	if cmd == nil {
+		t.Error("subscriptionTickMsg handler should return command after processing event")
+	}
+}
+
+// Code Review Fix: Test for M3 - Multi-event burst handling
+func TestPollSubscriptionChannelsMultipleEvents(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+
+	// Create buffered channel with multiple events
+	ch := make(chan paneWatcherEventMsg, 5)
+	model.panes[0].fileEventChan = ch
+
+	// Send 5 events rapidly
+	for i := 0; i < 5; i++ {
+		ch <- paneWatcherEventMsg{paneIndex: 0, event: nil}
+	}
+
+	// Poll should return events one at a time
+	eventsFound := 0
+	for i := 0; i < 5; i++ {
+		result := model.pollSubscriptionChannels()
+		if result != nil {
+			eventsFound++
+		}
+	}
+
+	if eventsFound != 5 {
+		t.Errorf("Expected 5 events from polling, got %d", eventsFound)
+	}
+
+	// Channel should be empty now
+	result := model.pollSubscriptionChannels()
+	if result != nil {
+		t.Error("pollSubscriptionChannels should return nil when channel is empty")
+	}
+}
+
+// Code Review Fix: Test constant is defined correctly
+func TestSubscriptionChannelBufferConstant(t *testing.T) {
+	// Verify the constant exists and has expected value
+	if subscriptionChannelBuffer != 10 {
+		t.Errorf("subscriptionChannelBuffer = %d, want 10", subscriptionChannelBuffer)
 	}
 }

@@ -169,3 +169,15 @@ func (w *Watcher) IsClosed() bool {
 	defer w.mu.Unlock()
 	return w.closed
 }
+
+// EventsChan returns the underlying fsnotify events channel for direct access.
+// Story 9.2: Enables subscription model to bypass WaitForEvent() goroutine leak.
+func (w *Watcher) EventsChan() <-chan fsnotify.Event {
+	return w.fsWatcher.Events
+}
+
+// ErrorsChan returns the underlying fsnotify errors channel for direct access.
+// Story 9.2: Enables subscription model to handle errors directly.
+func (w *Watcher) ErrorsChan() <-chan error {
+	return w.fsWatcher.Errors
+}
