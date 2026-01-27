@@ -2,8 +2,11 @@ package watcher
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -584,5 +587,190 @@ func TestEventsChanReceivesEvents(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for event from EventsChan()")
+	}
+}
+
+// Story 9.3 Stress Tests
+// These tests verify the fixes from Stories 9.1 and 9.2 work under stress conditions.
+// Guarded by STRESS_TESTS environment variable to avoid slowing down regular test runs.
+
+// TestStressRepeatedWatchCycles verifies no FD leaks occur when creating and closing
+// watchers repeatedly. Story 9.1 fixed the immediate FD leak by adding explicit Remove()
+// calls before Close(). This test validates that fix works under stress. (AC: #1)
+func TestStressRepeatedWatchCycles(t *testing.T) {
+	if os.Getenv("STRESS_TESTS") == "" {
+		t.Skip("Skipping stress test (set STRESS_TESTS=1 to run)")
+	}
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+	if err := os.WriteFile(testFile, []byte("{}\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Stress test: create and close watchers 100 times
+	for i := 0; i < 100; i++ {
+		w, err := New(testFile)
+		if err != nil {
+			t.Fatalf("iteration %d: failed to create watcher: %v", i, err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("iteration %d: failed to close watcher: %v", i, err)
+		}
+	}
+
+	// Verify final watcher still works (no "too many open files" error)
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("final watcher creation failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Verify events can still be received
+	ch := w.EventsChan()
+
+	// Append to file in goroutine
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return
+		}
+		_, _ = f.WriteString("{\"type\":\"user\"}\n")
+		_ = f.Close()
+	}()
+
+	// Wait for event with timeout
+	select {
+	case event := <-ch:
+		if !event.Has(fsnotify.Write) {
+			t.Errorf("expected Write event, got %v", event.Op)
+		}
+		t.Logf("Final watcher received event successfully after 100 cycles")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for event - final watcher may not be functional")
+	}
+}
+
+// countOpenFDs returns the number of open file descriptors for the current process.
+// Works on macOS (/dev/fd) and Linux (/proc/self/fd).
+// Returns -1 and skips test if FD counting is not available.
+func countOpenFDs(t *testing.T) int {
+	t.Helper()
+
+	// Try Linux path first (more reliable across environments)
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err == nil {
+		return len(entries)
+	}
+
+	// Fallback for macOS
+	entries, err = os.ReadDir("/dev/fd")
+	if err == nil {
+		return len(entries)
+	}
+
+	// Use lsof as last resort (slower but works in sandboxed environments)
+	pid := os.Getpid()
+	cmd := exec.Command("lsof", "-p", fmt.Sprintf("%d", pid))
+	out, err := cmd.Output()
+	if err == nil {
+		// Count lines with FD column (skip header and any summary lines)
+		// lsof header: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+		lines := strings.Split(string(out), "\n")
+		count := 0
+		for i, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			// Skip header line (first non-empty line)
+			if i == 0 && strings.HasPrefix(trimmed, "COMMAND") {
+				continue
+			}
+			// Count lines that look like FD entries (have multiple fields)
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 4 {
+				count++
+			}
+		}
+		if count > 0 {
+			return count
+		}
+	}
+
+	t.Skip("FD counting not supported on this platform")
+	return 0
+}
+
+// TestStressFDCountStability verifies FD count remains stable after processing many
+// file events. This test validates that the watcher cleanup properly releases FDs
+// when events are processed. (AC: #3)
+func TestStressFDCountStability(t *testing.T) {
+	if os.Getenv("STRESS_TESTS") == "" {
+		t.Skip("Skipping stress test (set STRESS_TESTS=1 to run)")
+	}
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+	if err := os.WriteFile(testFile, []byte("{}\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Record baseline FD count
+	baselineFD := countOpenFDs(t)
+	t.Logf("Baseline FD count: %d", baselineFD)
+
+	// Create watcher
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+
+	ch := w.EventsChan()
+
+	// Generate 50 file write events and process them
+	eventsReceived := 0
+	for i := 0; i < 50; i++ {
+		// Append to file
+		f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			t.Fatalf("iteration %d: failed to open file for append: %v", i, err)
+		}
+		if _, err := f.WriteString("{\"type\":\"user\"}\n"); err != nil {
+			_ = f.Close()
+			t.Fatalf("iteration %d: failed to write to file: %v", i, err)
+		}
+		_ = f.Close()
+
+		// Wait for and consume the event
+		select {
+		case <-ch:
+			eventsReceived++
+			// Read the new entries to simulate normal operation
+			entries, _ := w.ReadNewEntries()
+			// Entries may be empty if read happens before file sync, that's OK
+			_ = entries
+		case <-time.After(1 * time.Second):
+			t.Fatalf("iteration %d: timeout waiting for event", i)
+		}
+	}
+	t.Logf("Events received: %d out of 50 writes", eventsReceived)
+
+	// Close watcher
+	if err := w.Close(); err != nil {
+		t.Fatalf("failed to close watcher: %v", err)
+	}
+
+	// Record final FD count
+	finalFD := countOpenFDs(t)
+	delta := finalFD - baselineFD
+
+	t.Logf("FD delta: %d (baseline: %d, final: %d)", delta, baselineFD, finalFD)
+
+	// Assert FD count delta is acceptable (≤ 5)
+	if delta > 5 {
+		t.Errorf("FD count increased by %d (exceeds threshold of 5); baseline: %d, final: %d",
+			delta, baselineFD, finalFD)
 	}
 }

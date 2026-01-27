@@ -139,8 +139,8 @@ development_status:
   # ============================================
 
   # Epic 9: Dashboard File Descriptor Leak Fix
-  epic-9: in-progress
+  epic-9: done
   9-1-explicit-watcher-cleanup: done  # code-reviewed 2026-01-27
   9-2-dashboard-subscription-model: done  # code-reviewed 2026-01-27
-  9-3-stress-test-long-running: backlog
+  9-3-stress-test-long-running: done  # code-reviewed 2026-01-27
   epic-9-retrospective: optional

@@ -28,7 +28,7 @@ PLATFORMS=darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 # Source files
 SRC=$(shell find . -name "*.go" -type f)
 
-.PHONY: all build clean test lint fmt vet tidy install uninstall help
+.PHONY: all build clean test test-stress lint fmt vet tidy install uninstall help
 .PHONY: build-all build-darwin build-linux ci check
 
 # Default target
@@ -72,6 +72,11 @@ test:
 test-short:
 	@echo "Running short tests..."
 	$(GOTEST) -v -short ./...
+
+# Run stress tests (requires STRESS_TESTS=1)
+test-stress:
+	@echo "Running stress tests..."
+	STRESS_TESTS=1 $(GOTEST) -v -race -count=1 -timeout 5m -run Stress ./...
 
 # Run tests and generate coverage report
 coverage: test
@@ -223,6 +228,7 @@ help:
 	@echo "Test targets:"
 	@echo "  make test         - Run all tests with coverage"
 	@echo "  make test-short   - Run short tests only"
+	@echo "  make test-stress  - Run stress tests (FD/goroutine leak detection)"
 	@echo "  make coverage     - Generate HTML coverage report"
 	@echo ""
 	@echo "Code quality:"
