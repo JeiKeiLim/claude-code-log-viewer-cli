@@ -352,7 +352,7 @@ func TestUsageBarModel_View_IndependentColorThresholds(t *testing.T) {
 	// Verify that 5h and 7d windows have independent color thresholds
 	m := NewUsageBarModel(testStyles())
 	m.SetLimits(&UsageLimits{
-		FiveHour: &UsageWindow{Utilization: 30.0},  // normal
+		FiveHour: &UsageWindow{Utilization: 30.0}, // normal
 		SevenDay: &UsageWindow{Utilization: 98.0}, // critical
 	}, false)
 

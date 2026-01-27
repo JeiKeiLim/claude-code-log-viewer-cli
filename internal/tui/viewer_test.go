@@ -188,44 +188,44 @@ func TestRenderPlainWithOptions(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                   string
-		opts                   RenderOptions
-		wantThinkingContent    bool // Full thinking content
-		wantToolContent        bool // Full tool input
-		wantThinkingCollapsed  bool // Collapsed indicator for thinking
-		wantToolCollapsed      bool // Collapsed indicator for tool (shows tool name + summary)
+		name                  string
+		opts                  RenderOptions
+		wantThinkingContent   bool // Full thinking content
+		wantToolContent       bool // Full tool input
+		wantThinkingCollapsed bool // Collapsed indicator for thinking
+		wantToolCollapsed     bool // Collapsed indicator for tool (shows tool name + summary)
 	}{
 		{
-			name:                   "default shows all",
-			opts:                   DefaultRenderOptions(),
-			wantThinkingContent:    true,
-			wantToolContent:        true,
-			wantThinkingCollapsed:  false,
-			wantToolCollapsed:      false,
+			name:                  "default shows all",
+			opts:                  DefaultRenderOptions(),
+			wantThinkingContent:   true,
+			wantToolContent:       true,
+			wantThinkingCollapsed: false,
+			wantToolCollapsed:     false,
 		},
 		{
-			name:                   "hide thoughts shows collapsed indicator",
-			opts:                   RenderOptions{HideThoughts: true, HideTools: false},
-			wantThinkingContent:    false,
-			wantToolContent:        true,
-			wantThinkingCollapsed:  true,
-			wantToolCollapsed:      false,
+			name:                  "hide thoughts shows collapsed indicator",
+			opts:                  RenderOptions{HideThoughts: true, HideTools: false},
+			wantThinkingContent:   false,
+			wantToolContent:       true,
+			wantThinkingCollapsed: true,
+			wantToolCollapsed:     false,
 		},
 		{
-			name:                   "hide tools shows collapsed summary",
-			opts:                   RenderOptions{HideThoughts: false, HideTools: true},
-			wantThinkingContent:    true,
-			wantToolContent:        false,
-			wantThinkingCollapsed:  false,
-			wantToolCollapsed:      true,
+			name:                  "hide tools shows collapsed summary",
+			opts:                  RenderOptions{HideThoughts: false, HideTools: true},
+			wantThinkingContent:   true,
+			wantToolContent:       false,
+			wantThinkingCollapsed: false,
+			wantToolCollapsed:     true,
 		},
 		{
-			name:                   "hide both shows collapsed indicators",
-			opts:                   RenderOptions{HideThoughts: true, HideTools: true},
-			wantThinkingContent:    false,
-			wantToolContent:        false,
-			wantThinkingCollapsed:  true,
-			wantToolCollapsed:      true,
+			name:                  "hide both shows collapsed indicators",
+			opts:                  RenderOptions{HideThoughts: true, HideTools: true},
+			wantThinkingContent:   false,
+			wantToolContent:       false,
+			wantThinkingCollapsed: true,
+			wantToolCollapsed:     true,
 		},
 	}
 
@@ -275,22 +275,22 @@ func TestRenderAssistantMessage_HideThoughtsFlag(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                  string
-		hideThoughts          bool
+		name                   string
+		hideThoughts           bool
 		wantCollapsedIndicator bool
-		wantThinkingContent   bool
+		wantThinkingContent    bool
 	}{
 		{
-			name:                  "without flag shows thinking content",
-			hideThoughts:          false,
+			name:                   "without flag shows thinking content",
+			hideThoughts:           false,
 			wantCollapsedIndicator: false,
-			wantThinkingContent:   true,
+			wantThinkingContent:    true,
 		},
 		{
-			name:                  "with flag shows collapsed indicator",
-			hideThoughts:          true,
+			name:                   "with flag shows collapsed indicator",
+			hideThoughts:           true,
 			wantCollapsedIndicator: true,
-			wantThinkingContent:   false,
+			wantThinkingContent:    false,
 		},
 	}
 
@@ -332,25 +332,25 @@ func TestRenderAssistantMessage_HideToolsFlag(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		hideTools        bool
-		wantToolHeader   bool
-		wantToolSummary  bool
-		wantFullInput    bool
+		name            string
+		hideTools       bool
+		wantToolHeader  bool
+		wantToolSummary bool
+		wantFullInput   bool
 	}{
 		{
-			name:             "without flag shows full tool input",
-			hideTools:        false,
-			wantToolHeader:   true,
-			wantToolSummary:  false, // Full input, not summary
-			wantFullInput:    true,
+			name:            "without flag shows full tool input",
+			hideTools:       false,
+			wantToolHeader:  true,
+			wantToolSummary: false, // Full input, not summary
+			wantFullInput:   true,
 		},
 		{
-			name:             "with flag shows collapsed summary",
-			hideTools:        true,
-			wantToolHeader:   true,
-			wantToolSummary:  true,  // Summary (file.go)
-			wantFullInput:    false, // No JSON input
+			name:            "with flag shows collapsed summary",
+			hideTools:       true,
+			wantToolHeader:  true,
+			wantToolSummary: true,  // Summary (file.go)
+			wantFullInput:   false, // No JSON input
 		},
 	}
 
