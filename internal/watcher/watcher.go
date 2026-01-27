@@ -141,6 +141,10 @@ func (w *Watcher) ReadNewEntries() ([]types.LogEntry, error) {
 
 // Close releases all resources associated with the watcher.
 // Close is idempotent - it can be called multiple times safely.
+// CRITICAL: On macOS, fsnotify uses kqueue which opens a file descriptor for EACH
+// watched path. Calling Close() only closes the kqueue FD itself, not the individual
+// watch FDs. We must call Remove() on each watched path before Close() to properly
+// release all file descriptors.
 func (w *Watcher) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -148,7 +152,15 @@ func (w *Watcher) Close() error {
 		return nil // Idempotent
 	}
 	w.closed = true
-	return w.fsWatcher.Close()
+
+	// Remove all watched paths before closing (macOS kqueue FD fix)
+	if w.fsWatcher != nil {
+		for _, path := range w.fsWatcher.WatchList() {
+			_ = w.fsWatcher.Remove(path) // Ignore errors - path may be deleted
+		}
+		return w.fsWatcher.Close()
+	}
+	return nil
 }
 
 // IsClosed returns whether the watcher has been closed.

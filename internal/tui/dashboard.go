@@ -663,15 +663,21 @@ func paneIndicatorTimeoutCmd(paneIndex int, duration time.Duration) tea.Cmd {
 }
 
 // closeAllWatchers closes all pane watchers (file and directory) to prevent resource leaks.
+// CRITICAL: On macOS, fsnotify uses kqueue which opens a file descriptor for EACH
+// watched path. We must call Remove() on each watched path before Close() to properly
+// release all file descriptors.
 func (m *DashboardModel) closeAllWatchers() {
 	for i := range m.panes {
-		// Close file content watcher
+		// Close file content watcher (uses watcher.Watcher which handles cleanup internally)
 		if m.panes[i].watcher != nil {
 			_ = m.panes[i].watcher.Close()
 			m.panes[i].watcher = nil
 		}
-		// Close directory watcher (Story 5.4)
+		// Close directory watcher (raw fsnotify.Watcher - needs explicit Remove)
 		if m.panes[i].dirWatcher != nil {
+			for _, path := range m.panes[i].dirWatcher.WatchList() {
+				_ = m.panes[i].dirWatcher.Remove(path) // Ignore errors - path may be deleted
+			}
 			_ = m.panes[i].dirWatcher.Close()
 			m.panes[i].dirWatcher = nil
 		}

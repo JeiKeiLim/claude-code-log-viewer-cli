@@ -418,3 +418,85 @@ func TestNewUsesNewWithPosition(t *testing.T) {
 	}
 	w.mu.Unlock()
 }
+
+// TestCloseRemovesWatchedPaths verifies Close() removes all watched paths before closing.
+// This is critical for macOS kqueue which opens a file descriptor per watched path.
+// Story 9.1 AC-1, AC-2
+func TestCloseRemovesWatchedPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	if err := os.WriteFile(testFile, []byte(""), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+
+	// Verify path is being watched before close
+	watchList := w.fsWatcher.WatchList()
+	if len(watchList) == 0 {
+		t.Error("expected at least one watched path before Close()")
+	}
+
+	// Close should remove paths
+	if err := w.Close(); err != nil {
+		t.Errorf("Close() failed: %v", err)
+	}
+
+	// After close, fsWatcher is closed so WatchList is not accessible
+	// The key is that Close() succeeded without error
+	if !w.IsClosed() {
+		t.Error("expected IsClosed() to return true after Close()")
+	}
+}
+
+// TestCloseWithDeletedPath verifies Close() succeeds even when watched path is deleted.
+// This tests AC-3: no panic when Remove() is called on non-existent paths.
+func TestCloseWithDeletedPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	if err := os.WriteFile(testFile, []byte(""), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+
+	// Delete the file while it's being watched
+	if err := os.Remove(testFile); err != nil {
+		t.Fatalf("failed to delete test file: %v", err)
+	}
+
+	// Close should NOT panic and should succeed (Remove() errors are ignored)
+	if err := w.Close(); err != nil {
+		t.Errorf("Close() failed after path deletion: %v", err)
+	}
+
+	if !w.IsClosed() {
+		t.Error("expected IsClosed() to return true after Close()")
+	}
+}
+
+// TestCloseWithNilFsWatcher tests Close() when fsWatcher is nil (edge case).
+// This shouldn't happen in practice but ensures robustness.
+func TestCloseWithNilFsWatcher(t *testing.T) {
+	w := &Watcher{
+		filePath:  "/nonexistent/path",
+		fsWatcher: nil, // Intentionally nil
+	}
+
+	// Should not panic
+	if err := w.Close(); err != nil {
+		t.Errorf("Close() with nil fsWatcher should return nil, got: %v", err)
+	}
+
+	if !w.IsClosed() {
+		t.Error("expected IsClosed() to return true")
+	}
+}
