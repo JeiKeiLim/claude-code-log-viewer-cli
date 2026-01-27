@@ -143,4 +143,4 @@ development_status:
   9-1-explicit-watcher-cleanup: done  # code-reviewed 2026-01-27
   9-2-dashboard-subscription-model: done  # code-reviewed 2026-01-27
   9-3-stress-test-long-running: done  # code-reviewed 2026-01-27
-  epic-9-retrospective: optional
+  epic-9-retrospective: done  # completed 2026-01-27
