@@ -2,13 +2,16 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/token"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
 )
 
 func TestDefaultRenderOptions(t *testing.T) {
@@ -3206,5 +3209,349 @@ func TestWatchModeTokenRecalculationWithEstimation(t *testing.T) {
 	// Token count should have increased
 	if m.conversationTokens <= 75 {
 		t.Errorf("conversationTokens = %d, want > 75 (initial + estimate for 'World')", m.conversationTokens)
+	}
+}
+
+// TestBuildModeSegmentShowsFOLLOW tests Story 11.2 AC-3: FOLLOW indicator appears when active.
+func TestBuildModeSegmentShowsFOLLOW(t *testing.T) {
+	tests := []struct {
+		name           string
+		followLatest   bool
+		hasWatcher     bool
+		wantContains   string
+		wantNotContain string
+	}{
+		{
+			name:           "follow-latest disabled shows no FOLLOW",
+			followLatest:   false,
+			hasWatcher:     false,
+			wantContains:   "",
+			wantNotContain: "FOLLOW",
+		},
+		{
+			name:           "follow-latest enabled but no watcher shows no FOLLOW",
+			followLatest:   true,
+			hasWatcher:     false,
+			wantContains:   "",
+			wantNotContain: "FOLLOW",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := ViewerModel{
+				followLatest: tt.followLatest,
+			}
+			// Create a mock projectWatcher if needed (can't create real one without dir)
+			// The check is just: m.projectWatcher != nil
+			// For testing, we rely on the nil check behavior
+
+			got := m.buildModeSegment()
+
+			if tt.wantContains != "" && !strings.Contains(got, tt.wantContains) {
+				t.Errorf("buildModeSegment() = %q, want to contain %q", got, tt.wantContains)
+			}
+			if tt.wantNotContain != "" && strings.Contains(got, tt.wantNotContain) {
+				t.Errorf("buildModeSegment() = %q, should not contain %q", got, tt.wantNotContain)
+			}
+		})
+	}
+}
+
+// TestBuildShortcutsSegmentShowsFollowLatest tests Story 11.2 AC-6: shortcuts segment shows L toggle.
+func TestBuildShortcutsSegmentShowsFollowLatest(t *testing.T) {
+	tests := []struct {
+		name         string
+		watchMode    bool
+		followLatest bool
+		wantContains string
+	}{
+		{
+			name:         "watch mode off - no follow toggle",
+			watchMode:    false,
+			followLatest: false,
+			wantContains: "", // Should not show L:follow or L:unfollow
+		},
+		{
+			name:         "watch mode on, follow-latest off - shows L:follow",
+			watchMode:    true,
+			followLatest: false,
+			wantContains: "L:follow",
+		},
+		{
+			name:         "watch mode on, follow-latest on - shows L:unfollow",
+			watchMode:    true,
+			followLatest: true,
+			wantContains: "L:unfollow",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := ViewerModel{
+				watchMode:    tt.watchMode,
+				followLatest: tt.followLatest,
+			}
+
+			got := m.buildShortcutsSegment()
+
+			if tt.wantContains == "" {
+				// Should not contain any follow toggle text
+				if strings.Contains(got, "L:follow") || strings.Contains(got, "L:unfollow") {
+					t.Errorf("buildShortcutsSegment() = %q, should not contain follow toggle when watch mode is off", got)
+				}
+			} else {
+				if !strings.Contains(got, tt.wantContains) {
+					t.Errorf("buildShortcutsSegment() = %q, want to contain %q", got, tt.wantContains)
+				}
+			}
+		})
+	}
+}
+
+// TestLKeyRequiresWatchMode tests Story 11.2 AC-6: L key only works in watch mode.
+func TestLKeyRequiresWatchMode(t *testing.T) {
+	entries := []types.LogEntry{{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Hello"}}}
+
+	tests := []struct {
+		name        string
+		watchMode   bool
+		wantToast   string
+		wantEnabled bool
+	}{
+		{
+			name:        "L key without watch mode shows error toast",
+			watchMode:   false,
+			wantToast:   "requires watch mode",
+			wantEnabled: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := RenderOptions{WatchMode: tt.watchMode, FilePath: "/tmp/test.jsonl"}
+			m := NewViewerModel(entries, 0, "Test", opts, nil)
+			m.SetSize(80, 24)
+
+			// Simulate L key press
+			keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'L'}}
+			newModel, _ := m.Update(keyMsg)
+			updatedModel := newModel.(ViewerModel)
+
+			if !tt.watchMode {
+				// Should show error toast
+				if !strings.Contains(updatedModel.toast, tt.wantToast) {
+					t.Errorf("toast = %q, want to contain %q", updatedModel.toast, tt.wantToast)
+				}
+				// Should not enable follow-latest
+				if updatedModel.followLatest {
+					t.Error("follow-latest should not be enabled when watch mode is off")
+				}
+			}
+		})
+	}
+}
+
+// TestNewViewerModelFollowLatestInit tests Story 11.2 Task 5.2: NewViewerModel initializes follow-latest.
+func TestNewViewerModelFollowLatestInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := tmpDir + "/conversation.jsonl"
+
+	// Create a test file so GetBirthtime has something to work with
+	if err := os.WriteFile(testFile, []byte(`{"type":"user"}`), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+
+	// Test without follow-latest
+	optsNoFollow := RenderOptions{
+		WatchMode:    true,
+		FilePath:     testFile,
+		FollowLatest: false,
+		ProjectPath:  "",
+	}
+	mNoFollow := NewViewerModel(entries, 0, "Test", optsNoFollow, nil)
+
+	if mNoFollow.followLatest {
+		t.Error("NewViewerModel without FollowLatest should have followLatest = false")
+	}
+	if mNoFollow.projectWatcher != nil {
+		t.Error("NewViewerModel without FollowLatest should have nil projectWatcher")
+	}
+
+	// Test with follow-latest
+	optsFollow := RenderOptions{
+		WatchMode:    true,
+		FilePath:     testFile,
+		FollowLatest: true,
+		ProjectPath:  tmpDir,
+	}
+	mFollow := NewViewerModel(entries, 0, "Test", optsFollow, nil)
+	defer func() {
+		if mFollow.projectWatcher != nil {
+			_ = mFollow.projectWatcher.Close()
+		}
+	}()
+
+	if !mFollow.followLatest {
+		t.Error("NewViewerModel with FollowLatest should have followLatest = true")
+	}
+	if mFollow.projectWatcher == nil {
+		t.Error("NewViewerModel with FollowLatest should have non-nil projectWatcher")
+	}
+	if mFollow.currentConversationPath != testFile {
+		t.Errorf("currentConversationPath = %q, want %q", mFollow.currentConversationPath, testFile)
+	}
+	if mFollow.currentCreationTime.IsZero() {
+		t.Error("currentCreationTime should not be zero")
+	}
+}
+
+// TestNewConversationMsgSwitchesWhenNewer tests Story 11.2 AC-3: NewConversationMsg switches when newer.
+func TestNewConversationMsgSwitchesWhenNewer(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldFile := tmpDir + "/old_conversation.jsonl"
+	newFile := tmpDir + "/new_conversation.jsonl"
+
+	// Create old file first
+	if err := os.WriteFile(oldFile, []byte(`{"type":"user","message":{"role":"user","content":"Old"}}`+"\n"), 0644); err != nil {
+		t.Fatalf("failed to create old file: %v", err)
+	}
+
+	// Wait a moment to ensure different timestamps
+	time.Sleep(50 * time.Millisecond)
+
+	// Create new file
+	if err := os.WriteFile(newFile, []byte(`{"type":"user","message":{"role":"user","content":"New"}}`+"\n"), 0644); err != nil {
+		t.Fatalf("failed to create new file: %v", err)
+	}
+
+	// Get birthtimes
+	oldInfo, _ := os.Stat(oldFile)
+	newInfo, _ := os.Stat(newFile)
+	oldTime := oldInfo.ModTime() // Use ModTime as fallback for test reliability
+	newTime := newInfo.ModTime()
+
+	entries := []types.LogEntry{{Type: types.EntryTypeUser, Message: types.Message{TextContent: "Old"}}}
+
+	opts := RenderOptions{
+		WatchMode: true,
+		FilePath:  oldFile,
+	}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.followLatest = true
+	m.currentCreationTime = oldTime
+	m.currentConversationPath = oldFile
+
+	// Send NewConversationMsg with newer time
+	msg := watcher.NewConversationMsg{
+		FilePath:     newFile,
+		CreationTime: newTime,
+	}
+
+	newModel, _ := m.Update(msg)
+	updatedModel := newModel.(ViewerModel)
+
+	// Verify switch occurred
+	if updatedModel.currentConversationPath != newFile {
+		t.Errorf("currentConversationPath = %q, want %q", updatedModel.currentConversationPath, newFile)
+	}
+	if updatedModel.renderOpts.FilePath != newFile {
+		t.Errorf("renderOpts.FilePath = %q, want %q", updatedModel.renderOpts.FilePath, newFile)
+	}
+}
+
+// TestNewConversationMsgIgnoresWhenNotNewer tests Story 11.2: NewConversationMsg ignores when not newer.
+func TestNewConversationMsgIgnoresWhenNotNewer(t *testing.T) {
+	tmpDir := t.TempDir()
+	currentFile := tmpDir + "/current.jsonl"
+	olderFile := tmpDir + "/older.jsonl"
+
+	// Create current file
+	if err := os.WriteFile(currentFile, []byte(`{"type":"user"}`+"\n"), 0644); err != nil {
+		t.Fatalf("failed to create current file: %v", err)
+	}
+
+	currentInfo, _ := os.Stat(currentFile)
+	currentTime := currentInfo.ModTime()
+
+	// Create "older" file with the same or older timestamp for test
+	if err := os.WriteFile(olderFile, []byte(`{"type":"user"}`+"\n"), 0644); err != nil {
+		t.Fatalf("failed to create older file: %v", err)
+	}
+
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+
+	opts := RenderOptions{
+		WatchMode: true,
+		FilePath:  currentFile,
+	}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.followLatest = true
+	m.currentCreationTime = currentTime
+	m.currentConversationPath = currentFile
+
+	// Send NewConversationMsg with older time (subtract 1 second)
+	msg := watcher.NewConversationMsg{
+		FilePath:     olderFile,
+		CreationTime: currentTime.Add(-time.Second),
+	}
+
+	newModel, _ := m.Update(msg)
+	updatedModel := newModel.(ViewerModel)
+
+	// Verify NO switch occurred
+	if updatedModel.currentConversationPath != currentFile {
+		t.Errorf("should not switch: currentConversationPath = %q, want %q", updatedModel.currentConversationPath, currentFile)
+	}
+}
+
+// TestNewConversationMsgDebouncesSwitchInProgress tests that rapid switches are debounced.
+func TestNewConversationMsgDebouncesSwitchInProgress(t *testing.T) {
+	tmpDir := t.TempDir()
+	currentFile := tmpDir + "/current.jsonl"
+	newFile := tmpDir + "/new.jsonl"
+
+	if err := os.WriteFile(currentFile, []byte(`{"type":"user"}`+"\n"), 0644); err != nil {
+		t.Fatalf("failed to create current file: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(newFile, []byte(`{"type":"user"}`+"\n"), 0644); err != nil {
+		t.Fatalf("failed to create new file: %v", err)
+	}
+
+	currentInfo, _ := os.Stat(currentFile)
+	newInfo, _ := os.Stat(newFile)
+	currentTime := currentInfo.ModTime()
+	newTime := newInfo.ModTime()
+
+	entries := []types.LogEntry{{Type: types.EntryTypeUser}}
+
+	opts := RenderOptions{
+		WatchMode: true,
+		FilePath:  currentFile,
+	}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.followLatest = true
+	m.currentCreationTime = currentTime
+	m.currentConversationPath = currentFile
+	m.switchInProgress = true // Simulate switch already in progress
+
+	// Send NewConversationMsg while switch is in progress
+	msg := watcher.NewConversationMsg{
+		FilePath:     newFile,
+		CreationTime: newTime,
+	}
+
+	newModel, _ := m.Update(msg)
+	updatedModel := newModel.(ViewerModel)
+
+	// Verify NO switch occurred (debounced)
+	if updatedModel.currentConversationPath != currentFile {
+		t.Errorf("should debounce: currentConversationPath = %q, want %q", updatedModel.currentConversationPath, currentFile)
 	}
 }

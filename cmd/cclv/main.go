@@ -46,8 +46,9 @@ OPTIONS:
   --hide-thoughts   Hide Claude's thinking blocks
   --hide-tools      Hide tool use/result blocks
   --width=N         Set rendering width (40-500, 0=auto)
-  --watch           Watch file for changes (real-time monitoring)
+  -w, --watch       Watch file for changes (real-time monitoring)
   --live            Alias for --watch
+  -L, --follow-latest   Follow newest conversation (requires --watch)
   -u, --usage       Print usage limits and exit (no TUI)
   -v, --version     Print version information
   -h, --help        Show this help message
@@ -61,6 +62,7 @@ EXAMPLES:
   cclv --width=100 file.jsonl             Fixed 100-char width
   cclv --color=always file.jsonl | less -R  Force colors in pipe
   cclv --watch conversation.jsonl           Monitor live session
+  cclv -w -L conversation.jsonl            Watch and follow latest conversation
   cclv --usage                              Quick check on limits
   cclv -u                                   Shorthand for --usage
 
@@ -77,6 +79,7 @@ KEYBOARD SHORTCUTS (TUI mode):
   Toggles:      t               Toggle thinking blocks
                 i               Toggle tool inputs
                 w               Toggle watch mode
+                L               Toggle follow-latest (in watch mode)
 
   Search:       /               Start search
                 n/N             Next/previous match
@@ -130,13 +133,19 @@ func main() {
 	hideToolsFlag := flag.Bool("hide-tools", false, "Hide tool use blocks in output")
 	widthFlag := flag.Int("width", 0, "Override rendering width (0=auto-detect)")
 	watchFlag := flag.Bool("watch", false, "Watch file for changes (real-time monitoring)")
+	watchShortFlag := flag.Bool("w", false, "Watch file for changes (shorthand)")
 	liveFlag := flag.Bool("live", false, "Alias for --watch")
+	followLatestFlag := flag.Bool("follow-latest", false, "Follow to newest conversation (requires --watch)")
+	followLatestShortFlag := flag.Bool("L", false, "Follow to newest conversation (requires --watch)")
 	usageFlag := flag.Bool("usage", false, "Print usage limits and exit")
 	usageShortFlag := flag.Bool("u", false, "Print usage limits and exit (shorthand)")
 	flag.Parse()
 
 	// Combine watch flags
-	watchMode := *watchFlag || *liveFlag
+	watchMode := *watchFlag || *watchShortFlag || *liveFlag
+
+	// Combine follow-latest flags
+	followLatest := *followLatestFlag || *followLatestShortFlag
 
 	// Handle version flag - print and exit before any other processing
 	if *versionFlag || *versionShortFlag {
@@ -166,6 +175,12 @@ func main() {
 	// Validate watch mode requires a file argument (cannot watch stdin or interactive mode)
 	if watchMode && len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: --watch requires a file path argument (cannot watch stdin)\n")
+		os.Exit(1)
+	}
+
+	// Validate follow-latest requires watch mode (AC-5)
+	if followLatest && !watchMode {
+		fmt.Fprintf(os.Stderr, "Error: --follow-latest requires --watch mode\n")
 		os.Exit(1)
 	}
 
@@ -220,6 +235,7 @@ func main() {
 		HideTools:    *hideToolsFlag,
 		Width:        validatedWidth,
 		WatchMode:    watchMode,
+		FollowLatest: followLatest,
 	}
 
 	// Pipeline/file mode with determined output mode
@@ -241,8 +257,15 @@ func runPipelineMode(args []string, mode outputMode, opts tui.RenderOptions) err
 		absPath, err := filepath.Abs(filePath)
 		if err == nil {
 			opts.FilePath = absPath
+			// Derive project path for follow-latest mode (Story 11.2)
+			if opts.FollowLatest {
+				opts.ProjectPath = filepath.Dir(absPath)
+			}
 		} else {
 			opts.FilePath = filePath // Fall back to original path
+			if opts.FollowLatest {
+				opts.ProjectPath = filepath.Dir(filePath)
+			}
 		}
 		file, err := os.Open(filePath)
 		if err != nil {

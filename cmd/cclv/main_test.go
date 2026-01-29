@@ -408,3 +408,139 @@ func TestRunStreamingPlainMode_RenderPath(t *testing.T) {
 		t.Error("absolute path should not be empty")
 	}
 }
+
+// TestFollowLatestFlagParsing tests Story 11.2 AC-1: flag parsing for -L/--follow-latest.
+func TestFollowLatestFlagParsing(t *testing.T) {
+	// Save original flag state and restore after test
+	origArgs := os.Args
+	t.Cleanup(func() {
+		os.Args = origArgs
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	})
+
+	tests := []struct {
+		name     string
+		args     []string
+		wantFlag bool
+	}{
+		{"L short flag sets follow-latest", []string{"cmd", "-L", "file.jsonl"}, true},
+		{"follow-latest long flag", []string{"cmd", "--follow-latest", "file.jsonl"}, true},
+		{"both flags set follow-latest", []string{"cmd", "-L", "--follow-latest", "file.jsonl"}, true},
+		{"no flag means no follow-latest", []string{"cmd", "file.jsonl"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset flag.CommandLine for each test
+			flag.CommandLine = flag.NewFlagSet(tt.args[0], flag.ContinueOnError)
+
+			followLatestFlag := flag.Bool("follow-latest", false, "Follow to newest conversation")
+			followLatestShortFlag := flag.Bool("L", false, "Follow to newest conversation")
+
+			err := flag.CommandLine.Parse(tt.args[1:])
+			if err != nil {
+				t.Fatalf("Failed to parse flags: %v", err)
+			}
+
+			followLatest := *followLatestFlag || *followLatestShortFlag
+			if followLatest != tt.wantFlag {
+				t.Errorf("followLatest = %v, want %v", followLatest, tt.wantFlag)
+			}
+		})
+	}
+}
+
+// TestFollowLatestRequiresWatchMode tests Story 11.2 AC-5: validation that
+// --follow-latest requires --watch mode.
+func TestFollowLatestRequiresWatchMode(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantValid   bool
+		description string
+	}{
+		{
+			name:        "L with watch is valid",
+			args:        []string{"cmd", "-w", "-L", "file.jsonl"},
+			wantValid:   true,
+			description: "Should be valid when both -w and -L are provided",
+		},
+		{
+			name:        "follow-latest with watch is valid",
+			args:        []string{"cmd", "--watch", "--follow-latest", "file.jsonl"},
+			wantValid:   true,
+			description: "Should be valid with long form flags",
+		},
+		{
+			name:        "L without watch is invalid",
+			args:        []string{"cmd", "-L", "file.jsonl"},
+			wantValid:   false,
+			description: "Should be invalid when -L is used without -w",
+		},
+		{
+			name:        "follow-latest without watch is invalid",
+			args:        []string{"cmd", "--follow-latest", "file.jsonl"},
+			wantValid:   false,
+			description: "Should be invalid when --follow-latest is used without --watch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset flag.CommandLine for each test
+			flag.CommandLine = flag.NewFlagSet(tt.args[0], flag.ContinueOnError)
+
+			watchFlag := flag.Bool("watch", false, "Watch file for changes")
+			wFlag := flag.Bool("w", false, "Watch file for changes (shorthand)")
+			liveFlag := flag.Bool("live", false, "Alias for --watch")
+			followLatestFlag := flag.Bool("follow-latest", false, "Follow to newest conversation")
+			followLatestShortFlag := flag.Bool("L", false, "Follow to newest conversation")
+
+			err := flag.CommandLine.Parse(tt.args[1:])
+			if err != nil {
+				t.Fatalf("Failed to parse flags: %v", err)
+			}
+
+			watchMode := *watchFlag || *wFlag || *liveFlag
+			followLatest := *followLatestFlag || *followLatestShortFlag
+
+			// Simulate the validation logic from main.go
+			isValid := !followLatest || watchMode // follow-latest is OK if disabled, or if watch mode is on
+
+			if isValid != tt.wantValid {
+				t.Errorf("%s: isValid = %v, want %v", tt.description, isValid, tt.wantValid)
+			}
+		})
+	}
+}
+
+// TestPrintHelpFollowLatestFlag tests Story 11.2 AC-6: verify follow-latest flag appears in help.
+func TestPrintHelpFollowLatestFlag(t *testing.T) {
+	// Save original output and restore after test
+	originalOutput := flag.CommandLine.Output()
+	t.Cleanup(func() {
+		flag.CommandLine.SetOutput(originalOutput)
+	})
+
+	// Capture help output
+	var buf bytes.Buffer
+	flag.CommandLine.SetOutput(&buf)
+	printHelp()
+
+	output := buf.String()
+
+	// Test follow-latest flag appears in OPTIONS
+	if !strings.Contains(output, "-L, --follow-latest") {
+		t.Error("help output should contain '-L, --follow-latest' showing both flag forms together")
+	}
+
+	// Test follow-latest appears in examples
+	if !strings.Contains(output, "-w -L") {
+		t.Error("help output should contain example with '-w -L'")
+	}
+
+	// Test follow-latest appears in keyboard shortcuts (Toggles section)
+	if !strings.Contains(output, "Toggle follow-latest") {
+		t.Error("help output should document 'L' key toggle for follow-latest in keyboard shortcuts")
+	}
+}

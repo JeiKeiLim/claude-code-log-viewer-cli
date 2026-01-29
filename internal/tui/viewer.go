@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/token"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
@@ -40,6 +41,8 @@ type RenderOptions struct {
 	Width        int    // Width override for rendering (0=auto-detect)
 	WatchMode    bool   // Enable file watching mode
 	FilePath     string // Full path for file watching
+	FollowLatest bool   // Enable follow-latest mode (Story 11.2)
+	ProjectPath  string // Directory path for project watcher (Story 11.2)
 }
 
 // DefaultRenderOptions returns options that show all content types with auto-detect width.
@@ -130,6 +133,13 @@ type ViewerModel struct {
 	tokenService       *token.Service // For token calculations
 	conversationTokens int            // Total tokens for conversation
 	tokensEstimated    bool           // True if any token was estimated
+
+	// Follow-latest mode (Story 11.2)
+	followLatest            bool                   // Enable follow-latest mode
+	projectWatcher          *watcher.ProjectWatcher // Watches project dir for new conversations
+	currentConversationPath string                 // Path of current conversation file
+	currentCreationTime     time.Time              // Birthtime of current conversation for comparison
+	switchInProgress        bool                   // Debounce rapid switches
 }
 
 // calculateGutterWidth returns the width needed for line numbers.
@@ -270,6 +280,24 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 		// If watcher creation fails, continue without it (graceful degradation)
 	}
 
+	// Create project watcher if follow-latest mode enabled (Story 11.2)
+	if opts.FollowLatest && opts.ProjectPath != "" {
+		pw, err := watcher.NewProjectWatcher(opts.ProjectPath)
+		if err == nil {
+			m.projectWatcher = pw
+			m.followLatest = true
+			m.currentConversationPath = opts.FilePath
+			// Get current conversation's birthtime
+			if info, err := os.Stat(opts.FilePath); err == nil {
+				m.currentCreationTime = scanner.GetBirthtime(info)
+				if m.currentCreationTime.IsZero() {
+					m.currentCreationTime = info.ModTime()
+				}
+			}
+		}
+		// If project watcher creation fails, continue without it (graceful degradation)
+	}
+
 	return m
 }
 
@@ -312,8 +340,15 @@ func (m *ViewerModel) SetSize(width, height int) {
 
 // Init implements tea.Model.
 func (m ViewerModel) Init() tea.Cmd {
+	var cmds []tea.Cmd
 	if m.watcher != nil {
-		return m.watcher.WaitForEvent()
+		cmds = append(cmds, m.watcher.WaitForEvent())
+	}
+	if m.projectWatcher != nil {
+		cmds = append(cmds, m.projectWatcher.WaitForNewConversation())
+	}
+	if len(cmds) > 0 {
+		return tea.Batch(cmds...)
 	}
 	return nil
 }
@@ -424,6 +459,10 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.watcher != nil {
 				_ = m.watcher.Close()
 			}
+			// Close project watcher on quit (Story 11.2)
+			if m.projectWatcher != nil {
+				_ = m.projectWatcher.Close()
+			}
 			return m, tea.Quit
 
 		case "j", "down":
@@ -474,9 +513,13 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "h", "esc":
 			if m.canGoBack {
-				// Close watcher before navigating back to prevent resource leak
+				// Close watchers before navigating back to prevent resource leak
 				if m.watcher != nil {
 					_ = m.watcher.Close()
+				}
+				// Close project watcher on back navigation (Story 11.2)
+				if m.projectWatcher != nil {
+					_ = m.projectWatcher.Close()
 				}
 				// Signal to go back - handled by parent
 				return m, func() tea.Msg { return GoBackMsg{} }
@@ -534,6 +577,46 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+
+		case "L":
+			// Toggle follow-latest mode (Story 11.2, AC-6)
+			// Only allow toggle when in watch mode
+			if !m.watchMode {
+				return m, m.showToast("Follow-latest requires watch mode", ToastDuration)
+			}
+
+			if m.followLatest {
+				// Disable follow-latest
+				if m.projectWatcher != nil {
+					_ = m.projectWatcher.Close()
+					m.projectWatcher = nil
+				}
+				m.followLatest = false
+				return m, m.showToast("Follow-latest: OFF", ToastDuration)
+			}
+
+			// Enable follow-latest
+			projectPath := filepath.Dir(m.renderOpts.FilePath)
+			pw, err := watcher.NewProjectWatcher(projectPath)
+			if err != nil {
+				return m, m.showToast("Cannot start follow-latest", ToastDuration)
+			}
+			m.projectWatcher = pw
+			m.followLatest = true
+			m.currentConversationPath = m.renderOpts.FilePath
+
+			// Get current file's birthtime
+			if info, err := os.Stat(m.renderOpts.FilePath); err == nil {
+				m.currentCreationTime = scanner.GetBirthtime(info)
+				if m.currentCreationTime.IsZero() {
+					m.currentCreationTime = info.ModTime()
+				}
+			}
+
+			return m, tea.Batch(
+				m.showToast("Follow-latest: ON", ToastDuration),
+				m.projectWatcher.WaitForNewConversation(),
+			)
 
 		case "r":
 			// Toggle raw JSONL mode (Story 4.3)
@@ -765,6 +848,97 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.watcher.WaitForEvent()
 		}
 		return m, nil
+
+	case watcher.NewConversationMsg:
+		// Story 11.2: Handle new conversation detected by project watcher
+		// Skip if switch already in progress (debounce)
+		if m.switchInProgress {
+			if m.projectWatcher != nil {
+				return m, m.projectWatcher.WaitForNewConversation()
+			}
+			return m, nil
+		}
+
+		// Skip if not newer than current (compare birthtimes)
+		if !msg.CreationTime.After(m.currentCreationTime) {
+			if m.projectWatcher != nil {
+				return m, m.projectWatcher.WaitForNewConversation()
+			}
+			return m, nil
+		}
+
+		// Handle birthtime zero (fallback already applied in sender)
+		if msg.CreationTime.IsZero() {
+			// Skip - can't determine if newer
+			if m.projectWatcher != nil {
+				return m, m.projectWatcher.WaitForNewConversation()
+			}
+			return m, nil
+		}
+
+		m.switchInProgress = true
+
+		// Close current file watcher
+		if m.watcher != nil {
+			_ = m.watcher.Close()
+			m.watcher = nil
+		}
+
+		// Parse new conversation
+		result, err := parser.ParseJSONLFile(msg.FilePath)
+		if err != nil {
+			m.switchInProgress = false
+			if m.projectWatcher != nil {
+				return m, m.projectWatcher.WaitForNewConversation()
+			}
+			return m, nil
+		}
+
+		// Update state (pattern from Story 11.1: capture before modify)
+		m.entries = result.Entries
+		m.loadedCount = len(m.entries)
+		m.parseErrors = result.ParseErrors
+		m.currentConversationPath = msg.FilePath
+		m.currentCreationTime = msg.CreationTime
+		m.renderOpts.FilePath = msg.FilePath
+		m.gutterWidth = calculateGutterWidth(len(m.entries))
+		m.newEntriesCount = 0
+
+		// Recalculate tokens
+		if m.tokenService != nil {
+			m.conversationTokens, m.tokensEstimated = m.tokenService.CalculateConversation(m.entries)
+		}
+
+		// Exit raw mode on switch (consistent with file reset behavior)
+		if m.rawMode {
+			m.rawMode = false
+		}
+
+		m.invalidateRenderCache()
+		m.updateContent()
+		m.viewport.GotoBottom()
+
+		// Start new file watcher
+		w, err := watcher.New(msg.FilePath)
+		if err == nil {
+			m.watcher = w
+		}
+
+		m.switchInProgress = false
+
+		// Format timestamp for toast (AC-4)
+		timestamp := msg.CreationTime.Format("15:04:05")
+		toastCmd := m.showToast(fmt.Sprintf("Switched to new conversation: %s", timestamp), ToastDuration)
+
+		var cmds []tea.Cmd
+		cmds = append(cmds, toastCmd)
+		if m.watcher != nil {
+			cmds = append(cmds, m.watcher.WaitForEvent())
+		}
+		if m.projectWatcher != nil {
+			cmds = append(cmds, m.projectWatcher.WaitForNewConversation())
+		}
+		return m, tea.Batch(cmds...)
 	}
 
 	m.viewport, cmd = m.viewport.Update(msg)
@@ -910,7 +1084,7 @@ type toastExpiredMsg struct {
 	id int // ID to match against current toast to prevent race conditions
 }
 
-// buildModeSegment returns the mode indicator segment (Story 4.3: RAW + LIVE).
+// buildModeSegment returns the mode indicator segment (Story 4.3: RAW + LIVE, Story 11.2: FOLLOW).
 func (m ViewerModel) buildModeSegment() string {
 	var modes []string
 	if m.rawMode {
@@ -918,6 +1092,10 @@ func (m ViewerModel) buildModeSegment() string {
 	}
 	if m.watchMode && m.watcher != nil {
 		modes = append(modes, "LIVE")
+	}
+	// Follow-latest indicator (Story 11.2)
+	if m.followLatest && m.projectWatcher != nil {
+		modes = append(modes, "FOLLOW")
 	}
 	if len(modes) == 0 {
 		return ""
@@ -966,7 +1144,7 @@ func (m ViewerModel) buildPositionSegment() string {
 	return Styles.StatusBarSegment.Position.Render(fmt.Sprintf("Entry %d/%d", pos, total))
 }
 
-// buildShortcutsSegment returns the keyboard shortcuts segment (Story 4.3: r toggle).
+// buildShortcutsSegment returns the keyboard shortcuts segment (Story 4.3: r toggle, Story 11.2: L follow).
 func (m ViewerModel) buildShortcutsSegment() string {
 	var parts []string
 	parts = append(parts, "j/k:scroll", "gg/G:top/bottom", ":N:goto", "/:search")
@@ -981,6 +1159,14 @@ func (m ViewerModel) buildShortcutsSegment() string {
 		parts = append(parts, "r:normal")
 	} else {
 		parts = append(parts, "r:raw")
+	}
+	// Follow-latest toggle hint (Story 11.2, AC-6) - only show when in watch mode
+	if m.watchMode {
+		if m.followLatest {
+			parts = append(parts, "L:unfollow")
+		} else {
+			parts = append(parts, "L:follow")
+		}
 	}
 	parts = append(parts, "p:path", "t:thinking", "i:inputs", "w:watch", "q:quit")
 	return strings.Join(parts, " • ")
