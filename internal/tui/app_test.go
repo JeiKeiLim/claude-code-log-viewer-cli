@@ -1309,3 +1309,385 @@ func TestGracefulDegradation_StaleIndicatorPresent(t *testing.T) {
 		t.Errorf("stale bar view should contain '(stale)' indicator, got: %q", view)
 	}
 }
+
+// Story 11.1 Tests: Auto-Detect Auth Refresh
+
+func TestAuthRetryInterval(t *testing.T) {
+	// Verify auth retry interval constant
+	if authRetryInterval != 5*time.Minute {
+		t.Errorf("authRetryInterval = %v, want 5m", authRetryInterval)
+	}
+}
+
+func TestAppModel_AuthExpired_InitiallyFalse(t *testing.T) {
+	// AC-2: authExpired should be false initially
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	if model.authExpired {
+		t.Error("authExpired should be false initially")
+	}
+}
+
+func TestAppModel_AuthExpired_TrueOnTokenExpired(t *testing.T) {
+	// Task 5.1: Test authExpired becomes true on ErrTokenExpired
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	newModel, cmd := model.Update(usageFetchedMsg{err: usage.ErrTokenExpired})
+	m := newModel.(AppModel)
+
+	if !m.authExpired {
+		t.Error("authExpired should be true after ErrTokenExpired")
+	}
+
+	// Should schedule auth retry tick
+	if cmd == nil {
+		t.Error("should return scheduleAuthRetryTick command")
+	}
+}
+
+func TestAppModel_AuthExpired_FalseOnSuccessfulFetch(t *testing.T) {
+	// Task 5.2: Test authExpired becomes false on successful fetch
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.authExpired = true // Simulate expired state
+
+	limits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}
+	newModel, _ := model.Update(usageFetchedMsg{limits: limits, stale: false})
+	m := newModel.(AppModel)
+
+	if m.authExpired {
+		t.Error("authExpired should be false after successful fetch")
+	}
+}
+
+func TestAppModel_AuthRetryTickMsg_TriggersRefreshWhenExpired(t *testing.T) {
+	// Task 5.3: Test authRetryTickMsg only triggers fetch when authExpired && !refreshInProgress
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.authExpired = true
+	model.refreshInProgress = false
+
+	newModel, cmd := model.Update(authRetryTickMsg{})
+	m := newModel.(AppModel)
+
+	if !m.refreshInProgress {
+		t.Error("refreshInProgress should be true after authRetryTickMsg when expired")
+	}
+	if cmd == nil {
+		t.Error("should return fetchUsage command")
+	}
+}
+
+func TestAppModel_AuthRetryTickMsg_NoOpWhenNotExpired(t *testing.T) {
+	// authRetryTickMsg should be no-op when not expired
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.authExpired = false
+	model.refreshInProgress = false
+
+	newModel, cmd := model.Update(authRetryTickMsg{})
+	m := newModel.(AppModel)
+
+	if m.refreshInProgress {
+		t.Error("refreshInProgress should remain false when not expired")
+	}
+	if cmd != nil {
+		t.Error("should return nil command when not expired")
+	}
+}
+
+func TestAppModel_AuthRetryTickMsg_NoOpWhenRefreshInProgress(t *testing.T) {
+	// authRetryTickMsg should be no-op when refresh already in progress
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.authExpired = true
+	model.refreshInProgress = true
+
+	newModel, cmd := model.Update(authRetryTickMsg{})
+	m := newModel.(AppModel)
+
+	// refreshInProgress should remain true (unchanged)
+	if !m.refreshInProgress {
+		t.Error("refreshInProgress should remain true")
+	}
+	if cmd != nil {
+		t.Error("should return nil command when refresh in progress")
+	}
+}
+
+func TestAppModel_AuthRecovery_TriggersToast(t *testing.T) {
+	// Task 5.4: Test recovery from expired state triggers ShowToastMsg
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.authExpired = true // Simulate expired state
+
+	limits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}
+	newModel, cmd := model.Update(usageFetchedMsg{limits: limits, stale: false})
+	m := newModel.(AppModel)
+
+	if m.authExpired {
+		t.Error("authExpired should be false after recovery")
+	}
+
+	// Should return a command that produces ShowToastMsg
+	if cmd == nil {
+		t.Fatal("recovery should return a command for toast")
+	}
+
+	// Execute the command and check the message type
+	msg := cmd()
+	toastMsg, ok := msg.(ShowToastMsg)
+	if !ok {
+		t.Errorf("recovery should emit ShowToastMsg, got %T", msg)
+	}
+	if toastMsg.Message != "Usage limits restored" {
+		t.Errorf("toast message = %q, want 'Usage limits restored'", toastMsg.Message)
+	}
+}
+
+func TestAppModel_AuthRecovery_NoToastWhenNotPreviouslyExpired(t *testing.T) {
+	// No toast when auth wasn't previously expired
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.authExpired = false // Not expired
+
+	limits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}
+	newModel, cmd := model.Update(usageFetchedMsg{limits: limits, stale: false})
+	m := newModel.(AppModel)
+
+	if m.authExpired {
+		t.Error("authExpired should remain false")
+	}
+
+	// Should return nil command (no toast)
+	if cmd != nil {
+		t.Error("should not return toast command when not previously expired")
+	}
+}
+
+func TestAppModel_NetworkErrorDuringRetry_KeepPolling(t *testing.T) {
+	// Task 5.5: Test network errors during retry don't change authExpired state
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.authExpired = true // Expired state
+
+	// Simulate network error during retry
+	newModel, cmd := model.Update(usageFetchedMsg{err: usage.ErrAPITimeout})
+	m := newModel.(AppModel)
+
+	// authExpired should remain true
+	if !m.authExpired {
+		t.Error("authExpired should remain true after network error during retry")
+	}
+
+	// Should continue polling
+	if cmd == nil {
+		t.Error("should return scheduleAuthRetryTick command after network error during retry")
+	}
+}
+
+func TestAppModel_NetworkErrorDuringRetry_OtherErrors(t *testing.T) {
+	// Test various network errors during retry all continue polling
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"ErrAPIError", usage.ErrAPIError},
+		{"ErrAPITimeout", usage.ErrAPITimeout},
+		{"generic network error", errors.New("dial tcp: connect: connection refused")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projects := []types.Project{{DisplayName: "proj1"}}
+			model := NewAppModel(projects)
+			model.authExpired = true
+
+			newModel, cmd := model.Update(usageFetchedMsg{err: tt.err})
+			m := newModel.(AppModel)
+
+			if !m.authExpired {
+				t.Error("authExpired should remain true")
+			}
+			if cmd == nil {
+				t.Error("should continue polling")
+			}
+		})
+	}
+}
+
+func TestAppModel_ManualRefresh_ClearsAuthExpired(t *testing.T) {
+	// Task 5.6: Test manual refresh (R key) success clears authExpired
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	// Set up expired state with valid bar state for manual refresh
+	model.authExpired = true
+	model.usageBar.SetError("Run 'claude' to refresh")
+	model.lastRefreshTime = time.Now().Add(-10 * time.Second)
+
+	// Trigger manual refresh
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	newModel, cmd := model.Update(keyMsg)
+	m := newModel.(AppModel)
+
+	// Should trigger refresh
+	if !m.refreshInProgress {
+		t.Error("manual refresh should set refreshInProgress")
+	}
+	if cmd == nil {
+		t.Error("should return fetchUsage command")
+	}
+
+	// Simulate successful fetch after manual refresh
+	limits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}
+	newModel2, _ := m.Update(usageFetchedMsg{limits: limits, stale: false})
+	m2 := newModel2.(AppModel)
+
+	// authExpired should be cleared
+	if m2.authExpired {
+		t.Error("authExpired should be false after successful manual refresh")
+	}
+}
+
+func TestAppModel_TokenExpiredAgainDuringRetry(t *testing.T) {
+	// When already expired and get ErrTokenExpired again, should keep polling
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.authExpired = true // Already expired
+
+	newModel, cmd := model.Update(usageFetchedMsg{err: usage.ErrTokenExpired})
+	m := newModel.(AppModel)
+
+	// authExpired should remain true
+	if !m.authExpired {
+		t.Error("authExpired should remain true")
+	}
+
+	// Should schedule another retry
+	if cmd == nil {
+		t.Error("should return scheduleAuthRetryTick command")
+	}
+}
+
+func TestScheduleAuthRetryTick_ReturnsCmd(t *testing.T) {
+	cmd := scheduleAuthRetryTick()
+	if cmd == nil {
+		t.Fatal("scheduleAuthRetryTick() should return a non-nil command")
+	}
+}
+
+func TestAuthRetryTickMsg_Type(t *testing.T) {
+	// Verify the message type exists
+	msg := authRetryTickMsg{}
+	_ = msg // Just verify it compiles and can be created
+}
+
+func TestAppModel_CredentialsRemovedDuringRetry(t *testing.T) {
+	// Edge case: auth is expired, user logs out (removes credentials), retry fires
+	// Should correctly transition to NotLoggedIn state (not keep polling)
+	credentialErrors := []error{
+		usage.ErrNoCredentials,
+		usage.ErrKeychainNotFound,
+		usage.ErrKeychainTimeout,
+		usage.ErrInvalidCredentials,
+		usage.ErrEmptyToken,
+	}
+
+	for _, err := range credentialErrors {
+		t.Run(err.Error(), func(t *testing.T) {
+			projects := []types.Project{{DisplayName: "proj1"}}
+			model := NewAppModel(projects)
+			model.authExpired = true // Was expired
+
+			newModel, cmd := model.Update(usageFetchedMsg{err: err})
+			m := newModel.(AppModel)
+
+			// Should transition to NotLoggedIn state (credential errors take priority)
+			if m.UsageBarState() != usage.StateNotLoggedIn {
+				t.Errorf("expected StateNotLoggedIn, got %v", m.UsageBarState())
+			}
+
+			// Should NOT continue polling (no command returned)
+			if cmd != nil {
+				t.Error("should not continue polling when credentials are removed")
+			}
+
+			// authExpired state doesn't matter anymore - user needs to log in
+		})
+	}
+}
+
+func TestAppModel_AuthExpiredAndRefreshInProgress_TableDriven(t *testing.T) {
+	tests := []struct {
+		name                string
+		authExpired         bool
+		refreshInProgress   bool
+		expectRefreshStart  bool
+		expectReturnCommand bool
+	}{
+		{
+			name:                "expired and not refreshing - should start refresh",
+			authExpired:         true,
+			refreshInProgress:   false,
+			expectRefreshStart:  true,
+			expectReturnCommand: true,
+		},
+		{
+			name:                "expired but already refreshing - no-op",
+			authExpired:         true,
+			refreshInProgress:   true,
+			expectRefreshStart:  false,
+			expectReturnCommand: false,
+		},
+		{
+			name:                "not expired and not refreshing - no-op",
+			authExpired:         false,
+			refreshInProgress:   false,
+			expectRefreshStart:  false,
+			expectReturnCommand: false,
+		},
+		{
+			name:                "not expired but refreshing - no-op",
+			authExpired:         false,
+			refreshInProgress:   true,
+			expectRefreshStart:  false,
+			expectReturnCommand: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projects := []types.Project{{DisplayName: "proj1"}}
+			model := NewAppModel(projects)
+			model.authExpired = tt.authExpired
+			model.refreshInProgress = tt.refreshInProgress
+
+			newModel, cmd := model.Update(authRetryTickMsg{})
+			m := newModel.(AppModel)
+
+			if tt.expectRefreshStart && !m.refreshInProgress {
+				t.Error("expected refresh to start")
+			}
+			if !tt.expectRefreshStart && m.refreshInProgress != tt.refreshInProgress {
+				t.Error("refreshInProgress changed unexpectedly")
+			}
+			if tt.expectReturnCommand && cmd == nil {
+				t.Error("expected command")
+			}
+			if !tt.expectReturnCommand && cmd != nil {
+				t.Error("expected no command")
+			}
+		})
+	}
+}

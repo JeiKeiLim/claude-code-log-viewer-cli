@@ -68,6 +68,9 @@ type AppModel struct {
 	// Usage refresh state (Story 7.5)
 	lastRefreshTime   time.Time
 	refreshInProgress bool
+
+	// Auth retry state (Story 11.1)
+	authExpired bool
 }
 
 // newUsageBarStyles creates the usage bar styles from the TUI style exports (Story 7.4).
@@ -349,14 +352,26 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reschedule even if skipped
 		return m, scheduleUsageTick()
 
+	case authRetryTickMsg:
+		// Story 11.1: Auth retry when expired
+		if m.authExpired && !m.refreshInProgress {
+			m.refreshInProgress = true
+			return m, m.fetchUsage()
+		}
+		// Recovered or refresh in progress - stop polling
+		return m, nil
+
 	case usageFetchedMsg:
+		// Capture for recovery detection (Story 11.1)
+		wasExpired := m.authExpired
+
 		// Update refresh state (Story 7.5)
 		m.refreshInProgress = false // ALWAYS reset, even on error
 		if msg.err == nil {
 			m.lastRefreshTime = time.Now() // Only on success
 		}
 
-		// Handle usage fetch result (Story 7.4, 7.7)
+		// Handle usage fetch result (Story 7.4, 7.7, 11.1)
 		if msg.err != nil {
 			// Handle specific error types (expanded for Story 7.7)
 			if errors.Is(msg.err, usage.ErrNoCredentials) ||
@@ -368,9 +383,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if errors.Is(msg.err, usage.ErrTokenExpired) {
 				// Token expired - show actionable message (no log, expected behavior)
 				m.usageBar.SetError("Run 'claude' to refresh")
+				// Story 11.1: Track expired state and schedule retry
+				if !m.authExpired {
+					m.authExpired = true
+				}
+				return m, scheduleAuthRetryTick()
 			} else if errors.Is(msg.err, context.Canceled) {
-				// Context canceled (e.g., app shutting down) - silently ignore (AC-4, Task 3.3)
+				// Context canceled (e.g., app shutting down) - silently ignore
 				// Keep current state, don't update bar
+			} else if m.authExpired {
+				// Story 11.1 AC-4: Network error during retry - keep polling silently
+				log.Printf("usage retry error (continuing): %v", msg.err)
+				return m, scheduleAuthRetryTick()
 			} else if msg.limits != nil {
 				// Error but have stale data - show stale values with "(stale)" indicator (AC-2)
 				m.usageBar.SetLimits(msg.limits, true)
@@ -380,7 +404,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.usageBar.SetError("Unknown")
 			}
 		} else {
+			// Success
 			m.usageBar.SetLimits(msg.limits, msg.stale)
+			// Story 11.1 AC-3: Recovery detection with toast
+			if wasExpired {
+				m.authExpired = false
+				return m, func() tea.Msg {
+					return ShowToastMsg{Message: "Usage limits restored"}
+				}
+			}
 		}
 		return m, nil
 
@@ -504,6 +536,19 @@ type usageTickMsg struct{}
 func scheduleUsageTick() tea.Cmd {
 	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
 		return usageTickMsg{}
+	})
+}
+
+// authRetryTickMsg triggers retry when auth is expired (Story 11.1).
+type authRetryTickMsg struct{}
+
+// authRetryInterval is the polling interval when auth is expired (Story 11.1).
+const authRetryInterval = 5 * time.Minute
+
+// scheduleAuthRetryTick schedules auth retry (only called when expired) (Story 11.1).
+func scheduleAuthRetryTick() tea.Cmd {
+	return tea.Tick(authRetryInterval, func(t time.Time) tea.Msg {
+		return authRetryTickMsg{}
 	})
 }
 
