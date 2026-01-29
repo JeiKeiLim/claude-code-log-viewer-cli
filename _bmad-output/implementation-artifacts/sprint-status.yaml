@@ -150,10 +150,10 @@ development_status:
   # ============================================
 
   # Epic 10: Dashboard Reliability (BL-002, BL-005 fix)
-  epic-10: in-progress
+  epic-10: done
   10-1-fix-initialization-race-condition: done  # code-reviewed 2026-01-29
   10-2-add-manual-refresh-keybinding: done  # code-reviewed 2026-01-29
-  10-3-use-birthtime-for-latest-detection: ready-for-dev  # root cause fix for BL-005
+  10-3-use-birthtime-for-latest-detection: done  # code-reviewed 2026-01-29
   epic-10-retrospective: optional
 
   # Epic 11: Live Updates & Auto-Refresh (BL-001, BL-003)

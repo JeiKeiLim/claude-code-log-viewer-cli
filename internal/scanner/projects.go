@@ -4,14 +4,20 @@ package scanner
 import (
 	"bufio"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
+
+// birthtimeWarningOnce ensures the birthtime fallback warning is logged only once.
+// Story 10.3: Logged when birthtime is unavailable on the current platform.
+var birthtimeWarningOnce sync.Once
 
 // DefaultProjectsPath returns the default Claude projects directory path.
 func DefaultProjectsPath() string {
@@ -291,22 +297,32 @@ func ScanConversationsLazy(projectPath string) ([]types.Conversation, error) {
 			continue
 		}
 
+		// Story 10.3: Get file creation time (birthtime) for sorting
+		birthtime := GetBirthtime(info)
+		if birthtime.IsZero() {
+			birthtime = info.ModTime() // Fallback to modification time
+			birthtimeWarningOnce.Do(func() {
+				log.Println("cclv: birthtime unavailable on this platform, using modification time")
+			})
+		}
+
 		conv := types.Conversation{
 			FilePath:     filePath,
-			LastModified: info.ModTime(),
+			LastModified: info.ModTime(),  // Keep for display
+			CreationTime: birthtime,       // Used for sorting
 		}
 
 		conversations = append(conversations, conv)
 	}
 
-	// Sort by last modified, most recent first
+	// Story 10.3: Sort by creation time (birthtime), most recent first
 	// Story 10.1: Add filename tiebreaker for deterministic ordering with equal timestamps
 	sort.Slice(conversations, func(i, j int) bool {
-		if conversations[i].LastModified.Equal(conversations[j].LastModified) {
+		if conversations[i].CreationTime.Equal(conversations[j].CreationTime) {
 			// Tiebreaker: filename descending (newer UUIDs/timestamps tend to sort later)
 			return conversations[i].FilePath > conversations[j].FilePath
 		}
-		return conversations[i].LastModified.After(conversations[j].LastModified)
+		return conversations[i].CreationTime.After(conversations[j].CreationTime)
 	})
 
 	return conversations, nil

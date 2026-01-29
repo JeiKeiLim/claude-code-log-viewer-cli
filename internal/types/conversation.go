@@ -7,8 +7,11 @@ import "time"
 type Conversation struct {
 	// FilePath is the full path to the .jsonl file
 	FilePath string
-	// LastModified is the file modification timestamp (for sorting)
+	// LastModified is the file modification timestamp (for display in conversation list)
 	LastModified time.Time
+	// CreationTime is the file birth time (used for sorting by "latest created")
+	// Story 10.3: Falls back to mtime on platforms without birthtime support
+	CreationTime time.Time
 	// MessageCount is the number of log entries
 	MessageCount int
 	// FirstUserMessage is a preview of the first user message (truncated to 80 chars)

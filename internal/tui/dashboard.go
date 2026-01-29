@@ -66,7 +66,7 @@ type paneContentLoadedMsg struct {
 	entries      []types.LogEntry
 	parseErrors  int
 	filePath     string
-	lastModified time.Time // Story 10.1: Timestamp from ScanConversationsLazy for rescan comparison
+	lastModified time.Time // Story 10.3: CreationTime from ScanConversationsLazy for rescan comparison
 	err          error
 }
 
@@ -170,7 +170,7 @@ func (m *DashboardModel) initDirectoryWatcher(paneIndex int, projectPath string)
 }
 
 // findLatestConversation returns the most recent conversation for a project.
-// Uses ScanConversationsLazy which returns conversations sorted by LastModified descending.
+// Uses ScanConversationsLazy which returns conversations sorted by CreationTime descending (Story 10.3).
 func findLatestConversation(projectPath string) (types.Conversation, error) {
 	convs, err := scanner.ScanConversationsLazy(projectPath)
 	if err != nil {
@@ -200,14 +200,14 @@ func loadPaneContentCmd(paneIndex int, projectPath string) tea.Cmd {
 		if err != nil {
 			return paneContentLoadedMsg{paneIndex: paneIndex, err: err}
 		}
-		// Story 10.1: Use LastModified from ScanConversationsLazy (already statted during scan)
+		// Story 10.3: Use CreationTime from ScanConversationsLazy for rescan comparison
 		// This avoids redundant os.Stat call and ensures consistency with rescan comparisons
 		return paneContentLoadedMsg{
 			paneIndex:    paneIndex,
 			entries:      result.Entries,
 			parseErrors:  result.ParseErrors,
 			filePath:     conv.FilePath,
-			lastModified: conv.LastModified,
+			lastModified: conv.CreationTime, // Changed from conv.LastModified
 		}
 	}
 }
@@ -558,10 +558,11 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w, err := watcher.New(msg.filePath)
 				if err == nil {
 					pane.watcher = w
-					// Story 10.1: Preserve LastModified for race condition fix
+					// Story 10.3: lastModified field now contains CreationTime for sorting comparison
 					pane.conversation = types.Conversation{
 						FilePath:     msg.filePath,
-						LastModified: msg.lastModified,
+						CreationTime: msg.lastModified, // Store as CreationTime for comparison
+						LastModified: msg.lastModified, // Keep for potential display use
 					}
 					// Story 9.2: Start subscription goroutine instead of chained commands
 					m.startFileWatcherSubscription(m.ctx, msg.paneIndex)
@@ -620,10 +621,10 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Compare: only switch if different and newer
+		// Story 10.3: Compare by CreationTime (not LastModified)
 		if msg.latestConv.FilePath != pane.conversation.FilePath {
 			// Different file - check if actually newer
-			if msg.latestConv.LastModified.After(pane.conversation.LastModified) {
+			if msg.latestConv.CreationTime.After(pane.conversation.CreationTime) {
 				return m, func() tea.Msg {
 					return paneNewConversationMsg{
 						paneIndex:   msg.paneIndex,
@@ -648,11 +649,15 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// If we have a current conversation, compare timestamps
+			// If we have a current conversation, compare by creation time (Story 10.3)
 			if pane.conversation.FilePath != "" {
-				currInfo, err := os.Stat(pane.conversation.FilePath)
-				if err == nil && !newInfo.ModTime().After(currInfo.ModTime()) {
-					// New file is not newer - subscription continues watching
+				// Story 10.3: Compare by birthtime (CreationTime), not modification time
+				newBirthtime := scanner.GetBirthtime(newInfo)
+				if newBirthtime.IsZero() {
+					newBirthtime = newInfo.ModTime() // Fallback
+				}
+				if !newBirthtime.After(pane.conversation.CreationTime) {
+					// New file is not newer by creation time - subscription continues watching
 					return m, nil
 				}
 			}

@@ -1037,8 +1037,12 @@ func TestPaneDirWatcherEventMsgHandlerFileOlder(t *testing.T) {
 	projects := []types.Project{{DisplayName: "proj1", DirPath: tmpDir}}
 	model, _ := NewDashboardModel(projects)
 
-	// Set current conversation to the "current" file (newer)
-	model.panes[0].conversation.FilePath = currFile
+	// Story 10.3: Set current conversation with CreationTime for proper comparison
+	// The current file has a "newer" creation time (now), new file has older time
+	model.panes[0].conversation = types.Conversation{
+		FilePath:     currFile,
+		CreationTime: time.Now(), // Newer than oldTime set on newFile
+	}
 
 	// Event with the "new" file that has older timestamp
 	msg := paneDirWatcherEventMsg{
@@ -1988,11 +1992,14 @@ func TestPaneContentLoadedMsgHasLastModifiedField(t *testing.T) {
 
 func TestPaneRescanResultMsgType(t *testing.T) {
 	// Verify the message type has expected fields
+	// Story 10.3: Include CreationTime field
+	now := time.Now()
 	msg := paneRescanResultMsg{
 		paneIndex: 0,
 		latestConv: types.Conversation{
 			FilePath:     "/test/conv.jsonl",
-			LastModified: time.Now(),
+			CreationTime: now,
+			LastModified: now,
 		},
 		err: nil,
 	}
@@ -2004,6 +2011,10 @@ func TestPaneRescanResultMsgType(t *testing.T) {
 		t.Errorf("paneRescanResultMsg.latestConv.FilePath = %q, want %q",
 			msg.latestConv.FilePath, "/test/conv.jsonl")
 	}
+	// Story 10.3: Verify CreationTime is set
+	if msg.latestConv.CreationTime.IsZero() {
+		t.Error("paneRescanResultMsg.latestConv.CreationTime should not be zero")
+	}
 }
 
 func TestPaneRescanResultMsgHandlerSameConversation(t *testing.T) {
@@ -2013,9 +2024,11 @@ func TestPaneRescanResultMsgHandlerSameConversation(t *testing.T) {
 	model.SetSize(80, 40)
 
 	// Set current conversation
+	// Story 10.3: Use CreationTime for rescan comparison
 	currTime := time.Now()
 	model.panes[0].conversation = types.Conversation{
 		FilePath:     "/tmp/test/conv.jsonl",
+		CreationTime: currTime,
 		LastModified: currTime,
 	}
 	model.panes[0].loading = false
@@ -2027,7 +2040,8 @@ func TestPaneRescanResultMsgHandlerSameConversation(t *testing.T) {
 		paneIndex: 0,
 		latestConv: types.Conversation{
 			FilePath:     "/tmp/test/conv.jsonl",
-			LastModified: currTime, // Same timestamp
+			CreationTime: currTime, // Same CreationTime
+			LastModified: currTime,
 		},
 	}
 
@@ -2047,24 +2061,27 @@ func TestPaneRescanResultMsgHandlerSameConversation(t *testing.T) {
 
 func TestPaneRescanResultMsgHandlerNewerConversation(t *testing.T) {
 	// AC-1: Different, newer conversation should trigger reload
+	// Story 10.3: Use CreationTime for comparison
 	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
 	model, _ := NewDashboardModel(projects)
 	model.SetSize(80, 40)
 
-	// Set current conversation with older timestamp
+	// Set current conversation with older CreationTime
 	oldTime := time.Now().Add(-1 * time.Hour)
 	model.panes[0].conversation = types.Conversation{
 		FilePath:     "/tmp/test/old.jsonl",
+		CreationTime: oldTime,
 		LastModified: oldTime,
 	}
 	model.panes[0].loading = false
 
-	// Rescan returns newer conversation
+	// Rescan returns conversation with newer CreationTime
 	newerTime := time.Now()
 	msg := paneRescanResultMsg{
 		paneIndex: 0,
 		latestConv: types.Conversation{
 			FilePath:     "/tmp/test/new.jsonl",
+			CreationTime: newerTime,
 			LastModified: newerTime,
 		},
 	}
@@ -2088,24 +2105,27 @@ func TestPaneRescanResultMsgHandlerNewerConversation(t *testing.T) {
 
 func TestPaneRescanResultMsgHandlerOlderConversation(t *testing.T) {
 	// Different but older conversation should NOT trigger reload
+	// Story 10.3: Use CreationTime for comparison
 	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
 	model, _ := NewDashboardModel(projects)
 	model.SetSize(80, 40)
 
-	// Set current conversation with newer timestamp
+	// Set current conversation with newer CreationTime
 	newerTime := time.Now()
 	model.panes[0].conversation = types.Conversation{
 		FilePath:     "/tmp/test/current.jsonl",
+		CreationTime: newerTime,
 		LastModified: newerTime,
 	}
 	model.panes[0].loading = false
 
-	// Rescan returns older conversation (different file but older)
+	// Rescan returns older conversation (different file but older CreationTime)
 	oldTime := time.Now().Add(-1 * time.Hour)
 	msg := paneRescanResultMsg{
 		paneIndex: 0,
 		latestConv: types.Conversation{
 			FilePath:     "/tmp/test/old.jsonl",
+			CreationTime: oldTime,
 			LastModified: oldTime,
 		},
 	}
@@ -2159,10 +2179,12 @@ func TestPaneRescanResultMsgHandlerEmptyResult(t *testing.T) {
 	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
 	model, _ := NewDashboardModel(projects)
 
-	// Set current conversation
+	// Set current conversation (Story 10.3: Include CreationTime for consistency)
+	now := time.Now()
 	model.panes[0].conversation = types.Conversation{
 		FilePath:     "/tmp/test/existing.jsonl",
-		LastModified: time.Now(),
+		CreationTime: now,
+		LastModified: now,
 	}
 
 	// Rescan returns empty (no conversations found)
