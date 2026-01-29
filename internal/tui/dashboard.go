@@ -62,11 +62,12 @@ type PaneModel struct {
 
 // paneContentLoadedMsg signals content has been loaded for a specific pane.
 type paneContentLoadedMsg struct {
-	paneIndex   int
-	entries     []types.LogEntry
-	parseErrors int
-	filePath    string
-	err         error
+	paneIndex    int
+	entries      []types.LogEntry
+	parseErrors  int
+	filePath     string
+	lastModified time.Time // Story 10.1: Timestamp from ScanConversationsLazy for rescan comparison
+	err          error
 }
 
 // paneWatcherEventMsg wraps file content watcher events with pane index for routing.
@@ -123,6 +124,30 @@ type paneIndicatorExpiredMsg struct {
 	paneIndex int
 }
 
+// paneRescanResultMsg signals result of re-scanning for latest conversation.
+// Story 10.1: Used to catch conversations created during initialization race window.
+type paneRescanResultMsg struct {
+	paneIndex  int
+	latestConv types.Conversation
+	err        error
+}
+
+// rescanLatestCmd returns a command that re-scans for the latest conversation.
+// Story 10.1: CRITICAL - projectPath must be passed as parameter (not read from m.panes
+// inside closure) because the closure executes asynchronously and m.panes may have changed.
+func rescanLatestCmd(paneIndex int, projectPath string) tea.Cmd {
+	return func() tea.Msg {
+		conversations, err := scanner.ScanConversationsLazy(projectPath)
+		if err != nil {
+			return paneRescanResultMsg{paneIndex: paneIndex, err: err}
+		}
+		if len(conversations) == 0 {
+			return paneRescanResultMsg{paneIndex: paneIndex, err: nil} // Empty project
+		}
+		return paneRescanResultMsg{paneIndex: paneIndex, latestConv: conversations[0]}
+	}
+}
+
 // initDirectoryWatcher returns a command that creates and stores the directory watcher.
 // Called from paneContentLoadedMsg handler, NOT from constructor.
 // Watches the project directory directly where .jsonl files are stored.
@@ -161,7 +186,7 @@ func findLatestConversation(projectPath string) (types.Conversation, error) {
 // loadPaneContentCmd returns a command that loads content for a specific pane.
 func loadPaneContentCmd(paneIndex int, projectPath string) tea.Cmd {
 	return func() tea.Msg {
-		// Find latest conversation
+		// Find latest conversation (includes LastModified from ScanConversationsLazy)
 		conv, err := findLatestConversation(projectPath)
 		if err != nil {
 			return paneContentLoadedMsg{paneIndex: paneIndex, err: err}
@@ -175,11 +200,14 @@ func loadPaneContentCmd(paneIndex int, projectPath string) tea.Cmd {
 		if err != nil {
 			return paneContentLoadedMsg{paneIndex: paneIndex, err: err}
 		}
+		// Story 10.1: Use LastModified from ScanConversationsLazy (already statted during scan)
+		// This avoids redundant os.Stat call and ensures consistency with rescan comparisons
 		return paneContentLoadedMsg{
-			paneIndex:   paneIndex,
-			entries:     result.Entries,
-			parseErrors: result.ParseErrors,
-			filePath:    conv.FilePath,
+			paneIndex:    paneIndex,
+			entries:      result.Entries,
+			parseErrors:  result.ParseErrors,
+			filePath:     conv.FilePath,
+			lastModified: conv.LastModified,
 		}
 	}
 }
@@ -498,7 +526,11 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				w, err := watcher.New(msg.filePath)
 				if err == nil {
 					pane.watcher = w
-					pane.conversation = types.Conversation{FilePath: msg.filePath}
+					// Story 10.1: Preserve LastModified for race condition fix
+					pane.conversation = types.Conversation{
+						FilePath:     msg.filePath,
+						LastModified: msg.lastModified,
+					}
 					// Story 9.2: Start subscription goroutine instead of chained commands
 					m.startFileWatcherSubscription(m.ctx, msg.paneIndex)
 				}
@@ -522,7 +554,43 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			pane.watchingDir = msg.watchDir
 			// Story 9.2: Start subscription goroutine instead of chained commands
 			m.startDirWatcherSubscription(m.ctx, msg.paneIndex)
+
+			// Story 10.1: Re-scan for latest conversation after watcher is ready
+			// This catches conversations created during the initialization race window
+			// CRITICAL: Pass projectPath explicitly to avoid stale closure capture
+			return m, rescanLatestCmd(msg.paneIndex, pane.project.DirPath)
 		}
+		return m, nil
+
+	case paneRescanResultMsg:
+		// Story 10.1: Handle re-scan result after watcher initialization
+		// Catches conversations created during the initialization race window
+		if msg.err != nil || msg.paneIndex < 0 || msg.paneIndex >= len(m.panes) {
+			return m, nil
+		}
+		pane := &m.panes[msg.paneIndex]
+
+		// Empty rescan result (no conversations in project) - no action needed
+		// This handles the case where pane has a conversation but project is now empty
+		// (zero LastModified is never After any time, so this is implicitly handled,
+		// but explicit check clarifies intent)
+		if msg.latestConv.FilePath == "" {
+			return m, nil
+		}
+
+		// Compare: only switch if different and newer
+		if msg.latestConv.FilePath != pane.conversation.FilePath {
+			// Different file - check if actually newer
+			if msg.latestConv.LastModified.After(pane.conversation.LastModified) {
+				return m, func() tea.Msg {
+					return paneNewConversationMsg{
+						paneIndex:   msg.paneIndex,
+						newFilePath: msg.latestConv.FilePath,
+					}
+				}
+			}
+		}
+		// Same file or not newer - no action (prevents flicker per AC-4)
 		return m, nil
 
 	case paneDirWatcherEventMsg:

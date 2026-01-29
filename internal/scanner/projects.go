@@ -300,7 +300,12 @@ func ScanConversationsLazy(projectPath string) ([]types.Conversation, error) {
 	}
 
 	// Sort by last modified, most recent first
+	// Story 10.1: Add filename tiebreaker for deterministic ordering with equal timestamps
 	sort.Slice(conversations, func(i, j int) bool {
+		if conversations[i].LastModified.Equal(conversations[j].LastModified) {
+			// Tiebreaker: filename descending (newer UUIDs/timestamps tend to sort later)
+			return conversations[i].FilePath > conversations[j].FilePath
+		}
 		return conversations[i].LastModified.After(conversations[j].LastModified)
 	})
 

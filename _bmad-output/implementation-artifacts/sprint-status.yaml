@@ -150,8 +150,8 @@ development_status:
   # ============================================
 
   # Epic 10: Dashboard Reliability (BL-002 fix)
-  epic-10: backlog
-  10-1-fix-initialization-race-condition: backlog
+  epic-10: in-progress
+  10-1-fix-initialization-race-condition: done  # code-reviewed 2026-01-29
   10-2-add-manual-refresh-keybinding: backlog
   epic-10-retrospective: optional
 
