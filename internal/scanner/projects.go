@@ -308,8 +308,8 @@ func ScanConversationsLazy(projectPath string) ([]types.Conversation, error) {
 
 		conv := types.Conversation{
 			FilePath:     filePath,
-			LastModified: info.ModTime(),  // Keep for display
-			CreationTime: birthtime,       // Used for sorting
+			LastModified: info.ModTime(), // Keep for display
+			CreationTime: birthtime,      // Used for sorting
 		}
 
 		conversations = append(conversations, conv)

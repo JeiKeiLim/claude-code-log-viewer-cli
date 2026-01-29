@@ -110,7 +110,7 @@ func TestProjectWatcherWaitForNewConversation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create watcher: %v", err)
 	}
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 
 	// Start waiting in goroutine
 	msgChan := make(chan interface{}, 1)
@@ -155,7 +155,7 @@ func TestProjectWatcherIgnoresNonJsonl(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create watcher: %v", err)
 	}
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 
 	// Start waiting in goroutine
 	msgChan := make(chan interface{}, 1)

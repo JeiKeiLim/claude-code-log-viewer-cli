@@ -146,7 +146,7 @@ func (c *Client) makeRequest(ctx context.Context, token string) (*UsageLimits, e
 		}
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Handle HTTP status errors
 	if resp.StatusCode == http.StatusUnauthorized {

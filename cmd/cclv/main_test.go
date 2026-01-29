@@ -362,7 +362,7 @@ func TestRunStreamingPlainMode_InitialOutput(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to open test file: %v", err)
 			}
-			defer file.Close()
+			defer func() { _ = file.Close() }()
 
 			// Use the parser and render functions that runStreamingPlainMode uses
 			// This tests the same code path as the actual function
@@ -394,7 +394,7 @@ func TestRunStreamingPlainMode_RenderPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open file: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// This mimics runStreamingPlainMode's initial parsing
 	// (imported parser.ParseJSONL would be tested here, but we test the tui rendering)

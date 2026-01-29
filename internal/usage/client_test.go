@@ -109,7 +109,7 @@ func TestFetchUsage(t *testing.T) {
 				}
 
 				w.WriteHeader(tt.statusCode)
-				w.Write([]byte(tt.response))
+				_, _ = w.Write([]byte(tt.response))
 			}))
 			defer server.Close()
 
@@ -183,7 +183,7 @@ func TestFetchUsage_CacheHit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.WriteHeader(200)
-		w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
+		_, _ = w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
 	}))
 	defer server.Close()
 
@@ -229,7 +229,7 @@ func TestFetchUsage_CacheMiss(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.WriteHeader(200)
-		w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
+		_, _ = w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
 	}))
 	defer server.Close()
 
@@ -246,7 +246,7 @@ func TestFetchUsage_CacheMiss(t *testing.T) {
 	}
 
 	// First call
-	c.FetchUsage(context.Background(), "test-token")
+	_, _, _ = c.FetchUsage(context.Background(), "test-token")
 
 	// Invalidate cache
 	c.InvalidateCache()
@@ -268,11 +268,11 @@ func TestFetchUsage_GracefulDegradation(t *testing.T) {
 		if callCount == 1 {
 			// First call succeeds
 			w.WriteHeader(200)
-			w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
+			_, _ = w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
 		} else {
 			// Subsequent calls fail
 			w.WriteHeader(500)
-			w.Write([]byte(`{"error": "server error"}`))
+			_, _ = w.Write([]byte(`{"error": "server error"}`))
 		}
 	}))
 	defer server.Close()
@@ -328,7 +328,7 @@ func TestFetchUsage_Timeout(t *testing.T) {
 		// Sleep longer than the timeout
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(200)
-		w.Write([]byte(`{"five_hour": {"utilization": 35.0}}`))
+		_, _ = w.Write([]byte(`{"five_hour": {"utilization": 35.0}}`))
 	}))
 	defer server.Close()
 
@@ -425,7 +425,7 @@ func TestFetchUsage_ConcurrentAccess(t *testing.T) {
 		// Small delay to simulate real API
 		time.Sleep(10 * time.Millisecond)
 		w.WriteHeader(200)
-		w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
+		_, _ = w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
 	}))
 	defer server.Close()
 
@@ -526,7 +526,7 @@ func TestMakeRequest_Headers(t *testing.T) {
 			receivedHeaders[key] = values
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"five_hour": {"utilization": 0}}`))
+		_, _ = w.Write([]byte(`{"five_hour": {"utilization": 0}}`))
 	}))
 	defer server.Close()
 
@@ -542,7 +542,7 @@ func TestMakeRequest_Headers(t *testing.T) {
 		},
 	}
 
-	c.FetchUsage(context.Background(), "test-token-123")
+	_, _, _ = c.FetchUsage(context.Background(), "test-token-123")
 
 	// Verify required headers
 	expectedHeaders := map[string]string{
@@ -564,7 +564,7 @@ func TestMakeRequest_Headers(t *testing.T) {
 func TestFetchUsage_NoLastGoodOnFirstError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
-		w.Write([]byte(`{"error": "server error"}`))
+		_, _ = w.Write([]byte(`{"error": "server error"}`))
 	}))
 	defer server.Close()
 
@@ -657,7 +657,7 @@ func TestFetchUsage_ResponseParsing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(200)
-				w.Write([]byte(tt.response))
+				_, _ = w.Write([]byte(tt.response))
 			}))
 			defer server.Close()
 
@@ -702,7 +702,7 @@ func TestFetchUsage_HTTPStatusCodes(t *testing.T) {
 		t.Run(http.StatusText(tt.code), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tt.code)
-				w.Write([]byte(`{"error": "test"}`))
+				_, _ = w.Write([]byte(`{"error": "test"}`))
 			}))
 			defer server.Close()
 
@@ -779,7 +779,7 @@ func TestIntegration_GetOAuthTokenAndFetchUsage(t *testing.T) {
 			t.Errorf("Authorization = %q, want 'Bearer test-token-from-credentials'", auth)
 		}
 		w.WriteHeader(200)
-		w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
+		_, _ = w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
 	}))
 	defer server.Close()
 
@@ -839,7 +839,7 @@ func TestFetchUsage_EmptyToken(t *testing.T) {
 		}
 		// API returns 401 for empty/invalid token
 		w.WriteHeader(401)
-		w.Write([]byte(`{"error": "unauthorized"}`))
+		_, _ = w.Write([]byte(`{"error": "unauthorized"}`))
 	}))
 	defer server.Close()
 

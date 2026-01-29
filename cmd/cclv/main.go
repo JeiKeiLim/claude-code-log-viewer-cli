@@ -418,7 +418,7 @@ func runStreamingPlainMode(filePath string, opts tui.RenderOptions) error {
 	if err != nil {
 		return fmt.Errorf("failed to create watcher: %w", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// 3. Set up signal handling
 	sigChan := make(chan os.Signal, 1)

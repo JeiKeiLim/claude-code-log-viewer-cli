@@ -135,11 +135,11 @@ type ViewerModel struct {
 	tokensEstimated    bool           // True if any token was estimated
 
 	// Follow-latest mode (Story 11.2)
-	followLatest            bool                   // Enable follow-latest mode
+	followLatest            bool                    // Enable follow-latest mode
 	projectWatcher          *watcher.ProjectWatcher // Watches project dir for new conversations
-	currentConversationPath string                 // Path of current conversation file
-	currentCreationTime     time.Time              // Birthtime of current conversation for comparison
-	switchInProgress        bool                   // Debounce rapid switches
+	currentConversationPath string                  // Path of current conversation file
+	currentCreationTime     time.Time               // Birthtime of current conversation for comparison
+	switchInProgress        bool                    // Debounce rapid switches
 }
 
 // calculateGutterWidth returns the width needed for line numbers.
