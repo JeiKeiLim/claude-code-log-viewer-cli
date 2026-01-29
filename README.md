@@ -33,26 +33,22 @@ Download the latest release for your platform from [GitHub Releases](https://git
 
 **macOS (Apple Silicon):**
 ```bash
-curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_darwin_arm64.tar.gz | tar xz
-mv cclv ~/.local/bin/
+curl -Lo cclv.tar.gz https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_darwin_arm64.tar.gz && mkdir -p ~/.local/bin && tar -xzf cclv.tar.gz -C ~/.local/bin cclv && rm cclv.tar.gz
 ```
 
 **macOS (Intel):**
 ```bash
-curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_darwin_amd64.tar.gz | tar xz
-mv cclv ~/.local/bin/
+curl -Lo cclv.tar.gz https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_darwin_amd64.tar.gz && mkdir -p ~/.local/bin && tar -xzf cclv.tar.gz -C ~/.local/bin cclv && rm cclv.tar.gz
 ```
 
 **Linux (amd64):**
 ```bash
-curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_linux_amd64.tar.gz | tar xz
-mv cclv ~/.local/bin/
+curl -Lo cclv.tar.gz https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_linux_amd64.tar.gz && mkdir -p ~/.local/bin && tar -xzf cclv.tar.gz -C ~/.local/bin cclv && rm cclv.tar.gz
 ```
 
 **Linux (arm64):**
 ```bash
-curl -L https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_linux_arm64.tar.gz | tar xz
-mv cclv ~/.local/bin/
+curl -Lo cclv.tar.gz https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest/download/cclv_linux_arm64.tar.gz && mkdir -p ~/.local/bin && tar -xzf cclv.tar.gz -C ~/.local/bin cclv && rm cclv.tar.gz
 ```
 
 > **Note:** Make sure `~/.local/bin` is in your PATH. If not, add this to your `~/.bashrc` or `~/.zshrc`:

@@ -5,6 +5,7 @@ inputDocuments:
 phase: 4
 status: ready
 createdAt: '2026-01-20'
+updatedAt: '2026-01-29'
 ---
 
 # claude-code-log-viewer-cli Phase 4 - Epic Breakdown
@@ -79,17 +80,46 @@ This document provides the epic and story breakdown for cclv Phase 4 (Usage Moni
 
 ## Epic List
 
-### Epic 7: Usage Limit Monitoring
+### Epic 7: Usage Limit Monitoring [DONE]
 
 Users can see their Claude Code subscription usage limits (5-hour and weekly) persistently across all views, eliminating the need to visit the web console.
 
 **FRs covered:** FR-701, FR-702, FR-703, FR-704, FR-705, FR-706, FR-707
 **Standalone:** No - requires refactoring root model to wrap views
 **Research:** `_bmad-output/planning-artifacts/research/technical-claude-code-usage-limits-research-2026-01-20.md`
+**Status:** Done
+
+### Epic 8: Plain Mode & Output Enhancements [DONE]
+
+Bug fixes and improvements for plain text output mode.
+
+**Document:** `epics-phase4-epic8.md`
+**Status:** Done
+
+### Epic 9: Dashboard File Descriptor Leak Fix [DONE]
+
+Fix file descriptor and goroutine leaks in dashboard watch mode.
+
+**Document:** `epics-phase4-epic9.md`
+**Status:** Done
+
+### Epic 10: Dashboard Reliability [BACKLOG]
+
+Fix intermittent "latest conversation not showing" bug in dashboard mode.
+
+**Document:** `epics-phase4-epic10.md`
+**Status:** Backlog - Next up
+
+### Epic 11: Live Updates & Auto-Refresh [BACKLOG]
+
+Auto-detect auth refresh and follow-latest conversation flag for watch mode.
+
+**Document:** `epics-phase4-epic11.md`
+**Status:** Backlog - After Epic 10
 
 ---
 
-## Epic 7: Usage Limit Monitoring
+## Epic 7: Usage Limit Monitoring (Details)
 
 Users can see their Claude Code subscription usage limits (5-hour and weekly) persistently across all views, eliminating the need to visit the web console.
 

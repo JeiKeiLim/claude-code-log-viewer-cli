@@ -33,7 +33,7 @@
 # - SM typically creates next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
-generated: 2026-01-27
+generated: 2026-01-29
 project: cclv (Phase 2 + Phase 3 + Phase 4)
 project_key: cclv
 tracking_system: file-system
@@ -144,3 +144,19 @@ development_status:
   9-2-dashboard-subscription-model: done  # code-reviewed 2026-01-27
   9-3-stress-test-long-running: done  # code-reviewed 2026-01-27
   epic-9-retrospective: done  # completed 2026-01-27
+
+  # ============================================
+  # PHASE 4: Dashboard Reliability & Live Updates
+  # ============================================
+
+  # Epic 10: Dashboard Reliability (BL-002 fix)
+  epic-10: backlog
+  10-1-fix-initialization-race-condition: backlog
+  10-2-add-manual-refresh-keybinding: backlog
+  epic-10-retrospective: optional
+
+  # Epic 11: Live Updates & Auto-Refresh (BL-001, BL-003)
+  epic-11: backlog
+  11-1-auto-detect-auth-refresh: backlog
+  11-2-follow-latest-conversation-flag: backlog
+  epic-11-retrospective: optional
