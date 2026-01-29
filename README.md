@@ -6,8 +6,7 @@ A terminal UI for browsing and viewing Claude Code conversation logs.
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 [![Release](https://img.shields.io/github/v/release/JeiKeiLim/claude-code-log-viewer-cli)](https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest)
 
-<!-- TODO: Replace with actual screenshot -->
-![cclv demo](assets/screenshot.png)
+![cclv demo](docs/res/demo.gif)
 
 Browse your Claude Code projects, select a conversation, and view the full message history with collapsible thinking sections and tool call details — all from your terminal.
 
@@ -18,6 +17,7 @@ Browse your Claude Code projects, select a conversation, and view the full messa
 - **Log Viewer** - View messages with markdown rendering and proper text wrapping
 - **Dashboard Mode** - Monitor up to 9 projects simultaneously in a grid layout
 - **Watch Mode** - Real-time updates as conversations grow (`-w` flag)
+- **Usage Limit Monitor** - View Claude Code API usage limits in TUI status bar or via `--usage` flag
 - **Developer Power Tools** - Line numbers, raw JSONL mode, vim-style `:N` navigation
 - **Token Statistics** - View token counts per message and conversation totals
 - **Vim-style Navigation** - `j/k`, `gg/G`, `/search`, and more
@@ -239,7 +239,15 @@ New entries appear formatted in real-time. The process continues until interrupt
 | `h` / `j` / `k` / `l` | Navigate between panes |
 | Arrow keys | Navigate between panes |
 | `Enter` | Open focused pane in viewer |
+| `r` | Refresh focused pane |
 | `Esc` | Return to project list |
+| `q` | Quit |
+
+### Global (All Views)
+
+| Key | Action |
+|-----|--------|
+| `R` | Refresh Claude Code usage limit |
 | `q` | Quit |
 
 ## Message Types

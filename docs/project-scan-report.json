@@ -2,9 +2,9 @@
   "workflow_version": "1.2.0",
   "timestamps": {
     "started": "2026-01-13T15:00:00Z",
-    "last_updated": "2026-01-13T15:00:00Z"
+    "last_updated": "2026-01-30T00:00:00Z"
   },
-  "mode": "initial_scan",
+  "mode": "updated_scan",
   "scan_level": "exhaustive",
   "project_root": "/Users/limjk/GitHub/JeiKeiLim/claude-code-log-viewer-cli",
   "output_folder": "/Users/limjk/GitHub/JeiKeiLim/claude-code-log-viewer-cli/docs",
@@ -20,7 +20,8 @@
     {"step": "step_8", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Architecture doc written"},
     {"step": "step_9", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Supporting docs written"},
     {"step": "step_10", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Master index generated"},
-    {"step": "step_12", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Workflow complete"}
+    {"step": "step_12", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Workflow complete"},
+    {"step": "update", "status": "completed", "timestamp": "2026-01-30T00:00:00Z", "summary": "Updated metrics and architecture for Epics 9-11"}
   ],
   "current_step": "completed",
   "project_types": [
@@ -39,13 +40,28 @@
       "build": "Makefile with cross-compilation"
     },
     "source_files": {
-      "go_files": 15,
-      "packages": ["cmd/cclv", "internal/parser", "internal/scanner", "internal/tui", "internal/types", "internal/version"]
+      "go_files": 29,
+      "packages": ["cmd/cclv", "internal/parser", "internal/scanner", "internal/tui", "internal/types", "internal/token", "internal/usage", "internal/version", "internal/watcher"]
     },
     "speckit_specs": [
       "001-claude-log-viewer",
       "002-cclv-fixes-enhancements",
       "003-ui-metadata-improvements"
+    ],
+    "completed_epics": [
+      "Epic 1: Visual Polish",
+      "Epic 1.5: Visual Consistency",
+      "Epic 1.6: CLI Enhancements",
+      "Epic 2: Real-time File Watching",
+      "Epic 3: Markdown Rendering",
+      "Epic 4: Developer Power Tools",
+      "Epic 5: Dashboard Mode",
+      "Epic 6: Statistics View",
+      "Epic 7: Usage Limit Monitoring",
+      "Epic 8: Plain Mode & Output Enhancements",
+      "Epic 9: Dashboard File Descriptor Leak Fix",
+      "Epic 10: Dashboard Reliability",
+      "Epic 11: Live Updates & Auto-Refresh"
     ]
   },
   "outputs_generated": [
@@ -56,5 +72,5 @@
     "source-tree-analysis.md",
     "development-guide.md"
   ],
-  "resume_instructions": "Continue from step 5 - generating source tree analysis"
+  "resume_instructions": "Documentation is up to date as of 2026-01-30"
 }

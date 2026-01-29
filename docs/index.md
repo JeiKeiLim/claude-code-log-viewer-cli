@@ -1,6 +1,6 @@
 # cclv Documentation Index
 
-**Generated**: 2026-01-13 | **Scan Level**: Exhaustive | **Mode**: Initial Scan
+**Generated**: 2026-01-30 | **Scan Level**: Exhaustive | **Mode**: Updated Scan
 
 ## Project Overview
 
@@ -15,10 +15,10 @@
 
 | Metric | Value |
 |--------|-------|
-| **Go Files** | 15 |
-| **Packages** | 6 |
-| **Total LOC** | ~2,400 |
-| **Dependencies** | 4 direct |
+| **Go Files** | 29 |
+| **Packages** | 8 |
+| **Total LOC** | ~7,000 |
+| **Dependencies** | 8 direct |
 | **Entry Point** | cmd/cclv/main.go |
 
 ### Key Commands
@@ -99,10 +99,13 @@ See [Development Guide](./development-guide.md) for detailed instructions.
 ```
 cmd/cclv/main.go          → Entry point, mode detection
 internal/parser/          → JSONL parsing
-internal/scanner/         → Project discovery
+internal/scanner/         → Project discovery, birthtime detection
 internal/tui/             → Bubbletea UI components
 internal/types/           → Domain models
+internal/token/           → Token counting service (tiktoken)
+internal/usage/           → Claude API usage analytics
 internal/version/         → Version info
+internal/watcher/         → File/project watching for live mode
 ```
 
 See [Architecture](./architecture.md) for detailed documentation.
