@@ -547,6 +547,14 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// Start file watcher if we have a file path
 			if msg.filePath != "" {
+				// Story 10.2 fix: Close existing file watcher before creating new one
+				// This prevents FD leaks and stale subscription goroutines
+				if pane.watcher != nil {
+					_ = pane.watcher.Close()
+					pane.watcher = nil
+				}
+				pane.fileEventChan = nil // Signal old subscription goroutine to exit
+
 				w, err := watcher.New(msg.filePath)
 				if err == nil {
 					pane.watcher = w
@@ -560,6 +568,16 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Watcher creation failed - continue without live updates
 			}
+
+			// Story 10.2 fix: Close existing directory watcher before creating new one
+			if pane.dirWatcher != nil {
+				for _, path := range pane.dirWatcher.WatchList() {
+					_ = pane.dirWatcher.Remove(path)
+				}
+				_ = pane.dirWatcher.Close()
+				pane.dirWatcher = nil
+			}
+			pane.dirEventChan = nil // Signal old subscription goroutine to exit
 
 			// Start directory watcher (Story 5.4)
 			cmds = append(cmds, m.initDirectoryWatcher(msg.paneIndex, pane.project.DirPath))

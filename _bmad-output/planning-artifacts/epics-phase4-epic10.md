@@ -71,9 +71,10 @@ If a new conversation is created between content load and watcher startup, it's 
 
 | FR | Story | Description |
 |----|-------|-------------|
-| FR-1001 | Story 10.1 | Fix initialization sequence to eliminate race condition |
+| FR-1001 | Story 10.1, 10.3 | Fix initialization sequence to eliminate race condition |
 | FR-1002 | Story 10.2 | Add manual refresh keybinding |
 | FR-1003 | Story 10.1 | Stable sort with filename tiebreaker |
+| FR-1004 | Story 10.3 | Use creation time for accurate "latest" detection |
 
 ---
 
@@ -218,12 +219,90 @@ case "R":
 
 ---
 
+## Story 10.3: Use File Creation Time for Latest Conversation Detection
+
+As a **cclv user viewing a dashboard**,
+I want **the dashboard to identify the current conversation by creation time**,
+So that **I always see my active conversation, not old files that Claude Code updated**.
+
+### Background
+
+Investigation (2026-01-29) revealed that Claude Code modifies multiple OLD conversation files when starting a new session (likely syncing metadata). This causes the "latest modified" file to be an old conversation, not the current one.
+
+**Evidence:**
+- 11 files all modified at 13:28 within seconds of each other
+- The new "hi" conversation (`c002796b-...` with 2773 bytes) lost the mtime race
+- Using file creation time (birthtime) correctly identified the new conversation
+
+### Acceptance Criteria
+
+1. **AC-1: Sort by Creation Time**
+   - Given multiple conversation files exist
+   - When scanning for latest conversation
+   - Then files are sorted by creation time (birthtime) descending, not modification time
+   - And the most recently CREATED file is returned as "latest"
+
+2. **AC-2: Fallback for Systems Without Birthtime**
+   - Given a system that doesn't support birthtime (some Linux filesystems)
+   - When birthtime is unavailable (returns zero or error)
+   - Then fall back to modification time
+   - And log a warning on first occurrence
+
+3. **AC-3: Consistent Behavior Across Platforms**
+   - Given cclv runs on macOS, Linux, or Windows
+   - When getting file creation time
+   - Then use platform-appropriate syscall:
+     - macOS: `syscall.Stat_t.Birthtimespec`
+     - Linux: `statx` syscall with `STATX_BTIME` (kernel 4.11+)
+     - Windows: `syscall.Win32FileAttributeData.CreationTime`
+
+4. **AC-4: No Performance Regression**
+   - Given a project with 1000+ conversation files
+   - When scanning for latest conversation
+   - Then scan completes within 500ms
+   - And birthtime is obtained from same stat call (no extra syscall)
+
+### Technical Notes
+
+**Platform-specific implementation:**
+
+```go
+// internal/scanner/birthtime_darwin.go
+//go:build darwin
+
+func getBirthtime(info os.FileInfo) time.Time {
+    stat := info.Sys().(*syscall.Stat_t)
+    return time.Unix(stat.Birthtimespec.Sec, stat.Birthtimespec.Nsec)
+}
+```
+
+```go
+// internal/scanner/birthtime_linux.go
+//go:build linux
+
+func getBirthtime(info os.FileInfo) time.Time {
+    // Use statx syscall for birthtime, fallback to mtime
+    // Note: Requires kernel 4.11+ and filesystem support
+}
+```
+
+**Files to modify:**
+- `internal/scanner/projects.go` - Use birthtime in sorting
+- `internal/scanner/birthtime_darwin.go` - macOS implementation (new)
+- `internal/scanner/birthtime_linux.go` - Linux implementation (new)
+- `internal/scanner/birthtime_windows.go` - Windows implementation (new)
+
+**Complexity:** Medium
+
+---
+
 ## Implementation Order
 
 | Order | Story | Rationale |
 |-------|-------|-----------|
 | 1 | Story 10.1 | Core fix - eliminates race condition |
 | 2 | Story 10.2 | User safety net - manual recovery option |
+| 3 | Story 10.3 | Root cause fix - correct "latest" detection |
 
 ## Validation Strategy
 
