@@ -20,7 +20,7 @@ import (
 )
 
 // dashboardHelpText is the keyboard shortcut guide displayed at the bottom of the dashboard.
-const dashboardHelpText = "arrows/hjkl:nav • Enter:open • Esc:back"
+const dashboardHelpText = "arrows/hjkl:nav • Enter:open • r:refresh • R:all • Esc:back"
 
 // GoBackToProjectsFromDashboardMsg signals return to project list from dashboard.
 type GoBackToProjectsFromDashboardMsg struct{}
@@ -488,6 +488,30 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "r":
+			// Story 10.2: Refresh focused pane - set state in Update(), not in command
+			if m.focusIndex >= 0 && m.focusIndex < len(m.panes) {
+				m.panes[m.focusIndex].loading = true
+				m.panes[m.focusIndex].showNewIndicator = true
+				return m, tea.Batch(
+					loadPaneContentCmd(m.focusIndex, m.panes[m.focusIndex].project.DirPath),
+					paneIndicatorTimeoutCmd(m.focusIndex, 1*time.Second),
+				)
+			}
+			return m, nil
+		case "R":
+			// Story 10.2: Refresh all panes
+			if len(m.panes) == 0 {
+				return m, nil
+			}
+			cmds := make([]tea.Cmd, 0, len(m.panes)*2)
+			for i := range m.panes {
+				m.panes[i].loading = true
+				m.panes[i].showNewIndicator = true
+				cmds = append(cmds, loadPaneContentCmd(i, m.panes[i].project.DirPath))
+				cmds = append(cmds, paneIndicatorTimeoutCmd(i, 1*time.Second))
+			}
+			return m, tea.Batch(cmds...)
 		}
 
 	case paneContentLoadedMsg:

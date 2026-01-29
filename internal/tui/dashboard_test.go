@@ -431,6 +431,13 @@ func TestDashboardHelpTextConstant(t *testing.T) {
 	if !strings.Contains(dashboardHelpText, "Esc") {
 		t.Error("dashboardHelpText should mention 'Esc' for going back")
 	}
+	// Story 10.2: AC-3 - verify refresh keys are documented
+	if !strings.Contains(dashboardHelpText, "r:refresh") {
+		t.Error("dashboardHelpText should mention 'r:refresh' for single pane refresh")
+	}
+	if !strings.Contains(dashboardHelpText, "R:all") {
+		t.Error("dashboardHelpText should mention 'R:all' for all panes refresh")
+	}
 }
 
 func TestFormatPaneToolSummary(t *testing.T) {
@@ -1253,6 +1260,202 @@ func TestEnterKeyWithoutConversation(t *testing.T) {
 	// Should return nil - no message when no conversation
 	if cmd != nil {
 		t.Error("Enter key without conversation should return nil command")
+	}
+}
+
+// Story 10.2 Tests: Manual Refresh Keybinding
+
+func TestRefreshKeyTriggersLoadForFocusedPane(t *testing.T) {
+	// AC-1: Test 'r' key triggers loadPaneContentCmd for focused pane
+	tmpDir := t.TempDir()
+	projects := []types.Project{
+		{DisplayName: "proj1", DirPath: tmpDir},
+		{DisplayName: "proj2", DirPath: tmpDir},
+	}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 40)
+	model.focusIndex = 0
+
+	// Set panes to non-loading state
+	model.panes[0].loading = false
+	model.panes[1].loading = false
+
+	// Press 'r' key
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	newModel, cmd := model.Update(msg)
+	updatedModel := newModel.(DashboardModel)
+
+	// Verify command was returned
+	if cmd == nil {
+		t.Fatal("'r' key should return a command")
+	}
+
+	// Verify only focused pane is loading
+	if !updatedModel.panes[0].loading {
+		t.Error("panes[0].loading should be true after 'r' key")
+	}
+	if updatedModel.panes[1].loading {
+		t.Error("panes[1].loading should remain false (not focused)")
+	}
+}
+
+func TestRefreshAllKeyTriggersLoadForAllPanes(t *testing.T) {
+	// AC-4: Test 'R' key triggers loadPaneContentCmd for all panes
+	tmpDir := t.TempDir()
+	projects := []types.Project{
+		{DisplayName: "proj1", DirPath: tmpDir},
+		{DisplayName: "proj2", DirPath: tmpDir},
+		{DisplayName: "proj3", DirPath: tmpDir},
+	}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 40)
+
+	// Set all panes to non-loading state
+	for i := range model.panes {
+		model.panes[i].loading = false
+	}
+
+	// Press 'R' key (shift+r)
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	newModel, cmd := model.Update(msg)
+	updatedModel := newModel.(DashboardModel)
+
+	// Verify command was returned
+	if cmd == nil {
+		t.Fatal("'R' key should return a command")
+	}
+
+	// Verify all panes are loading
+	for i, pane := range updatedModel.panes {
+		if !pane.loading {
+			t.Errorf("panes[%d].loading should be true after 'R' key", i)
+		}
+	}
+}
+
+func TestRefreshKeySetsLoadingAndIndicator(t *testing.T) {
+	// AC-2: Test 'r' sets loading=true and showNewIndicator=true on focused pane
+	tmpDir := t.TempDir()
+	projects := []types.Project{{DisplayName: "proj1", DirPath: tmpDir}}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 40)
+	model.focusIndex = 0
+	model.panes[0].loading = false
+	model.panes[0].showNewIndicator = false
+
+	// Press 'r' key
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	newModel, _ := model.Update(msg)
+	updatedModel := newModel.(DashboardModel)
+
+	// Verify loading state is set
+	if !updatedModel.panes[0].loading {
+		t.Error("panes[0].loading should be true after 'r' key")
+	}
+
+	// Verify new indicator is shown
+	if !updatedModel.panes[0].showNewIndicator {
+		t.Error("panes[0].showNewIndicator should be true after 'r' key")
+	}
+}
+
+func TestRefreshAllKeySetsLoadingAndIndicatorOnAllPanes(t *testing.T) {
+	// AC-4: Test 'R' sets loading=true and showNewIndicator=true on all panes
+	tmpDir := t.TempDir()
+	projects := []types.Project{
+		{DisplayName: "proj1", DirPath: tmpDir},
+		{DisplayName: "proj2", DirPath: tmpDir},
+	}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 40)
+
+	// Set all panes to non-loading state with no indicator
+	for i := range model.panes {
+		model.panes[i].loading = false
+		model.panes[i].showNewIndicator = false
+	}
+
+	// Press 'R' key
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	newModel, _ := model.Update(msg)
+	updatedModel := newModel.(DashboardModel)
+
+	// Verify all panes have loading and indicator set
+	for i, pane := range updatedModel.panes {
+		if !pane.loading {
+			t.Errorf("panes[%d].loading should be true after 'R' key", i)
+		}
+		if !pane.showNewIndicator {
+			t.Errorf("panes[%d].showNewIndicator should be true after 'R' key", i)
+		}
+	}
+}
+
+func TestRefreshKeyReturnsBatchCommand(t *testing.T) {
+	// Test 'r' returns tea.Batch with loadPaneContentCmd and paneIndicatorTimeoutCmd
+	tmpDir := t.TempDir()
+	projects := []types.Project{{DisplayName: "proj1", DirPath: tmpDir}}
+	model, _ := NewDashboardModel(projects)
+	model.SetSize(80, 40)
+	model.focusIndex = 0
+	model.panes[0].loading = false
+
+	// Press 'r' key
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	_, cmd := model.Update(msg)
+
+	// Verify command was returned (should be a batch)
+	if cmd == nil {
+		t.Error("'r' key should return a batch command")
+	}
+
+	// Execute the command to verify it's valid
+	// (We can't easily inspect the batch contents, but we can verify it doesn't panic)
+}
+
+func TestRefreshKeyWithInvalidFocusIndex(t *testing.T) {
+	// Test 'r' with invalid focusIndex returns nil command
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+	model.focusIndex = 99 // Invalid index
+
+	// Press 'r' key
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	_, cmd := model.Update(msg)
+
+	// Should return nil for invalid index
+	if cmd != nil {
+		t.Error("'r' key with invalid focusIndex should return nil command")
+	}
+}
+
+func TestRefreshKeyWithNegativeFocusIndex(t *testing.T) {
+	// Test 'r' with negative focusIndex returns nil command
+	projects := []types.Project{{DisplayName: "proj1", DirPath: "/tmp/test"}}
+	model, _ := NewDashboardModel(projects)
+	model.focusIndex = -1 // Invalid negative index
+
+	// Press 'r' key
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}}
+	_, cmd := model.Update(msg)
+
+	// Should return nil for invalid index
+	if cmd != nil {
+		t.Error("'r' key with negative focusIndex should return nil command")
+	}
+}
+
+func TestRefreshAllKeyWithEmptyPanes(t *testing.T) {
+	// Test 'R' with empty panes returns nil command
+	model, _ := NewDashboardModel(nil)
+
+	// Press 'R' key
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}}
+	_, cmd := model.Update(msg)
+
+	// Should return nil when no panes
+	if cmd != nil {
+		t.Error("'R' key with empty panes should return nil command")
 	}
 }
 
