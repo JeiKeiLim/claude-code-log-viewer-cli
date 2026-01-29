@@ -314,7 +314,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		viewHeight := m.height - UsageBarHeight
 		m.dashboardModel.SetSize(m.width, viewHeight)
 		m.state = viewDashboard
-		return m, cmd
+		// Story 9.2 fix: Must call Init() to start subscription polling for live updates
+		initCmd := m.dashboardModel.Init()
+		return m, tea.Batch(cmd, initCmd)
 
 	case GoBackToProjectsFromDashboardMsg:
 		// User pressed escape in dashboard, go back to projects (Story 5.2, 5.3)
