@@ -90,7 +90,7 @@ func (w *UsageWindow) UnmarshalJSON(data []byte) error {
 	}
 	w.ResetsAtRaw = aux.ResetsAtRaw
 	if aux.ResetsAtRaw != nil && *aux.ResetsAtRaw != "" {
-		t, err := time.Parse(time.RFC3339, *aux.ResetsAtRaw)
+		t, err := time.Parse(time.RFC3339Nano, *aux.ResetsAtRaw)
 		if err == nil {
 			w.ResetsAt = &t
 		}

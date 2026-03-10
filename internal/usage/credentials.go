@@ -34,7 +34,12 @@ var keychainExecutor = defaultKeychainExecutor
 func GetOAuthToken() (string, error) {
 	switch runtime.GOOS {
 	case "darwin":
-		return getTokenFromKeychain()
+		token, err := getTokenFromKeychain()
+		if err != nil {
+			// Keychain entry may not exist; fall back to file-based credentials
+			return getTokenFromFile()
+		}
+		return token, nil
 	default:
 		return getTokenForNonMac()
 	}
