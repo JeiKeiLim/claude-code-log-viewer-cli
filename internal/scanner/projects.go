@@ -4,20 +4,14 @@ package scanner
 import (
 	"bufio"
 	"encoding/json"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
-
-// birthtimeWarningOnce ensures the birthtime fallback warning is logged only once.
-// Story 10.3: Logged when birthtime is unavailable on the current platform.
-var birthtimeWarningOnce sync.Once
 
 // DefaultProjectsPath returns the default Claude projects directory path.
 func DefaultProjectsPath() string {
@@ -301,9 +295,6 @@ func ScanConversationsLazy(projectPath string) ([]types.Conversation, error) {
 		birthtime := GetBirthtime(info)
 		if birthtime.IsZero() {
 			birthtime = info.ModTime() // Fallback to modification time
-			birthtimeWarningOnce.Do(func() {
-				log.Println("cclv: birthtime unavailable on this platform, using modification time")
-			})
 		}
 
 		conv := types.Conversation{

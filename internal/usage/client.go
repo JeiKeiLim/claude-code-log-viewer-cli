@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,9 +16,10 @@ import (
 )
 
 const (
-	usageAPIURL = "https://api.anthropic.com/api/oauth/usage"
-	cacheTTL    = 60 * time.Second
-	apiTimeout  = 5 * time.Second
+	usageAPIURL       = "https://api.anthropic.com/api/oauth/usage"
+	cacheTTL          = 60 * time.Second
+	apiTimeout        = 5 * time.Second
+	defaultRetryAfter = 60 * time.Second
 )
 
 // Client fetches usage limits from the Claude API.
@@ -152,6 +154,10 @@ func (c *Client) makeRequest(ctx context.Context, token string) (*UsageLimits, e
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrTokenExpired
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+		return nil, &RateLimitError{RetryAfter: retryAfter}
+	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("%w: HTTP %d", ErrAPIError, resp.StatusCode)
 	}
@@ -168,6 +174,21 @@ func (c *Client) makeRequest(ctx context.Context, token string) (*UsageLimits, e
 	}
 
 	return &limits, nil
+}
+
+// parseRetryAfter parses the Retry-After header value as delay-seconds (integer).
+// Note: RFC 9110 also allows HTTP-date format, but APIs typically use seconds.
+// HTTP-date values fall back to defaultRetryAfter.
+// Returns defaultRetryAfter if the header is empty, unparseable, or non-positive.
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return defaultRetryAfter
+	}
+	seconds, err := strconv.Atoi(header)
+	if err != nil || seconds <= 0 {
+		return defaultRetryAfter
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // isTimeoutError checks if the error is a timeout error from the HTTP client.

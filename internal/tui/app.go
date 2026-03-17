@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -94,10 +93,7 @@ func NewAppModel(projects []types.Project) AppModel {
 	s.Style = ListStyles.Loading
 
 	// Initialize token service with soft-fail
-	tokenSvc, err := token.New()
-	if err != nil {
-		log.Printf("Warning: token service initialization failed: %v", err)
-	}
+	tokenSvc, _ := token.New()
 
 	return AppModel{
 		state:        viewProjects,
@@ -117,10 +113,7 @@ func NewAppModelWithError(err error) AppModel {
 	s.Style = ListStyles.Loading
 
 	// Initialize token service with soft-fail
-	tokenSvc, tokenErr := token.New()
-	if tokenErr != nil {
-		log.Printf("Warning: token service initialization failed: %v", tokenErr)
-	}
+	tokenSvc, _ := token.New()
 
 	return AppModel{
 		state:        viewProjects,
@@ -361,6 +354,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Recovered or refresh in progress - stop polling
 		return m, nil
 
+	case rateLimitRetryMsg:
+		// Rate limit backoff expired - retry fetch
+		if !m.refreshInProgress {
+			m.refreshInProgress = true
+			return m, m.fetchUsage()
+		}
+		return m, nil
+
 	case usageFetchedMsg:
 		// Capture for recovery detection (Story 11.1)
 		wasExpired := m.authExpired
@@ -388,19 +389,27 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.authExpired = true
 				}
 				return m, scheduleAuthRetryTick()
+			} else if errors.Is(msg.err, usage.ErrRateLimited) {
+				var rateLimitErr *usage.RateLimitError
+				if errors.As(msg.err, &rateLimitErr) {
+					if msg.limits != nil {
+						m.usageBar.SetLimits(msg.limits, true)
+					} else {
+						m.usageBar.SetError("Rate limited - retrying")
+					}
+					return m, scheduleRateLimitRetry(rateLimitErr.RetryAfter)
+				}
 			} else if errors.Is(msg.err, context.Canceled) {
 				// Context canceled (e.g., app shutting down) - silently ignore
 				// Keep current state, don't update bar
 			} else if m.authExpired {
 				// Story 11.1 AC-4: Network error during retry - keep polling silently
-				log.Printf("usage retry error (continuing): %v", msg.err)
 				return m, scheduleAuthRetryTick()
 			} else if msg.limits != nil {
 				// Error but have stale data - show stale values with "(stale)" indicator (AC-2)
 				m.usageBar.SetLimits(msg.limits, true)
 			} else {
-				// No stale data available - log unexpected error and show "Unknown" (AC-2)
-				log.Printf("usage fetch error: %v", msg.err)
+				// No stale data available - show "Unknown" (AC-2)
 				m.usageBar.SetError("Unknown")
 			}
 		} else {
@@ -529,6 +538,11 @@ type usageFetchedMsg struct {
 	err    error
 }
 
+// Retry/tick message types — three separate mechanisms:
+// - usageTickMsg: periodic 60s refresh
+// - authRetryTickMsg: 5min auth recovery polling
+// - rateLimitRetryMsg: Retry-After based backoff for 429 responses
+
 // usageTickMsg triggers periodic usage refresh (Story 7.5).
 type usageTickMsg struct{}
 
@@ -549,6 +563,16 @@ const authRetryInterval = 5 * time.Minute
 func scheduleAuthRetryTick() tea.Cmd {
 	return tea.Tick(authRetryInterval, func(t time.Time) tea.Msg {
 		return authRetryTickMsg{}
+	})
+}
+
+// rateLimitRetryMsg triggers retry after a 429 rate-limit response.
+type rateLimitRetryMsg struct{}
+
+// scheduleRateLimitRetry schedules a retry using the Retry-After duration from the 429 response.
+func scheduleRateLimitRetry(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(t time.Time) tea.Msg {
+		return rateLimitRetryMsg{}
 	})
 }
 

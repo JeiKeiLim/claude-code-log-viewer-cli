@@ -4,6 +4,7 @@ package usage
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -17,7 +18,21 @@ var (
 	ErrEmptyToken         = errors.New("credentials file exists but accessToken is empty")
 	ErrAPITimeout         = errors.New("usage API request timed out")
 	ErrAPIError           = errors.New("usage API returned an error")
+	ErrRateLimited        = errors.New("usage API rate limited")
 )
+
+// RateLimitError carries the parsed Retry-After duration from a 429 response.
+type RateLimitError struct {
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitError) Error() string {
+	return fmt.Sprintf("%s (retry after %s)", ErrRateLimited.Error(), e.RetryAfter)
+}
+
+func (e *RateLimitError) Is(target error) bool {
+	return target == ErrRateLimited
+}
 
 // OAuthToken represents the nested OAuth token structure in credentials.
 type OAuthToken struct {

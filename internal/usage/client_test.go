@@ -692,7 +692,7 @@ func TestFetchUsage_HTTPStatusCodes(t *testing.T) {
 		{401, ErrTokenExpired},
 		{403, ErrAPIError},
 		{404, ErrAPIError},
-		{429, ErrAPIError},
+		{429, ErrRateLimited},
 		{500, ErrAPIError},
 		{502, ErrAPIError},
 		{503, ErrAPIError},
@@ -861,5 +861,207 @@ func TestFetchUsage_EmptyToken(t *testing.T) {
 	}
 	if !errors.Is(err, ErrTokenExpired) {
 		t.Errorf("expected ErrTokenExpired for empty token, got %v", err)
+	}
+}
+
+func TestFetchUsage_429WithoutRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"error": "rate limited"}`))
+	}))
+	defer server.Close()
+
+	c := NewClient()
+	c.httpClient = &http.Client{
+		Timeout: apiTimeout,
+		Transport: &mockTransport{
+			handler: func(req *http.Request) (*http.Response, error) {
+				req.URL.Scheme = "http"
+				req.URL.Host = server.URL[7:]
+				return http.DefaultTransport.RoundTrip(req)
+			},
+		},
+	}
+
+	_, _, err := c.FetchUsage(context.Background(), "test-token")
+	if !errors.Is(err, ErrRateLimited) {
+		t.Errorf("expected ErrRateLimited, got %v", err)
+	}
+
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatal("expected error to be *RateLimitError")
+	}
+	if rateLimitErr.RetryAfter != defaultRetryAfter {
+		t.Errorf("RetryAfter = %v, want %v (default)", rateLimitErr.RetryAfter, defaultRetryAfter)
+	}
+}
+
+func TestFetchUsage_429WithRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"error": "rate limited"}`))
+	}))
+	defer server.Close()
+
+	c := NewClient()
+	c.httpClient = &http.Client{
+		Timeout: apiTimeout,
+		Transport: &mockTransport{
+			handler: func(req *http.Request) (*http.Response, error) {
+				req.URL.Scheme = "http"
+				req.URL.Host = server.URL[7:]
+				return http.DefaultTransport.RoundTrip(req)
+			},
+		},
+	}
+
+	_, _, err := c.FetchUsage(context.Background(), "test-token")
+	if !errors.Is(err, ErrRateLimited) {
+		t.Errorf("expected ErrRateLimited, got %v", err)
+	}
+
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatal("expected error to be *RateLimitError")
+	}
+	if rateLimitErr.RetryAfter != 120*time.Second {
+		t.Errorf("RetryAfter = %v, want 120s", rateLimitErr.RetryAfter)
+	}
+}
+
+func TestFetchUsage_429WithInvalidRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "abc")
+		w.WriteHeader(429)
+		_, _ = w.Write([]byte(`{"error": "rate limited"}`))
+	}))
+	defer server.Close()
+
+	c := NewClient()
+	c.httpClient = &http.Client{
+		Timeout: apiTimeout,
+		Transport: &mockTransport{
+			handler: func(req *http.Request) (*http.Response, error) {
+				req.URL.Scheme = "http"
+				req.URL.Host = server.URL[7:]
+				return http.DefaultTransport.RoundTrip(req)
+			},
+		},
+	}
+
+	_, _, err := c.FetchUsage(context.Background(), "test-token")
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatal("expected error to be *RateLimitError")
+	}
+	if rateLimitErr.RetryAfter != defaultRetryAfter {
+		t.Errorf("RetryAfter = %v, want %v (default for invalid header)", rateLimitErr.RetryAfter, defaultRetryAfter)
+	}
+}
+
+func TestFetchUsage_429WithStaleData(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"five_hour": {"utilization": 35.0}, "seven_day": {"utilization": 12.0}}`))
+		} else {
+			w.Header().Set("Retry-After", "30")
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"error": "rate limited"}`))
+		}
+	}))
+	defer server.Close()
+
+	c := NewClient()
+	c.httpClient = &http.Client{
+		Timeout: apiTimeout,
+		Transport: &mockTransport{
+			handler: func(req *http.Request) (*http.Response, error) {
+				req.URL.Scheme = "http"
+				req.URL.Host = server.URL[7:]
+				return http.DefaultTransport.RoundTrip(req)
+			},
+		},
+	}
+
+	// First call succeeds
+	limits1, _, err1 := c.FetchUsage(context.Background(), "test-token")
+	if err1 != nil {
+		t.Fatalf("first call error: %v", err1)
+	}
+	if limits1.FiveHour.Utilization != 35.0 {
+		t.Errorf("first call utilization = %v, want 35.0", limits1.FiveHour.Utilization)
+	}
+
+	// Invalidate cache to force API call
+	c.InvalidateCache()
+
+	// Second call gets 429 but returns stale data
+	limits2, stale, err2 := c.FetchUsage(context.Background(), "test-token")
+	if !errors.Is(err2, ErrRateLimited) {
+		t.Errorf("expected ErrRateLimited, got %v", err2)
+	}
+	if !stale {
+		t.Error("expected stale=true for 429 with lastGood")
+	}
+	if limits2 == nil {
+		t.Fatal("expected stale data, got nil")
+	}
+	if limits2.FiveHour.Utilization != 35.0 {
+		t.Errorf("stale utilization = %v, want 35.0", limits2.FiveHour.Utilization)
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	tests := []struct {
+		header string
+		want   time.Duration
+	}{
+		{"", defaultRetryAfter},
+		{"30", 30 * time.Second},
+		{"0", defaultRetryAfter},
+		{"-5", defaultRetryAfter},
+		{"abc", defaultRetryAfter},
+		{"120", 120 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run("header="+tt.header, func(t *testing.T) {
+			got := parseRetryAfter(tt.header)
+			if got != tt.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRateLimitError(t *testing.T) {
+	err := &RateLimitError{RetryAfter: 120 * time.Second}
+
+	// Test errors.Is
+	if !errors.Is(err, ErrRateLimited) {
+		t.Error("errors.Is(RateLimitError, ErrRateLimited) should be true")
+	}
+
+	// Test Error() string
+	errStr := err.Error()
+	if !strings.Contains(errStr, "rate limited") {
+		t.Errorf("Error() = %q, should contain 'rate limited'", errStr)
+	}
+	if !strings.Contains(errStr, "2m0s") {
+		t.Errorf("Error() = %q, should contain retry duration", errStr)
+	}
+
+	// Test errors.As
+	var rateLimitErr *RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		t.Fatal("errors.As should succeed for *RateLimitError")
+	}
+	if rateLimitErr.RetryAfter != 120*time.Second {
+		t.Errorf("RetryAfter = %v, want 120s", rateLimitErr.RetryAfter)
 	}
 }

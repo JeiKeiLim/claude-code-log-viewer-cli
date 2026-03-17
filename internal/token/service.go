@@ -3,7 +3,6 @@ package token
 
 import (
 	"encoding/json"
-	"log"
 	"sync"
 
 	tiktoken "github.com/pkoukk/tiktoken-go"
@@ -97,7 +96,6 @@ func (s *Service) CalculateEntry(entry types.LogEntry) int {
 				if len(content.ToolInput) > 0 {
 					data, err := json.Marshal(content.ToolInput)
 					if err != nil {
-						log.Printf("Warning: failed to marshal ToolInput for tokenization: %v", err)
 						continue
 					}
 					total += s.Calculate(string(data))

@@ -1691,3 +1691,101 @@ func TestAppModel_AuthExpiredAndRefreshInProgress_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+// Rate limit handling tests
+
+func TestAppModel_UsageFetchedMsg_RateLimitedWithStaleData(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	staleLimits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}
+	rateLimitErr := &usage.RateLimitError{RetryAfter: 120 * time.Second}
+
+	newModel, cmd := model.Update(usageFetchedMsg{
+		limits: staleLimits,
+		stale:  true,
+		err:    rateLimitErr,
+	})
+	m := newModel.(AppModel)
+
+	// Should show stale data
+	if m.UsageBarState() != usage.StateStale {
+		t.Errorf("UsageBarState = %v, want StateStale", m.UsageBarState())
+	}
+
+	// Should schedule retry
+	if cmd == nil {
+		t.Error("expected scheduleRateLimitRetry command")
+	}
+}
+
+func TestAppModel_UsageFetchedMsg_RateLimitedWithoutData(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	rateLimitErr := &usage.RateLimitError{RetryAfter: 60 * time.Second}
+
+	newModel, cmd := model.Update(usageFetchedMsg{
+		err: rateLimitErr,
+	})
+	m := newModel.(AppModel)
+
+	// Should show error state
+	if m.UsageBarState() != usage.StateError {
+		t.Errorf("UsageBarState = %v, want StateError", m.UsageBarState())
+	}
+
+	// Should schedule retry
+	if cmd == nil {
+		t.Error("expected scheduleRateLimitRetry command")
+	}
+}
+
+func TestAppModel_RateLimitRetryMsg_TriggersRefresh(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.refreshInProgress = false
+
+	newModel, cmd := model.Update(rateLimitRetryMsg{})
+	m := newModel.(AppModel)
+
+	if !m.refreshInProgress {
+		t.Error("refreshInProgress should be true after rateLimitRetryMsg")
+	}
+	if cmd == nil {
+		t.Error("expected fetchUsage command")
+	}
+}
+
+func TestAppModel_RateLimitRetryMsg_NoOpWhenRefreshing(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.refreshInProgress = true
+
+	_, cmd := model.Update(rateLimitRetryMsg{})
+
+	if cmd != nil {
+		t.Error("expected nil command when refreshInProgress is true")
+	}
+}
+
+func TestAppModel_UsageTickMsg_SkippedDuringRefresh(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.refreshInProgress = true // Simulating active rate-limit retry
+
+	newModel, cmd := model.Update(usageTickMsg{})
+	m := newModel.(AppModel)
+
+	// Should still be refreshInProgress (tick didn't start a new refresh)
+	if !m.refreshInProgress {
+		t.Error("refreshInProgress should remain true")
+	}
+
+	// Should reschedule tick even when skipped
+	if cmd == nil {
+		t.Error("expected reschedule tick command even when skipped")
+	}
+}
