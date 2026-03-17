@@ -104,8 +104,8 @@ func TestFetchUsage(t *testing.T) {
 				if beta := r.Header.Get("anthropic-beta"); beta != "oauth-2025-04-20" {
 					t.Errorf("anthropic-beta header = %q, want oauth-2025-04-20", beta)
 				}
-				if ua := r.Header.Get("User-Agent"); !strings.HasPrefix(ua, "claude-code/cclv-") {
-					t.Errorf("User-Agent header = %q, want claude-code/cclv- prefix", ua)
+				if ua := r.Header.Get("User-Agent"); !strings.HasPrefix(ua, "cclv/") {
+					t.Errorf("User-Agent header = %q, want cclv/ prefix", ua)
 				}
 
 				w.WriteHeader(tt.statusCode)
@@ -548,7 +548,7 @@ func TestMakeRequest_Headers(t *testing.T) {
 	expectedHeaders := map[string]string{
 		"Authorization":  "Bearer test-token-123",
 		"Anthropic-Beta": "oauth-2025-04-20",
-		"User-Agent":     "claude-code/cclv-" + version.Version,
+		"User-Agent":     "cclv/" + version.Version,
 		"Accept":         "application/json",
 		"Content-Type":   "application/json",
 	}

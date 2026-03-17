@@ -129,7 +129,7 @@ func (c *Client) makeRequest(ctx context.Context, token string) (*UsageLimits, e
 
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	req.Header.Set("User-Agent", "claude-code/cclv-"+version.Version)
+	req.Header.Set("User-Agent", "cclv/"+version.Version)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 
