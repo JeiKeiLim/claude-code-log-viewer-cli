@@ -1789,3 +1789,55 @@ func TestAppModel_UsageTickMsg_SkippedDuringRefresh(t *testing.T) {
 		t.Error("expected reschedule tick command even when skipped")
 	}
 }
+
+func TestAppModel_UsageTickMsg_SkippedDuringRateLimitBackoff(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	// Simulate active rate-limit backoff (5 minutes from now)
+	model.rateLimitUntil = time.Now().Add(5 * time.Minute)
+
+	newModel, cmd := model.Update(usageTickMsg{})
+	m := newModel.(AppModel)
+
+	// Should NOT start a refresh during backoff
+	if m.refreshInProgress {
+		t.Error("refreshInProgress should be false during rate-limit backoff")
+	}
+
+	// Should still reschedule tick
+	if cmd == nil {
+		t.Error("expected reschedule tick command even during backoff")
+	}
+}
+
+func TestAppModel_RateLimitBackoff_ClearedOnSuccess(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+	model.rateLimitUntil = time.Now().Add(5 * time.Minute) // Active backoff
+
+	limits := &usage.UsageLimits{
+		FiveHour: &usage.UsageWindow{Utilization: 35.0},
+	}
+	newModel, _ := model.Update(usageFetchedMsg{limits: limits, stale: false})
+	m := newModel.(AppModel)
+
+	if !m.rateLimitUntil.IsZero() {
+		t.Error("rateLimitUntil should be cleared on success")
+	}
+}
+
+func TestAppModel_RateLimitBackoff_SetOn429(t *testing.T) {
+	projects := []types.Project{{DisplayName: "proj1"}}
+	model := NewAppModel(projects)
+
+	rateLimitErr := &usage.RateLimitError{RetryAfter: 120 * time.Second}
+	before := time.Now()
+
+	newModel, _ := model.Update(usageFetchedMsg{err: rateLimitErr})
+	m := newModel.(AppModel)
+
+	// rateLimitUntil should be set to ~now + 120s
+	if m.rateLimitUntil.Before(before.Add(119 * time.Second)) {
+		t.Error("rateLimitUntil should be at least 119s from now")
+	}
+}

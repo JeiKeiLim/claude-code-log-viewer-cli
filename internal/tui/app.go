@@ -70,6 +70,9 @@ type AppModel struct {
 
 	// Auth retry state (Story 11.1)
 	authExpired bool
+
+	// Rate limit backoff: skip periodic ticks until this time
+	rateLimitUntil time.Time
 }
 
 // newUsageBarStyles creates the usage bar styles from the TUI style exports (Story 7.4).
@@ -337,6 +340,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case usageTickMsg:
 		// Periodic refresh trigger (Story 7.5)
+		// Skip during rate-limit backoff to avoid re-triggering the limit
+		if !m.rateLimitUntil.IsZero() && time.Now().Before(m.rateLimitUntil) {
+			return m, scheduleUsageTick()
+		}
 		// Only refresh if not already in progress and not in loading state
 		if !m.refreshInProgress && m.usageBar.State() != usage.StateLoading {
 			m.refreshInProgress = true
@@ -392,6 +399,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if errors.Is(msg.err, usage.ErrRateLimited) {
 				var rateLimitErr *usage.RateLimitError
 				if errors.As(msg.err, &rateLimitErr) {
+					// Block periodic ticks during backoff so they don't re-trigger the limit
+					m.rateLimitUntil = time.Now().Add(rateLimitErr.RetryAfter)
 					if msg.limits != nil {
 						m.usageBar.SetLimits(msg.limits, true)
 					} else {
@@ -414,6 +423,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else {
 			// Success
+			// Clear rate-limit backoff on success
+			m.rateLimitUntil = time.Time{}
 			m.usageBar.SetLimits(msg.limits, msg.stale)
 			// Story 11.1 AC-3: Recovery detection with toast
 			if wasExpired {
@@ -705,6 +716,7 @@ func (m AppModel) handleManualRefresh() (tea.Model, tea.Cmd) {
 
 	// Trigger manual refresh
 	m.usageClient.InvalidateCache() // Force fresh fetch
+	m.rateLimitUntil = time.Time{}  // Clear rate-limit backoff on manual refresh
 	m.refreshInProgress = true
 	m.usageBar.SetRefreshing() // Show indicator (Story 7.5)
 	return m, m.fetchUsage()
