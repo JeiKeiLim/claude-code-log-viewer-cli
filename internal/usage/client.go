@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -22,6 +24,15 @@ const (
 	defaultRetryAfter = 60 * time.Second
 )
 
+const fileCacheVersion = 1
+
+// fileCacheEntry wraps UsageLimits with metadata for the shared file cache.
+type fileCacheEntry struct {
+	Version   int          `json:"version"`
+	FetchedAt time.Time    `json:"fetched_at"`
+	Limits    *UsageLimits `json:"limits"`
+}
+
 // Client fetches usage limits from the Claude API.
 type Client struct {
 	httpClient *http.Client
@@ -31,6 +42,9 @@ type Client struct {
 	cacheLock sync.RWMutex
 
 	lastGood *UsageLimits // Preserved for graceful degradation
+
+	fileCachePath string           // Path to shared file cache; empty disables file cache
+	nowFunc       func() time.Time // Injectable clock for testing
 }
 
 // NewClient creates a new usage API client with default timeout.
@@ -57,7 +71,19 @@ func NewClientWithTimeout(timeout time.Duration) *Client {
 			Timeout:   timeout,
 			Transport: transport,
 		},
+		fileCachePath: defaultFileCachePath(),
+		nowFunc:       time.Now,
 	}
+}
+
+// defaultFileCachePath returns ~/.cache/cclv/usage.json, or empty string if
+// the home directory cannot be determined (disabling file cache gracefully).
+func defaultFileCachePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".cache", "cclv", "usage.json")
 }
 
 // getCached returns cached UsageLimits if still valid, nil otherwise.
@@ -68,7 +94,7 @@ func (c *Client) getCached() *UsageLimits {
 	if c.cache == nil {
 		return nil
 	}
-	if time.Since(c.cacheTime) > cacheTTL {
+	if c.nowFunc().Sub(c.cacheTime) > cacheTTL {
 		return nil
 	}
 	return c.cache
@@ -80,25 +106,108 @@ func (c *Client) setCache(limits *UsageLimits) {
 	defer c.cacheLock.Unlock()
 
 	c.cache = limits
-	c.cacheTime = time.Now()
+	c.cacheTime = c.nowFunc()
 	c.lastGood = limits
 }
 
-// InvalidateCache clears the cache, forcing the next FetchUsage call to make an API request.
+// InvalidateCache clears both in-memory and file caches, forcing the next
+// FetchUsage call to make a fresh API request. File cache deletion errors
+// are silently ignored.
 func (c *Client) InvalidateCache() {
 	c.cacheLock.Lock()
 	defer c.cacheLock.Unlock()
 
 	c.cache = nil
 	c.cacheTime = time.Time{}
+
+	// Also remove file cache so readFileCache doesn't immediately re-populate
+	if c.fileCachePath != "" {
+		os.Remove(c.fileCachePath)
+	}
+}
+
+// readFileCache reads the shared file cache and returns the cached limits if
+// fresh and valid. Returns nil on any error or staleness — silent degradation.
+func (c *Client) readFileCache() *UsageLimits {
+	if c.fileCachePath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(c.fileCachePath)
+	if err != nil {
+		return nil
+	}
+	var entry fileCacheEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return nil
+	}
+	if entry.Version != fileCacheVersion {
+		return nil
+	}
+	if entry.Limits == nil {
+		return nil
+	}
+	if c.nowFunc().Sub(entry.FetchedAt) > cacheTTL {
+		return nil
+	}
+	return entry.Limits
+}
+
+// writeFileCache atomically writes the usage limits to the shared file cache.
+// Uses CreateTemp for unique temp names (safe under concurrent writers) and
+// restrictive permissions (0700 dir, 0600 file). Cleans up temp file on failure.
+// Silently ignores all errors — file cache is an optimization, not a requirement.
+func (c *Client) writeFileCache(limits *UsageLimits) {
+	if c.fileCachePath == "" {
+		return
+	}
+	entry := fileCacheEntry{
+		Version:   fileCacheVersion,
+		FetchedAt: c.nowFunc(),
+		Limits:    limits,
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(c.fileCachePath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	tmpFile, err := os.CreateTemp(dir, "usage-*.tmp")
+	if err != nil {
+		return
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		os.Remove(tmpPath)
+		return
+	}
+	if err := os.Rename(tmpPath, c.fileCachePath); err != nil {
+		os.Remove(tmpPath)
+	}
 }
 
 // FetchUsage retrieves usage limits, using cache if available.
 // Returns (limits, stale, error) where stale=true means returned from lastGood.
 func (c *Client) FetchUsage(ctx context.Context, token string) (*UsageLimits, bool, error) {
-	// Check cache first
+	// Check in-memory cache first
 	if cached := c.getCached(); cached != nil {
 		return cached, false, nil
+	}
+
+	// Check shared file cache
+	if fileCached := c.readFileCache(); fileCached != nil {
+		c.setCache(fileCached)
+		return fileCached, false, nil
 	}
 
 	// Make API request
@@ -117,6 +226,7 @@ func (c *Client) FetchUsage(ctx context.Context, token string) (*UsageLimits, bo
 
 	// Update cache and lastGood on success
 	c.setCache(limits)
+	c.writeFileCache(limits)
 	return limits, false, nil
 }
 

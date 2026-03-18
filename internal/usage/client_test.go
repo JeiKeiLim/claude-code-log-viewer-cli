@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,20 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version"
 )
 
+// newClientNoFileCache creates a client with file cache disabled for tests that
+// only test API/in-memory behavior and should not be affected by disk state.
+func newClientNoFileCache() *Client {
+	c := NewClient()
+	c.fileCachePath = ""
+	return c
+}
+
+func newClientWithTimeoutNoFileCache(timeout time.Duration) *Client {
+	c := NewClientWithTimeout(timeout)
+	c.fileCachePath = ""
+	return c
+}
+
 func TestNewClient(t *testing.T) {
 	c := NewClient()
 	if c == nil {
@@ -21,6 +37,9 @@ func TestNewClient(t *testing.T) {
 	}
 	if c.httpClient == nil {
 		t.Error("httpClient is nil")
+	}
+	if c.nowFunc == nil {
+		t.Error("nowFunc is nil")
 	}
 }
 
@@ -114,7 +133,7 @@ func TestFetchUsage(t *testing.T) {
 			defer server.Close()
 
 			// Create client with mock server URL
-			c := NewClient()
+			c := newClientNoFileCache()
 
 			// Create a custom transport that redirects to our test server
 			c.httpClient = &http.Client{
@@ -187,7 +206,7 @@ func TestFetchUsage_CacheHit(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -233,7 +252,7 @@ func TestFetchUsage_CacheMiss(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClientWithTimeout(apiTimeout)
+	c := newClientWithTimeoutNoFileCache(apiTimeout)
 	c.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -277,7 +296,7 @@ func TestFetchUsage_GracefulDegradation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -332,7 +351,7 @@ func TestFetchUsage_Timeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClientWithTimeout(10 * time.Millisecond) // Very short timeout
+	c := newClientWithTimeoutNoFileCache(10 * time.Millisecond) // Very short timeout
 	c.httpClient = &http.Client{
 		Timeout: 10 * time.Millisecond,
 		Transport: &mockTransport{
@@ -360,7 +379,7 @@ func TestFetchUsage_ContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &mockTransport{
@@ -388,7 +407,7 @@ func TestFetchUsage_ContextDeadlineExceeded(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &mockTransport{
@@ -429,7 +448,7 @@ func TestFetchUsage_ConcurrentAccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &mockTransport{
@@ -474,7 +493,7 @@ func TestFetchUsage_ConcurrentAccess(t *testing.T) {
 }
 
 func TestInvalidateCache(t *testing.T) {
-	c := NewClient()
+	c := newClientNoFileCache()
 
 	// Set some cache values
 	c.cache = &UsageLimits{
@@ -497,7 +516,7 @@ func TestInvalidateCache(t *testing.T) {
 }
 
 func TestGetCached_Expiry(t *testing.T) {
-	c := NewClient()
+	c := newClientNoFileCache()
 
 	// Set cache with old timestamp
 	c.cache = &UsageLimits{
@@ -530,7 +549,7 @@ func TestMakeRequest_Headers(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -568,7 +587,7 @@ func TestFetchUsage_NoLastGoodOnFirstError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -661,7 +680,7 @@ func TestFetchUsage_ResponseParsing(t *testing.T) {
 			}))
 			defer server.Close()
 
-			c := NewClient()
+			c := newClientNoFileCache()
 			c.httpClient = &http.Client{
 				Timeout: apiTimeout,
 				Transport: &mockTransport{
@@ -706,7 +725,7 @@ func TestFetchUsage_HTTPStatusCodes(t *testing.T) {
 			}))
 			defer server.Close()
 
-			c := NewClient()
+			c := newClientNoFileCache()
 			c.httpClient = &http.Client{
 				Timeout: apiTimeout,
 				Transport: &mockTransport{
@@ -788,7 +807,7 @@ func TestIntegration_GetOAuthTokenAndFetchUsage(t *testing.T) {
 	token := "test-token-from-credentials"
 
 	// Step 2: Create client and fetch usage
-	client := NewClient()
+	client := newClientNoFileCache()
 	client.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -843,7 +862,7 @@ func TestFetchUsage_EmptyToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -871,7 +890,7 @@ func TestFetchUsage_429WithoutRetryAfter(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -905,7 +924,7 @@ func TestFetchUsage_429WithRetryAfter(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -939,7 +958,7 @@ func TestFetchUsage_429WithInvalidRetryAfter(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -976,7 +995,7 @@ func TestFetchUsage_429WithStaleData(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClient()
+	c := newClientNoFileCache()
 	c.httpClient = &http.Client{
 		Timeout: apiTimeout,
 		Transport: &mockTransport{
@@ -1063,5 +1082,355 @@ func TestRateLimitError(t *testing.T) {
 	}
 	if rateLimitErr.RetryAfter != 120*time.Second {
 		t.Errorf("RetryAfter = %v, want 120s", rateLimitErr.RetryAfter)
+	}
+}
+
+// --- File Cache Tests (Tasks 5, 6, 6b) ---
+
+// newTestClient creates a Client with file cache pointed at a temp dir and a frozen clock.
+func newTestClient(t *testing.T, now time.Time) *Client {
+	t.Helper()
+	c := NewClient()
+	c.fileCachePath = filepath.Join(t.TempDir(), "usage.json")
+	c.nowFunc = func() time.Time { return now }
+	return c
+}
+
+func TestFileCache_WriteAndRead(t *testing.T) {
+	now := time.Now()
+	c := newTestClient(t, now)
+
+	limits := &UsageLimits{
+		FiveHour: &UsageWindow{Utilization: 42.5},
+		SevenDay: &UsageWindow{Utilization: 15.0},
+	}
+	c.writeFileCache(limits)
+
+	got := c.readFileCache()
+	if got == nil {
+		t.Fatal("readFileCache() returned nil after write")
+	}
+	if got.FiveHour.Utilization != 42.5 {
+		t.Errorf("FiveHour.Utilization = %v, want 42.5", got.FiveHour.Utilization)
+	}
+	if got.SevenDay.Utilization != 15.0 {
+		t.Errorf("SevenDay.Utilization = %v, want 15.0", got.SevenDay.Utilization)
+	}
+}
+
+func TestFileCache_Expired(t *testing.T) {
+	now := time.Now()
+	c := newTestClient(t, now)
+
+	limits := &UsageLimits{FiveHour: &UsageWindow{Utilization: 10.0}}
+	c.writeFileCache(limits)
+
+	// Advance clock past TTL
+	c.nowFunc = func() time.Time { return now.Add(2 * cacheTTL) }
+
+	if got := c.readFileCache(); got != nil {
+		t.Errorf("readFileCache() = %v, want nil for expired cache", got)
+	}
+}
+
+func TestFileCache_MissingFile(t *testing.T) {
+	c := NewClient()
+	c.fileCachePath = filepath.Join(t.TempDir(), "nonexistent", "usage.json")
+	c.nowFunc = time.Now
+
+	if got := c.readFileCache(); got != nil {
+		t.Errorf("readFileCache() = %v, want nil for missing file", got)
+	}
+}
+
+func TestFileCache_CorruptFile(t *testing.T) {
+	c := newTestClient(t, time.Now())
+
+	// Write garbage
+	if err := os.WriteFile(c.fileCachePath, []byte("not json{{{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := c.readFileCache(); got != nil {
+		t.Errorf("readFileCache() = %v, want nil for corrupt file", got)
+	}
+}
+
+func TestFileCache_MissingDirectory(t *testing.T) {
+	c := NewClient()
+	c.fileCachePath = filepath.Join(t.TempDir(), "deep", "nested", "dir", "usage.json")
+	c.nowFunc = time.Now
+
+	limits := &UsageLimits{FiveHour: &UsageWindow{Utilization: 5.0}}
+	c.writeFileCache(limits)
+
+	got := c.readFileCache()
+	if got == nil {
+		t.Fatal("readFileCache() returned nil — expected write to create directories")
+	}
+	if got.FiveHour.Utilization != 5.0 {
+		t.Errorf("FiveHour.Utilization = %v, want 5.0", got.FiveHour.Utilization)
+	}
+}
+
+func TestFileCache_AtomicWrite_NoTmpLeftover(t *testing.T) {
+	c := newTestClient(t, time.Now())
+
+	limits := &UsageLimits{FiveHour: &UsageWindow{Utilization: 1.0}}
+	c.writeFileCache(limits)
+
+	// No .tmp files should remain in the cache directory
+	dir := filepath.Dir(c.fileCachePath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("temp file %q should not persist after successful write", e.Name())
+		}
+	}
+}
+
+func TestFileCache_VersionMismatch(t *testing.T) {
+	now := time.Now()
+	c := newTestClient(t, now)
+
+	// Write an entry with wrong version
+	entry := fileCacheEntry{
+		Version:   99,
+		FetchedAt: now,
+		Limits:    &UsageLimits{FiveHour: &UsageWindow{Utilization: 1.0}},
+	}
+	data, _ := json.Marshal(entry)
+	if err := os.MkdirAll(filepath.Dir(c.fileCachePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.fileCachePath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := c.readFileCache(); got != nil {
+		t.Errorf("readFileCache() = %v, want nil for version mismatch", got)
+	}
+}
+
+func TestFileCache_EmptyPath(t *testing.T) {
+	c := NewClient()
+	c.fileCachePath = ""
+	c.nowFunc = time.Now
+
+	// Should not panic or error
+	c.writeFileCache(&UsageLimits{FiveHour: &UsageWindow{Utilization: 1.0}})
+	if got := c.readFileCache(); got != nil {
+		t.Errorf("readFileCache() = %v, want nil for empty path", got)
+	}
+}
+
+// Task 6: Integration test — two clients sharing the same file cache path.
+func TestFileCache_CrossInstanceSharing(t *testing.T) {
+	sharedPath := filepath.Join(t.TempDir(), "usage.json")
+	now := time.Now()
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"five_hour": {"utilization": 55.0}, "seven_day": {"utilization": 20.0}}`))
+	}))
+	defer server.Close()
+
+	makeClient := func() *Client {
+		c := NewClient()
+		c.fileCachePath = sharedPath
+		c.nowFunc = func() time.Time { return now }
+		c.httpClient = &http.Client{
+			Timeout: apiTimeout,
+			Transport: &mockTransport{
+				handler: func(req *http.Request) (*http.Response, error) {
+					req.URL.Scheme = "http"
+					req.URL.Host = server.URL[7:]
+					return http.DefaultTransport.RoundTrip(req)
+				},
+			},
+		}
+		return c
+	}
+
+	// Client 1 fetches — hits API, writes file cache
+	c1 := makeClient()
+	limits1, _, err := c1.FetchUsage(context.Background(), "token")
+	if err != nil {
+		t.Fatalf("client1 FetchUsage error: %v", err)
+	}
+	if limits1.FiveHour.Utilization != 55.0 {
+		t.Errorf("client1 utilization = %v, want 55.0", limits1.FiveHour.Utilization)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 API call after client1, got %d", callCount)
+	}
+
+	// Client 2 fetches — should read from file cache, NOT hit API
+	c2 := makeClient()
+	limits2, _, err := c2.FetchUsage(context.Background(), "token")
+	if err != nil {
+		t.Fatalf("client2 FetchUsage error: %v", err)
+	}
+	if limits2.FiveHour.Utilization != 55.0 {
+		t.Errorf("client2 utilization = %v, want 55.0", limits2.FiveHour.Utilization)
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 API call total (file cache hit), got %d", callCount)
+	}
+}
+
+// Task 6b: InvalidateCache() also removes file cache so the next FetchUsage
+// makes a fresh API call instead of re-reading stale file data.
+func TestFileCache_InvalidateCacheDeletesFileCache(t *testing.T) {
+	sharedPath := filepath.Join(t.TempDir(), "usage.json")
+	now := time.Now()
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"five_hour": {"utilization": 77.0}, "seven_day": {"utilization": 33.0}}`))
+	}))
+	defer server.Close()
+
+	makeClient := func() *Client {
+		c := NewClient()
+		c.fileCachePath = sharedPath
+		c.nowFunc = func() time.Time { return now }
+		c.httpClient = &http.Client{
+			Timeout: apiTimeout,
+			Transport: &mockTransport{
+				handler: func(req *http.Request) (*http.Response, error) {
+					req.URL.Scheme = "http"
+					req.URL.Host = server.URL[7:]
+					return http.DefaultTransport.RoundTrip(req)
+				},
+			},
+		}
+		return c
+	}
+
+	// Client fetches and populates file cache
+	c1 := makeClient()
+	_, _, err := c1.FetchUsage(context.Background(), "token")
+	if err != nil {
+		t.Fatalf("FetchUsage error: %v", err)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 API call, got %d", callCount)
+	}
+
+	// InvalidateCache — should clear both in-memory and file cache
+	c1.InvalidateCache()
+
+	// File cache should be deleted
+	if _, err := os.Stat(sharedPath); !os.IsNotExist(err) {
+		t.Fatal("file cache should be deleted after InvalidateCache()")
+	}
+
+	// New client with same path must hit the API (no file cache to read)
+	c2 := makeClient()
+	limits2, _, err := c2.FetchUsage(context.Background(), "token")
+	if err != nil {
+		t.Fatalf("client2 FetchUsage error: %v", err)
+	}
+	if limits2.FiveHour.Utilization != 77.0 {
+		t.Errorf("client2 utilization = %v, want 77.0", limits2.FiveHour.Utilization)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 API calls (file cache deleted), got %d", callCount)
+	}
+}
+
+// F1: Verify ResetsAtRaw survives file cache round-trip and ResetsAt is reconstructed.
+func TestFileCache_ResetsAtRoundTrip(t *testing.T) {
+	now := time.Now()
+	c := newTestClient(t, now)
+
+	resetStr := "2026-03-18T18:00:00Z"
+	limits := &UsageLimits{
+		FiveHour: &UsageWindow{
+			Utilization: 42.5,
+			ResetsAtRaw: &resetStr,
+		},
+		SevenDay: &UsageWindow{
+			Utilization: 15.0,
+		},
+	}
+	// Parse ResetsAt on the original (simulating what UnmarshalJSON does)
+	parsed, _ := time.Parse(time.RFC3339Nano, resetStr)
+	limits.FiveHour.ResetsAt = &parsed
+
+	c.writeFileCache(limits)
+	got := c.readFileCache()
+	if got == nil {
+		t.Fatal("readFileCache() returned nil after write")
+	}
+	// ResetsAtRaw should survive JSON round-trip
+	if got.FiveHour.ResetsAtRaw == nil {
+		t.Fatal("FiveHour.ResetsAtRaw is nil after round-trip")
+	}
+	if *got.FiveHour.ResetsAtRaw != resetStr {
+		t.Errorf("FiveHour.ResetsAtRaw = %q, want %q", *got.FiveHour.ResetsAtRaw, resetStr)
+	}
+	// ResetsAt should be reconstructed by UnmarshalJSON
+	if got.FiveHour.ResetsAt == nil {
+		t.Fatal("FiveHour.ResetsAt is nil after round-trip — UnmarshalJSON did not reconstruct it")
+	}
+	if !got.FiveHour.ResetsAt.Equal(parsed) {
+		t.Errorf("FiveHour.ResetsAt = %v, want %v", got.FiveHour.ResetsAt, parsed)
+	}
+	// SevenDay with no ResetsAtRaw should have nil ResetsAt
+	if got.SevenDay.ResetsAt != nil {
+		t.Errorf("SevenDay.ResetsAt = %v, want nil", got.SevenDay.ResetsAt)
+	}
+}
+
+// F10: Concurrent file cache writes should not corrupt the file.
+func TestFileCache_ConcurrentWrites(t *testing.T) {
+	sharedPath := filepath.Join(t.TempDir(), "usage.json")
+	now := time.Now()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			c := NewClient()
+			c.fileCachePath = sharedPath
+			c.nowFunc = func() time.Time { return now }
+			limits := &UsageLimits{
+				FiveHour: &UsageWindow{Utilization: float64(n)},
+			}
+			c.writeFileCache(limits)
+		}(i)
+	}
+	wg.Wait()
+
+	// File should exist and be valid JSON (not corrupted)
+	c := NewClient()
+	c.fileCachePath = sharedPath
+	c.nowFunc = func() time.Time { return now }
+	got := c.readFileCache()
+	if got == nil {
+		t.Fatal("readFileCache() returned nil after concurrent writes")
+	}
+	if got.FiveHour == nil {
+		t.Fatal("FiveHour is nil after concurrent writes")
+	}
+}
+
+func TestDefaultFileCachePath(t *testing.T) {
+	path := defaultFileCachePath()
+	if path == "" {
+		t.Skip("UserHomeDir not available")
+	}
+	if !strings.HasSuffix(path, filepath.Join(".cache", "cclv", "usage.json")) {
+		t.Errorf("defaultFileCachePath() = %q, want suffix .cache/cclv/usage.json", path)
 	}
 }
