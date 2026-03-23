@@ -219,6 +219,9 @@ func (c *Client) FetchUsage(ctx context.Context, token string) (*UsageLimits, bo
 		c.cacheLock.RUnlock()
 
 		if lastGood != nil {
+			// Refresh file cache with lastGood so other instances don't
+			// also hit the API and pile on during rate-limit backoff.
+			c.writeFileCache(lastGood)
 			return lastGood, true, err
 		}
 		return nil, false, err

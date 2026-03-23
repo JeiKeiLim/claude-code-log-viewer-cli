@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -580,9 +581,12 @@ func scheduleAuthRetryTick() tea.Cmd {
 // rateLimitRetryMsg triggers retry after a 429 rate-limit response.
 type rateLimitRetryMsg struct{}
 
-// scheduleRateLimitRetry schedules a retry using the Retry-After duration from the 429 response.
+// scheduleRateLimitRetry schedules a retry using the Retry-After duration from
+// the 429 response, plus random jitter (0-15s) so multiple instances don't all
+// retry at the exact same moment and re-trigger the rate limit.
 func scheduleRateLimitRetry(delay time.Duration) tea.Cmd {
-	return tea.Tick(delay, func(t time.Time) tea.Msg {
+	jitter := time.Duration(rand.Int63n(int64(15 * time.Second)))
+	return tea.Tick(delay+jitter, func(t time.Time) tea.Msg {
 		return rateLimitRetryMsg{}
 	})
 }
