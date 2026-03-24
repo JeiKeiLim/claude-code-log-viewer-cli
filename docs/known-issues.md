@@ -1,45 +1,41 @@
 # Known Issues
 
-## Usage bar shows percentage without remaining time after 5-hour window reset
+## Usage API rate limiting (429) causes stale usage data
 
-**Status:** Investigating — needs more observation data
+**Status:** Known limitation of undocumented API
 **First noticed:** 2026-03-19
-**Frequency:** Intermittent ("sometimes")
 
-### Symptom
+### Background
 
-After the 5-hour usage window resets, the TUI usage bar shows utilization percentage but no remaining time (e.g., `5h: 0%` instead of `5h: 0% 4h59m`). No "(stale)" indicator is shown, meaning the fetch appears to succeed. The condition persists beyond the expected 60s cache TTL.
+The `/api/oauth/usage` endpoint is an undocumented internal Anthropic API. It has aggressive rate limiting that affects all third-party tools trying to monitor Claude Code usage. This is a widely reported issue:
 
-### Expected Behavior
+- [Issue #31637](https://github.com/anthropics/claude-code/issues/31637) — "aggressively rate limits, making usage monitoring unusable"
+- [Issue #31021](https://github.com/anthropics/claude-code/issues/31021) — "persistent 429 rate limit"
+- [Issue #30930](https://github.com/anthropics/claude-code/issues/30930) — "persistent 429 for Claude Max users"
 
-Within ~60s of the reset, the next fetch should return a new `resets_at` timestamp in the future, and the remaining time should reappear.
+Even polling every 5-10 minutes can trigger 429 after 1-2 successful responses. There is no documented rate limit, no useful `Retry-After` header, and no way to reliably avoid it.
 
-### What to Collect When Observed
+### What cclv does to mitigate
 
-When this happens again, run these commands to capture state:
+1. **Shared file cache** (`~/.cache/cclv/usage.json`) — all cclv instances share one cache, so N instances generate at most 1 API call per 60s
+2. **Claim mechanism** — when the cache expires, the first instance "claims" the refresh by touching the cache timestamp, preventing other instances from also hitting the API
+3. **Stale data fallback** — when the API is rate-limited, cclv shows the last known data with a "(stale)" indicator
+4. **Retry jitter** — rate limit retries have 0-15s random jitter to prevent synchronized retries
 
-```bash
-# 1. Check file cache contents and age
-cat ~/.cache/cclv/usage.json | python3 -m json.tool
+### Symptoms
 
-# 2. Make a fresh API call via CLI (bypasses TUI cache)
-./cclv --usage
+- Usage bar shows "(stale)" for extended periods
+- Usage percentages don't update after window resets (e.g., shows old 85% after 5-hour reset)
+- `cclv --usage` returns "usage API rate limited (retry after 1m0s)"
 
-# 3. Does pressing R (manual refresh) in the TUI fix it?
+### What users can expect
 
-# 4. Note the current time and the expected reset time
-date
-```
+- Usage data works intermittently — sometimes fine for hours, sometimes rate-limited
+- When rate-limited, stale data is shown until the API recovers on its own
+- Multiple cclv instances do NOT make the problem worse (shared cache)
+- This affects all third-party Claude Code usage monitoring tools, not just cclv
 
-### Possible Causes
+### Alternatives
 
-1. **API returns `resets_at: null` or past timestamp** after a window reset — the cache correctly stores what the API returns, but the API data is stale
-2. **Cache somehow not expiring** — the 60s TTL check (`nowFunc().Sub(cacheTime) > cacheTTL`) might have an edge case
-3. **Fetch silently failing** — some error path that doesn't update the bar but also doesn't show stale/error
-
-### Relevant Code
-
-- `internal/usage/bar.go:242-244` — `formatDuration` returns `""` when `ResetsAt` is in the past
-- `internal/usage/client.go:89-101` — `getCached()` TTL check
-- `internal/tui/app.go:342-354` — `usageTickMsg` handler (tick scheduling)
-- `internal/tui/app.go:373-436` — `usageFetchedMsg` handler (result processing)
+- **Claude Code v2.1.80+** exposes `rate_limits` in the statusline JSON input, but this data is only available to scripts configured as Claude Code statusline commands — not to standalone tools
+- **[claude-web-usage](https://github.com/skibidiskib/claude-web-usage)** uses Claude Desktop's web cookies to call a different API (claude.ai web API) which has a separate rate limit bucket. macOS only, requires Claude Desktop app

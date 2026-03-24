@@ -1106,7 +1106,7 @@ func TestFileCache_WriteAndRead(t *testing.T) {
 	}
 	c.writeFileCache(limits)
 
-	got := c.readFileCache()
+	got, _, _ := c.readFileCache()
 	if got == nil {
 		t.Fatal("readFileCache() returned nil after write")
 	}
@@ -1128,8 +1128,43 @@ func TestFileCache_Expired(t *testing.T) {
 	// Advance clock past TTL
 	c.nowFunc = func() time.Time { return now.Add(2 * cacheTTL) }
 
-	if got := c.readFileCache(); got != nil {
+	if got, _, _ := c.readFileCache(); got != nil {
 		t.Errorf("readFileCache() = %v, want nil for expired cache", got)
+	}
+}
+
+// Verify that expired cache claims the refresh by touching CheckedAt,
+// so a second reader sees it as fresh (but stale) and doesn't also hit the API.
+func TestFileCache_ExpiredClaimsRefresh(t *testing.T) {
+	now := time.Now()
+	c := newTestClient(t, now)
+
+	limits := &UsageLimits{FiveHour: &UsageWindow{Utilization: 10.0}}
+	c.writeFileCache(limits)
+
+	// Advance clock past TTL
+	expired := now.Add(2 * cacheTTL)
+	c.nowFunc = func() time.Time { return expired }
+
+	// First read: expired → returns nil (caller should make API call)
+	// but touches CheckedAt as a claim
+	got, _, _ := c.readFileCache()
+	if got != nil {
+		t.Errorf("first readFileCache() = %v, want nil for expired cache", got)
+	}
+
+	// Second read (simulating another instance): should return data
+	// because the first read touched CheckedAt, but marked as stale
+	// because FetchedAt is still old
+	got, stale, _ := c.readFileCache()
+	if got == nil {
+		t.Fatal("second readFileCache() = nil, want non-nil (claimed by first reader)")
+	}
+	if got.FiveHour.Utilization != 10.0 {
+		t.Errorf("utilization = %v, want 10.0", got.FiveHour.Utilization)
+	}
+	if !stale {
+		t.Error("second readFileCache() stale = false, want true (data is from claim, not fresh fetch)")
 	}
 }
 
@@ -1138,7 +1173,7 @@ func TestFileCache_MissingFile(t *testing.T) {
 	c.fileCachePath = filepath.Join(t.TempDir(), "nonexistent", "usage.json")
 	c.nowFunc = time.Now
 
-	if got := c.readFileCache(); got != nil {
+	if got, _, _ := c.readFileCache(); got != nil {
 		t.Errorf("readFileCache() = %v, want nil for missing file", got)
 	}
 }
@@ -1151,7 +1186,7 @@ func TestFileCache_CorruptFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := c.readFileCache(); got != nil {
+	if got, _, _ := c.readFileCache(); got != nil {
 		t.Errorf("readFileCache() = %v, want nil for corrupt file", got)
 	}
 }
@@ -1164,7 +1199,7 @@ func TestFileCache_MissingDirectory(t *testing.T) {
 	limits := &UsageLimits{FiveHour: &UsageWindow{Utilization: 5.0}}
 	c.writeFileCache(limits)
 
-	got := c.readFileCache()
+	got, _, _ := c.readFileCache()
 	if got == nil {
 		t.Fatal("readFileCache() returned nil — expected write to create directories")
 	}
@@ -1199,7 +1234,7 @@ func TestFileCache_VersionMismatch(t *testing.T) {
 	// Write an entry with wrong version
 	entry := fileCacheEntry{
 		Version:   99,
-		FetchedAt: now,
+		CheckedAt: now,
 		Limits:    &UsageLimits{FiveHour: &UsageWindow{Utilization: 1.0}},
 	}
 	data, _ := json.Marshal(entry)
@@ -1210,7 +1245,7 @@ func TestFileCache_VersionMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := c.readFileCache(); got != nil {
+	if got, _, _ := c.readFileCache(); got != nil {
 		t.Errorf("readFileCache() = %v, want nil for version mismatch", got)
 	}
 }
@@ -1222,7 +1257,7 @@ func TestFileCache_EmptyPath(t *testing.T) {
 
 	// Should not panic or error
 	c.writeFileCache(&UsageLimits{FiveHour: &UsageWindow{Utilization: 1.0}})
-	if got := c.readFileCache(); got != nil {
+	if got, _, _ := c.readFileCache(); got != nil {
 		t.Errorf("readFileCache() = %v, want nil for empty path", got)
 	}
 }
@@ -1347,88 +1382,6 @@ func TestFileCache_InvalidateCacheDeletesFileCache(t *testing.T) {
 	}
 }
 
-// Verify that on API error with lastGood, the file cache is refreshed so other
-// instances don't pile on the API during rate-limit backoff.
-func TestFileCache_ErrorRefreshesFileCacheWithLastGood(t *testing.T) {
-	sharedPath := filepath.Join(t.TempDir(), "usage.json")
-	now := time.Now()
-
-	callCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		if callCount == 1 {
-			w.WriteHeader(200)
-			_, _ = w.Write([]byte(`{"five_hour": {"utilization": 40.0}, "seven_day": {"utilization": 10.0}}`))
-		} else {
-			w.Header().Set("Retry-After", "60")
-			w.WriteHeader(429)
-			_, _ = w.Write([]byte(`{"error": "rate limited"}`))
-		}
-	}))
-	defer server.Close()
-
-	makeClient := func() *Client {
-		c := NewClient()
-		c.fileCachePath = sharedPath
-		c.nowFunc = func() time.Time { return now }
-		c.httpClient = &http.Client{
-			Timeout: apiTimeout,
-			Transport: &mockTransport{
-				handler: func(req *http.Request) (*http.Response, error) {
-					req.URL.Scheme = "http"
-					req.URL.Host = server.URL[7:]
-					return http.DefaultTransport.RoundTrip(req)
-				},
-			},
-		}
-		return c
-	}
-
-	// Client 1: first call succeeds, populates file cache
-	c1 := makeClient()
-	_, _, err := c1.FetchUsage(context.Background(), "token")
-	if err != nil {
-		t.Fatalf("first FetchUsage error: %v", err)
-	}
-	if callCount != 1 {
-		t.Fatalf("expected 1 API call, got %d", callCount)
-	}
-
-	// Advance clock past TTL so file cache expires
-	expired := now.Add(2 * cacheTTL)
-	c1.nowFunc = func() time.Time { return expired }
-
-	// Invalidate in-memory cache to force API call
-	c1.InvalidateCache()
-
-	// Second call: gets 429, returns lastGood, should refresh file cache
-	limits2, stale, err := c1.FetchUsage(context.Background(), "token")
-	if !errors.Is(err, ErrRateLimited) {
-		t.Fatalf("expected ErrRateLimited, got %v", err)
-	}
-	if !stale {
-		t.Error("expected stale=true")
-	}
-	if limits2.FiveHour.Utilization != 40.0 {
-		t.Errorf("utilization = %v, want 40.0", limits2.FiveHour.Utilization)
-	}
-
-	// Key assertion: client 2 with the same shared path should read from
-	// the refreshed file cache and NOT hit the API
-	c2 := makeClient()
-	c2.nowFunc = func() time.Time { return expired }
-	limits3, _, err3 := c2.FetchUsage(context.Background(), "token")
-	if err3 != nil {
-		t.Fatalf("client2 FetchUsage error: %v", err3)
-	}
-	if limits3.FiveHour.Utilization != 40.0 {
-		t.Errorf("client2 utilization = %v, want 40.0", limits3.FiveHour.Utilization)
-	}
-	if callCount != 2 {
-		t.Errorf("expected 2 API calls total (client2 should use refreshed file cache), got %d", callCount)
-	}
-}
-
 // F1: Verify ResetsAtRaw survives file cache round-trip and ResetsAt is reconstructed.
 func TestFileCache_ResetsAtRoundTrip(t *testing.T) {
 	now := time.Now()
@@ -1449,7 +1402,7 @@ func TestFileCache_ResetsAtRoundTrip(t *testing.T) {
 	limits.FiveHour.ResetsAt = &parsed
 
 	c.writeFileCache(limits)
-	got := c.readFileCache()
+	got, _, _ := c.readFileCache()
 	if got == nil {
 		t.Fatal("readFileCache() returned nil after write")
 	}
@@ -1498,7 +1451,7 @@ func TestFileCache_ConcurrentWrites(t *testing.T) {
 	c := NewClient()
 	c.fileCachePath = sharedPath
 	c.nowFunc = func() time.Time { return now }
-	got := c.readFileCache()
+	got, _, _ := c.readFileCache()
 	if got == nil {
 		t.Fatal("readFileCache() returned nil after concurrent writes")
 	}

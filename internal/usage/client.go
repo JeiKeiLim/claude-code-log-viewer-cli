@@ -24,12 +24,13 @@ const (
 	defaultRetryAfter = 60 * time.Second
 )
 
-const fileCacheVersion = 1
+const fileCacheVersion = 2
 
 // fileCacheEntry wraps UsageLimits with metadata for the shared file cache.
 type fileCacheEntry struct {
 	Version   int          `json:"version"`
-	FetchedAt time.Time    `json:"fetched_at"`
+	FetchedAt time.Time    `json:"fetched_at"` // When data was actually fetched from API
+	CheckedAt time.Time    `json:"checked_at"` // When cache was last touched (for TTL)
 	Limits    *UsageLimits `json:"limits"`
 }
 
@@ -126,44 +127,84 @@ func (c *Client) InvalidateCache() {
 	}
 }
 
-// readFileCache reads the shared file cache and returns the cached limits if
-// fresh and valid. Returns nil on any error or staleness — silent degradation.
-func (c *Client) readFileCache() *UsageLimits {
+// readFileCache reads the shared file cache.
+// Returns (limits, stale, claimed):
+//   - limits non-nil: cache hit, use this data (stale indicates freshness)
+//   - limits nil, claimed false: no cache or we claimed the refresh — caller should fetch
+//   - limits nil, claimed true: another instance is fetching — caller should NOT fetch
+//
+// When CheckedAt is expired, claims the refresh by touching CheckedAt.
+// When no file exists, creates a claim file. In both cases, returns
+// (nil, false, false) so the caller makes the API call.
+func (c *Client) readFileCache() (limits *UsageLimits, stale bool, claimed bool) {
 	if c.fileCachePath == "" {
-		return nil
+		return nil, false, false
 	}
 	data, err := os.ReadFile(c.fileCachePath)
 	if err != nil {
-		return nil
+		// No file — create claim so other instances back off
+		c.writeClaimFile()
+		return nil, false, false
 	}
 	var entry fileCacheEntry
 	if err := json.Unmarshal(data, &entry); err != nil {
-		return nil
+		return nil, false, false
 	}
 	if entry.Version != fileCacheVersion {
-		return nil
+		return nil, false, false
 	}
+	if c.nowFunc().Sub(entry.CheckedAt) > cacheTTL {
+		// Expired — claim the refresh by touching CheckedAt so other
+		// instances read stale data instead of all hitting the API.
+		c.touchFileCache(entry)
+		return nil, false, false
+	}
+	// CheckedAt is fresh. If Limits is nil, another instance claimed
+	// but hasn't written data yet — don't pile on.
 	if entry.Limits == nil {
-		return nil
+		return nil, false, true
 	}
-	if c.nowFunc().Sub(entry.FetchedAt) > cacheTTL {
-		return nil
-	}
-	return entry.Limits
+	// Data is stale if FetchedAt is older than TTL (claim-touched, not freshly fetched)
+	isStale := c.nowFunc().Sub(entry.FetchedAt) > cacheTTL
+	return entry.Limits, isStale, false
 }
 
-// writeFileCache atomically writes the usage limits to the shared file cache.
+// writeClaimFile creates a cache file with no data but a fresh CheckedAt.
+// Other instances seeing this will know someone is already fetching.
+func (c *Client) writeClaimFile() {
+	c.writeFileCacheEntry(fileCacheEntry{
+		Version:   fileCacheVersion,
+		CheckedAt: c.nowFunc(),
+	})
+}
+
+// touchFileCache updates CheckedAt on an existing cache entry without changing
+// the data or FetchedAt. This "claims" the refresh slot so other instances
+// read from cache instead of all hitting the API.
+func (c *Client) touchFileCache(entry fileCacheEntry) {
+	entry.CheckedAt = c.nowFunc()
+	c.writeFileCacheEntry(entry)
+}
+
+// writeFileCache atomically writes fresh usage limits to the shared file cache.
+// Sets both FetchedAt and CheckedAt to now.
+func (c *Client) writeFileCache(limits *UsageLimits) {
+	now := c.nowFunc()
+	c.writeFileCacheEntry(fileCacheEntry{
+		Version:   fileCacheVersion,
+		FetchedAt: now,
+		CheckedAt: now,
+		Limits:    limits,
+	})
+}
+
+// writeFileCacheEntry atomically writes a cache entry to disk.
 // Uses CreateTemp for unique temp names (safe under concurrent writers) and
 // restrictive permissions (0700 dir, 0600 file). Cleans up temp file on failure.
 // Silently ignores all errors — file cache is an optimization, not a requirement.
-func (c *Client) writeFileCache(limits *UsageLimits) {
+func (c *Client) writeFileCacheEntry(entry fileCacheEntry) {
 	if c.fileCachePath == "" {
 		return
-	}
-	entry := fileCacheEntry{
-		Version:   fileCacheVersion,
-		FetchedAt: c.nowFunc(),
-		Limits:    limits,
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
@@ -205,9 +246,20 @@ func (c *Client) FetchUsage(ctx context.Context, token string) (*UsageLimits, bo
 	}
 
 	// Check shared file cache
-	if fileCached := c.readFileCache(); fileCached != nil {
+	fileCached, fileStale, claimed := c.readFileCache()
+	if fileCached != nil {
 		c.setCache(fileCached)
-		return fileCached, false, nil
+		return fileCached, fileStale, nil
+	}
+	if claimed {
+		// Another instance is already fetching — return lastGood if available
+		c.cacheLock.RLock()
+		lastGood := c.lastGood
+		c.cacheLock.RUnlock()
+		if lastGood != nil {
+			return lastGood, true, nil
+		}
+		return nil, false, nil
 	}
 
 	// Make API request
@@ -219,9 +271,6 @@ func (c *Client) FetchUsage(ctx context.Context, token string) (*UsageLimits, bo
 		c.cacheLock.RUnlock()
 
 		if lastGood != nil {
-			// Refresh file cache with lastGood so other instances don't
-			// also hit the API and pile on during rate-limit backoff.
-			c.writeFileCache(lastGood)
 			return lastGood, true, err
 		}
 		return nil, false, err
