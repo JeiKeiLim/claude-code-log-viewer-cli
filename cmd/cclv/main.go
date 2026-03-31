@@ -49,6 +49,7 @@ OPTIONS:
   -w, --watch       Watch file for changes (real-time monitoring)
   --live            Alias for --watch
   -L, --follow-latest   Follow newest conversation (requires --watch)
+  -s, --sessions    Watch active sessions for current directory
   -u, --usage       Print usage limits and exit (no TUI)
   -v, --version     Print version information
   -h, --help        Show this help message
@@ -63,6 +64,8 @@ EXAMPLES:
   cclv --color=always file.jsonl | less -R  Force colors in pipe
   cclv --watch conversation.jsonl           Monitor live session
   cclv -w -L conversation.jsonl            Watch and follow latest conversation
+  cclv --sessions                            Watch active sessions for current dir
+  cclv -s                                   Shorthand for --sessions
   cclv --usage                              Quick check on limits
   cclv -u                                   Shorthand for --usage
 
@@ -137,9 +140,14 @@ func main() {
 	liveFlag := flag.Bool("live", false, "Alias for --watch")
 	followLatestFlag := flag.Bool("follow-latest", false, "Follow to newest conversation (requires --watch)")
 	followLatestShortFlag := flag.Bool("L", false, "Follow to newest conversation (requires --watch)")
+	sessionsFlag := flag.Bool("sessions", false, "Watch active sessions for current directory")
+	sessionsShortFlag := flag.Bool("s", false, "Watch active sessions (shorthand)")
 	usageFlag := flag.Bool("usage", false, "Print usage limits and exit")
 	usageShortFlag := flag.Bool("u", false, "Print usage limits and exit (shorthand)")
 	flag.Parse()
+
+	// Combine sessions flags
+	sessionsMode := *sessionsFlag || *sessionsShortFlag
 
 	// Combine watch flags
 	watchMode := *watchFlag || *watchShortFlag || *liveFlag
@@ -156,6 +164,16 @@ func main() {
 	// Handle usage flag - print usage limits and exit
 	if *usageFlag || *usageShortFlag {
 		if err := runUsageMode(*colorFlag); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// Handle sessions mode - launch session dashboard
+	if sessionsMode {
+		configureColorOutput(*colorFlag)
+		if err := runSessionsMode(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/session"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/token"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/usage"
@@ -27,6 +28,7 @@ const (
 	viewConversations
 	viewViewer
 	viewDashboard
+	viewSessionDashboard // Phase 5a: Multi-agent session dashboard
 )
 
 // Usage refresh constants (Story 7.5)
@@ -42,24 +44,26 @@ type NavigationSource int
 const (
 	FromConversationList NavigationSource = iota // Default: viewer opened from conversation list
 	FromDashboard                                // Viewer opened from dashboard pane
+	FromSessionDashboard                         // Viewer opened from session dashboard pane (Phase 5a)
 )
 
 // AppModel is the root Bubbletea model for the interactive mode.
 type AppModel struct {
-	state                viewState
-	projectModel         ProjectModel
-	conversationModel    ConversationModel
-	viewerModel          ViewerModel
-	dashboardModel       DashboardModel // Dashboard view (Story 5.2)
-	selectedProject      types.Project
-	selectedConversation types.Conversation
-	selectedProjects     []types.Project  // For dashboard view (Story 5.1)
-	viewerSource         NavigationSource // Tracks where viewer was opened from (Story 5.5)
-	width                int
-	height               int
-	spinner              spinner.Model
-	loading              bool
-	tokenService         *token.Service
+	state                 viewState
+	projectModel          ProjectModel
+	conversationModel     ConversationModel
+	viewerModel           ViewerModel
+	dashboardModel        DashboardModel        // Dashboard view (Story 5.2)
+	sessionDashboardModel SessionDashboardModel // Session dashboard view (Phase 5a)
+	selectedProject       types.Project
+	selectedConversation  types.Conversation
+	selectedProjects      []types.Project  // For dashboard view (Story 5.1)
+	viewerSource          NavigationSource // Tracks where viewer was opened from (Story 5.5)
+	width                 int
+	height                int
+	spinner               spinner.Model
+	loading               bool
+	tokenService          *token.Service
 
 	// Usage monitoring (Story 7.4)
 	usageBar    *usage.UsageBarModel
@@ -110,6 +114,93 @@ func NewAppModel(projects []types.Project) AppModel {
 	}
 }
 
+// NewAppModelForSessions creates an app model that starts directly in session dashboard mode.
+// projectPath is the decoded filesystem path (e.g., /Users/foo/project).
+// projectDir is the Claude encoded project directory (e.g., ~/.claude/projects/-Users-foo-project).
+func NewAppModelForSessions(projectPath, projectDir string, opts ...SessionDashboardOption) AppModel {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = ListStyles.Loading
+
+	// Initialize token service with soft-fail
+	tokenSvc, _ := token.New()
+
+	// Create session scanner and monitor with defaults
+	scannerInst := session.NewSessionScanner("")
+	monitorInst := session.NewMonitor()
+
+	// Apply options for testing or custom configuration
+	cfg := sessionDashboardConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.scanner != nil {
+		scannerInst = cfg.scanner
+	}
+	if cfg.monitor != nil {
+		monitorInst = cfg.monitor
+	}
+
+	// Build dashboard model options: add dir watcher when available.
+	var dashOpts []SessionDashboardModelOption
+	dirWatcherInst := cfg.dirWatcher
+	if dirWatcherInst == nil {
+		// Create a default dir watcher for real-time session detection.
+		// Errors are non-fatal — the polling scanner provides fallback detection.
+		if dw, err := session.NewSessionDirectoryWatcher(""); err == nil {
+			dirWatcherInst = dw
+		}
+	}
+	if dirWatcherInst != nil {
+		dashOpts = append(dashOpts, WithDashboardDirWatcher(dirWatcherInst))
+	}
+
+	sessionDash := NewSessionDashboardModel(projectPath, projectDir, scannerInst, monitorInst, dashOpts...)
+
+	return AppModel{
+		state:                 viewSessionDashboard,
+		sessionDashboardModel: sessionDash,
+		spinner:               s,
+		loading:               false,
+		tokenService:          tokenSvc,
+		usageBar:              usage.NewUsageBarModel(newUsageBarStyles()),
+		usageClient:           usage.NewClient(),
+	}
+}
+
+// SessionDashboardOption configures the session dashboard.
+type SessionDashboardOption func(*sessionDashboardConfig)
+
+type sessionDashboardConfig struct {
+	scanner    *session.SessionScanner
+	monitor    *session.Monitor
+	dirWatcher *session.SessionDirectoryWatcher
+}
+
+// WithSessionScanner sets a custom session scanner (useful for testing).
+func WithSessionScanner(s *session.SessionScanner) SessionDashboardOption {
+	return func(cfg *sessionDashboardConfig) {
+		cfg.scanner = s
+	}
+}
+
+// WithSessionMonitor sets a custom session monitor (useful for testing).
+func WithSessionMonitor(m *session.Monitor) SessionDashboardOption {
+	return func(cfg *sessionDashboardConfig) {
+		cfg.monitor = m
+	}
+}
+
+// WithSessionDirWatcher sets a custom SessionDirectoryWatcher for real-time
+// file-system event detection. When provided, session file creations and
+// deletions in ~/.claude/sessions/ are immediately mapped to pane lifecycle
+// events without waiting for the polling scanner cycle.
+func WithSessionDirWatcher(w *session.SessionDirectoryWatcher) SessionDashboardOption {
+	return func(cfg *sessionDashboardConfig) {
+		cfg.dirWatcher = w
+	}
+}
+
 // NewAppModelWithError creates an app model showing an error.
 func NewAppModelWithError(err error) AppModel {
 	s := spinner.New()
@@ -135,6 +226,10 @@ func (m AppModel) Init() tea.Cmd {
 	// Request window size to properly initialize the list dimensions
 	// Add usage fetch on startup (Story 7.4 - async, non-blocking)
 	// Add periodic refresh scheduling (Story 7.5)
+	if m.state == viewSessionDashboard {
+		// Phase 5a: Session dashboard mode - start session detection pipeline
+		return tea.Batch(m.sessionDashboardModel.Init(), tea.WindowSize(), m.fetchUsage(), scheduleUsageTick())
+	}
 	return tea.Batch(m.projectModel.Init(), tea.WindowSize(), m.fetchUsage(), scheduleUsageTick())
 }
 
@@ -194,12 +289,44 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newModel, cmd := m.dashboardModel.Update(childMsg)
 			m.dashboardModel = newModel.(DashboardModel)
 			return m, cmd
+		case viewSessionDashboard:
+			// Phase 5a: Forward size to session dashboard
+			m.sessionDashboardModel.SetSize(msg.Width, viewHeight)
+			return m, nil
 		}
 
 	case ProjectSelectedMsg:
-		// User selected a project, load its conversations
-		m.loading = true
+		// User selected a single project — open the session dashboard for that project.
+		// The session dashboard auto-detects active Claude Code sessions (AC 8).
+		// Users can press 'c' in the session dashboard to view the conversation list,
+		// or ESC to return to the project browser.
 		m.selectedProject = msg.Project
+
+		// Create session detection components
+		scannerInst := session.NewSessionScanner("")
+		monitorInst := session.NewMonitor()
+
+		var dashOpts []SessionDashboardModelOption
+		if dw, err := session.NewSessionDirectoryWatcher(""); err == nil {
+			dashOpts = append(dashOpts, WithDashboardDirWatcher(dw))
+		}
+
+		viewHeight := m.height - UsageBarHeight
+		m.sessionDashboardModel = NewSessionDashboardModel(
+			msg.Project.DecodedPath,
+			msg.Project.DirPath,
+			scannerInst,
+			monitorInst,
+			dashOpts...,
+		)
+		m.sessionDashboardModel.SetSize(m.width, viewHeight)
+		m.state = viewSessionDashboard
+		return m, m.sessionDashboardModel.Init()
+
+	case OpenConversationsFromSessionDashboardMsg:
+		// User pressed 'c' in the session dashboard — load conversation list for the project.
+		// The project was captured when ProjectSelectedMsg was originally handled.
+		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.loadConversations())
 
 	case conversationsLoadedMsg:
@@ -295,6 +422,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tokenService != nil {
 			m.tokenService.ClearCache()
 		}
+		if m.viewerSource == FromSessionDashboard {
+			// Phase 5a: Return to session dashboard
+			m.state = viewSessionDashboard
+			m.viewerSource = FromConversationList // Reset for next navigation
+			return m, nil
+		}
 		if m.viewerSource == FromDashboard {
 			m.state = viewDashboard
 			m.viewerSource = FromConversationList // Reset for next navigation
@@ -332,6 +465,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedConversation = types.Conversation{FilePath: msg.FilePath}
 		m.selectedProject = msg.Project
 		m.viewerSource = FromDashboard
+		return m, tea.Batch(m.spinner.Tick, m.loadConversation(msg.FilePath))
+
+	case GoBackFromSessionDashboardMsg:
+		// Phase 5a: User pressed escape in session dashboard, go back to projects
+		m.state = viewProjects
+		return m, nil
+
+	case OpenViewerFromSessionDashboardMsg:
+		// Phase 5a: User pressed Enter on a session pane - open viewer
+		m.loading = true
+		m.selectedConversation = types.Conversation{FilePath: msg.FilePath}
+		m.selectedProject = msg.Project
+		m.viewerSource = FromSessionDashboard
 		return m, tea.Batch(m.spinner.Tick, m.loadConversation(msg.FilePath))
 
 	case ShowToastMsg:
@@ -471,6 +617,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newModel, cmd := m.dashboardModel.Update(msg)
 		m.dashboardModel = newModel.(DashboardModel)
 		return m, cmd
+
+	case viewSessionDashboard:
+		// Phase 5a: Forward messages to session dashboard model
+		newModel, cmd := m.sessionDashboardModel.Update(msg)
+		m.sessionDashboardModel = newModel.(SessionDashboardModel)
+		return m, cmd
 	}
 
 	return m, nil
@@ -494,6 +646,8 @@ func (m AppModel) View() string {
 			contentView = m.viewerModel.View()
 		case viewDashboard:
 			contentView = m.dashboardModel.View()
+		case viewSessionDashboard:
+			contentView = m.sessionDashboardModel.View()
 		default:
 			contentView = m.projectModel.View()
 		}
@@ -699,6 +853,16 @@ func (m AppModel) loadConversationWithWatch(filePath string) tea.Cmd {
 // UsageBarState returns the current state of the usage bar for testing (Story 7.4).
 func (m AppModel) UsageBarState() usage.UsageBarState {
 	return m.usageBar.State()
+}
+
+// SessionDashboardState returns the current session dashboard model for testing (Phase 5a).
+func (m AppModel) SessionDashboardState() SessionDashboardModel {
+	return m.sessionDashboardModel
+}
+
+// State returns the current view state for testing.
+func (m AppModel) State() viewState {
+	return m.state
 }
 
 // handleManualRefresh handles the R key for manual usage refresh (Story 7.5).

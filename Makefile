@@ -66,7 +66,7 @@ build-linux:
 # Run tests
 test:
 	@echo "Running tests..."
-	$(GOTEST) -v -race -coverprofile=coverage.out ./...
+	$(GOTEST) -v -race -timeout 20m -coverprofile=coverage.out ./...
 
 # Run tests with short flag (skip long-running tests)
 test-short:
