@@ -43,11 +43,12 @@ func TestBuildModeSegment(t *testing.T) {
 			want:      "",
 		},
 		{
-			// Note: LIVE now requires non-nil watcher, so watchMode alone returns empty
-			// This is tested separately in TestBuildModeSegmentShowsRAWAndLIVE
-			name:      "watch mode enabled without watcher returns empty",
+			// watchMode=true shows LIVE even without a watcher — this supports the
+			// embedded single-session viewer in the dashboard where the dashboard's
+			// pane watcher forwards events and the viewer's own watcher is nil.
+			name:      "watch mode enabled without watcher shows LIVE",
 			watchMode: true,
-			want:      "",
+			want:      "LIVE",
 		},
 	}
 

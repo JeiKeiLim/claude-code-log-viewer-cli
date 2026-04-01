@@ -1084,6 +1084,9 @@ func TestSessionDashboard_60fps_ViewOutputNonEmpty(t *testing.T) {
 	}
 
 	m.gridDirty = true
+	// Manually trigger view mode detection since panes were added directly
+	// (bypassing handleScanResult which calls updateViewMode automatically).
+	m.ForceUpdateViewMode()
 	output := m.View()
 
 	if output == "" {

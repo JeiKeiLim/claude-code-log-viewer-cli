@@ -51,6 +51,13 @@ type SessionDashboardModel struct {
 	monitorChan    chan session.SessionEvent
 	dirWatcherChan chan session.SessionEvent // Events from SessionDirectoryWatcher
 
+	// View mode: switches between grid, single-session viewer, and zero-session viewer.
+	viewMode             DashboardViewMode
+	latestViewer         *ViewerModel // ViewerModel for zero-session mode (latest conversation)
+	latestLoading        bool         // True while loading the latest conversation for zero-session mode
+	singleSessionViewer  *ViewerModel // ViewerModel for single-session mode (full-screen viewer)
+	singleSessionPaneIdx int          // Global pane index backing the single-session viewer (-1 = none)
+
 	// Dirty-region rendering: only re-render panes that changed.
 	// gridDirty is set when grid layout changes (resize, pane add/remove)
 	// and cleared after View() renders. Since View() uses a value receiver,
@@ -165,18 +172,20 @@ func NewSessionDashboardModel(projectPath, projectDir string, scannerInst *sessi
 	ctx, cancel := context.WithCancel(context.Background())
 
 	m := SessionDashboardModel{
-		projectPath:         projectPath,
-		projectDir:          projectDir,
-		scanner:             scannerInst,
-		monitor:             monitorInst,
-		ctx:                 ctx,
-		cancel:              cancel,
-		subscriptionsActive: true,
-		wg:                  &sync.WaitGroup{},
-		scanResultChan:      make(chan session.ScanResult, 4),
-		monitorChan:         make(chan session.SessionEvent, 16),
-		gridDirty:           true, // Initial render needed
-		frameGovernor:       NewFrameRateGovernor(),
+		projectPath:          projectPath,
+		projectDir:           projectDir,
+		scanner:              scannerInst,
+		monitor:              monitorInst,
+		ctx:                  ctx,
+		cancel:               cancel,
+		subscriptionsActive:  true,
+		wg:                   &sync.WaitGroup{},
+		scanResultChan:       make(chan session.ScanResult, 4),
+		monitorChan:          make(chan session.SessionEvent, 16),
+		gridDirty:            true, // Initial render needed
+		frameGovernor:        NewFrameRateGovernor(),
+		viewMode:             DashboardViewZeroSessions, // Start in zero-session mode (no panes yet)
+		singleSessionPaneIdx: -1,                        // No single-session pane
 	}
 
 	for _, opt := range opts {
@@ -321,6 +330,11 @@ func (m SessionDashboardModel) Init() tea.Cmd {
 	if m.dirWatcher != nil {
 		cmds = append(cmds, m.startDirWatcherCmd())
 	}
+	// Start with zero-session mode: load the latest conversation immediately
+	if m.projectDir != "" {
+		cmds = append(cmds, loadLatestConversationCmd(m.projectDir))
+		m.latestLoading = true
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -440,6 +454,13 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.SetSize(msg.Width, msg.Height)
+		// Forward resize to embedded viewers if active
+		if m.latestViewer != nil {
+			m.latestViewer.SetSize(msg.Width, msg.Height)
+		}
+		if m.singleSessionViewer != nil {
+			m.singleSessionViewer.SetSize(msg.Width, msg.Height)
+		}
 		m.markGridDirty() // Resize invalidates entire grid
 		for i := range m.panes {
 			if len(m.panes[i].entries) > 0 {
@@ -454,6 +475,32 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// In zero-session mode, forward all keys to the embedded viewer
+		// except esc/q which should exit the dashboard.
+		if m.viewMode == DashboardViewZeroSessions && m.latestViewer != nil {
+			if msg.String() == "esc" || msg.String() == "q" {
+				m.closeAll()
+				return m, func() tea.Msg { return GoBackFromSessionDashboardMsg{} }
+			}
+			newViewer, cmd := m.latestViewer.Update(msg)
+			v := newViewer.(ViewerModel)
+			m.latestViewer = &v
+			return m, cmd
+		}
+
+		// In single-session mode, forward all keys to the embedded viewer
+		// except esc/q which should exit the dashboard.
+		if m.viewMode == DashboardViewSingleSession && m.singleSessionViewer != nil {
+			if msg.String() == "esc" || msg.String() == "q" {
+				m.closeAll()
+				return m, func() tea.Msg { return GoBackFromSessionDashboardMsg{} }
+			}
+			newViewer, cmd := m.singleSessionViewer.Update(msg)
+			v := newViewer.(ViewerModel)
+			m.singleSessionViewer = &v
+			return m, cmd
+		}
+
 		switch msg.String() {
 		case "esc", "q":
 			m.closeAll()
@@ -535,6 +582,9 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return OpenConversationsFromSessionDashboardMsg{Project: project}
 			}
 		}
+
+	case latestConversationLoadedMsg:
+		return m.handleLatestConversationLoaded(msg)
 
 	case sessionScanResultMsg:
 		return m.handleScanResult(msg.result)
@@ -723,6 +773,11 @@ func (m SessionDashboardModel) handleScanResult(result session.ScanResult) (tea.
 		}
 	}
 
+	// Detect view mode transitions based on current session count
+	if transitionCmd := m.updateViewMode(); transitionCmd != nil {
+		cmds = append(cmds, transitionCmd)
+	}
+
 	if len(cmds) > 0 {
 		return m, tea.Batch(cmds...)
 	}
@@ -804,9 +859,18 @@ func (m SessionDashboardModel) addSessionPane(sess session.ActiveSession) (tea.M
 	m.markGridDirty()
 	m.recalcPaneSizes()
 
+	// Check for view mode transition after pane addition
+	var cmds []tea.Cmd
+	if transitionCmd := m.updateViewMode(); transitionCmd != nil {
+		cmds = append(cmds, transitionCmd)
+	}
+
 	// Load content for this pane
 	if jsonlPath != "" {
-		return m, loadSessionPaneContentCmd(sess.Meta.SessionID, jsonlPath)
+		cmds = append(cmds, loadSessionPaneContentCmd(sess.Meta.SessionID, jsonlPath))
+	}
+	if len(cmds) > 0 {
+		return m, tea.Batch(cmds...)
 	}
 	return m, nil
 }
@@ -840,6 +904,11 @@ func (m SessionDashboardModel) handleSessionClosed(event session.SessionEvent) (
 			m.recalcPaneSizes()
 			break
 		}
+	}
+
+	// Check for view mode transition after pane removal
+	if transitionCmd := m.updateViewMode(); transitionCmd != nil {
+		return m, transitionCmd
 	}
 
 	return m, nil
@@ -891,6 +960,14 @@ func (m SessionDashboardModel) handlePaneContentLoaded(msg sessionPaneContentLoa
 		}
 	}
 
+	// If in single-session mode and the viewer hasn't been created yet
+	// (because the pane was still loading during transition), create it now.
+	if m.viewMode == DashboardViewSingleSession && m.singleSessionViewer == nil && idx == m.singleSessionPaneIdx {
+		viewer := createSingleSessionViewer(pane.entries, pane.parseErrors, pane.jsonlPath, pane.session.Meta.SessionID, m.width, m.height)
+		m.singleSessionViewer = &viewer
+		return m, m.singleSessionViewer.Init()
+	}
+
 	return m, nil
 }
 
@@ -908,6 +985,15 @@ func (m SessionDashboardModel) handleWatcherEvent(msg sessionPaneWatcherEventMsg
 		pane.entries = append(pane.entries, event.Entries...)
 		pane.content = pane.renderContent()
 		pane.dirty = true
+
+		// In single-session mode, forward new entries to the embedded viewer
+		// so it stays in sync with the backing pane's live data.
+		if m.viewMode == DashboardViewSingleSession && m.singleSessionViewer != nil && idx == m.singleSessionPaneIdx {
+			newViewer, cmd := m.singleSessionViewer.Update(event)
+			v := newViewer.(ViewerModel)
+			m.singleSessionViewer = &v
+			return m, cmd
+		}
 	case watcher.FileResetMsg:
 		// Reload — pane will be marked dirty when content loads
 		return m, loadSessionPaneContentCmd(pane.session.Meta.SessionID, pane.jsonlPath)
@@ -1147,8 +1233,35 @@ func (m SessionDashboardModel) View() string {
 		defer m.frameGovernor.FrameEnd()
 	}
 
+	if m.viewMode == DashboardViewZeroSessions {
+		// Zero sessions: show latest conversation via embedded ViewerModel
+		if m.latestLoading {
+			waiting := Styles.Muted.Render("Loading latest conversation...")
+			helpText := Styles.HelpText.Render(sessionDashboardHelpText)
+			return lipgloss.JoinVertical(lipgloss.Left, waiting, helpText)
+		}
+		if m.latestViewer != nil {
+			return m.latestViewer.View()
+		}
+		// No conversations found - show fallback message
+		waiting := Styles.Muted.Render("No conversations found. Waiting for active Claude Code sessions...")
+		helpText := Styles.HelpText.Render(sessionDashboardHelpText)
+		return lipgloss.JoinVertical(lipgloss.Left, waiting, helpText)
+	}
+
+	if m.viewMode == DashboardViewSingleSession {
+		// Single session: show full-screen ViewerModel
+		if m.singleSessionViewer != nil {
+			return m.singleSessionViewer.View()
+		}
+		// Viewer not yet created (pane still loading)
+		waiting := Styles.Muted.Render("Loading session conversation...")
+		helpText := Styles.HelpText.Render(sessionDashboardHelpText)
+		return lipgloss.JoinVertical(lipgloss.Left, waiting, helpText)
+	}
+
 	if len(m.panes) == 0 {
-		// No active sessions - show waiting message
+		// No active sessions and not in zero-session mode (shouldn't normally reach here)
 		waiting := Styles.Muted.Render("Waiting for active Claude Code sessions...")
 		helpText := Styles.HelpText.Render(sessionDashboardHelpText)
 		return lipgloss.JoinVertical(lipgloss.Left, waiting, helpText)

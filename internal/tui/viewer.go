@@ -1090,7 +1090,7 @@ func (m ViewerModel) buildModeSegment() string {
 	if m.rawMode {
 		modes = append(modes, "RAW")
 	}
-	if m.watchMode && m.watcher != nil {
+	if m.watchMode {
 		modes = append(modes, "LIVE")
 	}
 	// Follow-latest indicator (Story 11.2)
