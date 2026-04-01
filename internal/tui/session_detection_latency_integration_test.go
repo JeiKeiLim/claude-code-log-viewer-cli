@@ -160,9 +160,12 @@ func TestIntegration_Scanner_DetectionUnder2Seconds(t *testing.T) {
 	const sessionID = "scanner-latency-session"
 
 	// Use 1.5 s scan interval — realistic (~2 s default) but finite.
+	// WithJSONLBaseDir directs the scanner to projectDir (temp dir) rather than
+	// the real ~/.claude/projects tree, which test sessions do not populate.
 	sc := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(integrationPIDChecker{}),
 		session.WithScanInterval(1500*time.Millisecond),
+		session.WithJSONLBaseDir(projectDir),
 	)
 	mon := session.NewMonitor(
 		session.WithMonitorPIDChecker(integrationPIDChecker{}),
@@ -220,6 +223,7 @@ func TestIntegration_Scanner_ConsistentDetectionUnder2Seconds(t *testing.T) {
 			sc := session.NewSessionScanner(sessDir,
 				session.WithScannerPIDChecker(integrationPIDChecker{}),
 				session.WithScanInterval(scanInterval),
+				session.WithJSONLBaseDir(projectDir),
 			)
 			mon := session.NewMonitor(
 				session.WithMonitorPIDChecker(integrationPIDChecker{}),
@@ -426,6 +430,7 @@ func TestIntegration_MultipleSessionsAllDetectedUnder2Seconds(t *testing.T) {
 	sc := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(integrationPIDChecker{}),
 		session.WithScanInterval(1000*time.Millisecond),
+		session.WithJSONLBaseDir(projectDir),
 	)
 	mon := session.NewMonitor(
 		session.WithMonitorPIDChecker(integrationPIDChecker{}),
@@ -656,7 +661,16 @@ func TestIntegration_Registry_DashboardLatency_Under2Seconds(t *testing.T) {
 		WithDashboardDirWatcher(dw),
 	)
 	m.SetSize(120, 40)
+	// Create JSONL for the dashboard's content loader.
 	makeJSONLFile(t, projectDir, sessionID)
+	// The registry's internal scanner uses CWDToProjectDir(projectPath) to locate
+	// JSONL files. Create the file there too so the registry detects the session.
+	registryJSONLDir := session.CWDToProjectDir(projectPath)
+	if err := os.MkdirAll(registryJSONLDir, 0755); err != nil {
+		t.Fatalf("mkdir registry JSONL dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(registryJSONLDir) })
+	makeJSONLFile(t, registryJSONLDir, sessionID)
 
 	// Bridge Registry events to the dashboard's dir-watcher channel.
 	go func() {
@@ -718,6 +732,7 @@ func TestIntegration_SessionClose_PaneRemovedWithin5Seconds(t *testing.T) {
 	sc := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(checker),
 		session.WithScanInterval(500*time.Millisecond),
+		session.WithJSONLBaseDir(projectDir),
 	)
 	mon := session.NewMonitor(
 		session.WithMonitorPIDChecker(checker),
@@ -840,6 +855,7 @@ func TestIntegration_NineSessions_AllDetectedUnder2Seconds(t *testing.T) {
 	sc := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(integrationPIDChecker{}),
 		session.WithScanInterval(1000*time.Millisecond),
+		session.WithJSONLBaseDir(projectDir),
 	)
 	mon := session.NewMonitor(
 		session.WithMonitorPIDChecker(integrationPIDChecker{}),
@@ -995,6 +1011,7 @@ func TestIntegration_ThreeSessions_StreamingInSplitPanes(t *testing.T) {
 	sc := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(integrationPIDChecker{}),
 		session.WithScanInterval(1000*time.Millisecond),
+		session.WithJSONLBaseDir(projectDir),
 	)
 	mon := session.NewMonitor(
 		session.WithMonitorPIDChecker(integrationPIDChecker{}),
@@ -1079,6 +1096,7 @@ func TestIntegration_ThreeSessions_ConsistentStreaming(t *testing.T) {
 			sc := session.NewSessionScanner(sessDir,
 				session.WithScannerPIDChecker(integrationPIDChecker{}),
 				session.WithScanInterval(1000*time.Millisecond),
+				session.WithJSONLBaseDir(projectDir),
 			)
 			mon := session.NewMonitor(
 				session.WithMonitorPIDChecker(integrationPIDChecker{}),

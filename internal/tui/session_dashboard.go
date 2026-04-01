@@ -20,7 +20,7 @@ import (
 )
 
 // sessionDashboardHelpText is the keyboard shortcut guide for session dashboard.
-const sessionDashboardHelpText = "arrows/hjkl:nav • Enter:open • c:conversations • Esc:back • auto-detecting sessions"
+const sessionDashboardHelpText = "arrows/hjkl:nav • [/]:page • Enter:open • c:conversations • Esc:back • auto-detecting sessions"
 
 // MaxSessionPanes is the maximum number of concurrent session panes (3x3 grid).
 const MaxSessionPanes = 9
@@ -56,6 +56,9 @@ type SessionDashboardModel struct {
 	// and cleared after View() renders. Since View() uses a value receiver,
 	// gridDirty is cleared by Update() after returning from handlers that set it.
 	gridDirty bool
+
+	// Pagination: currentPage is zero-indexed page number for the 3x3 grid.
+	currentPage int
 
 	// Frame-rate governor: tracks frame timing and skips non-essential
 	// redraws when rendering exceeds the 16ms frame budget.
@@ -181,6 +184,69 @@ func NewSessionDashboardModel(projectPath, projectDir string, scannerInst *sessi
 	}
 
 	return m
+}
+
+// TotalPages returns the total number of pages needed to display all panes.
+// Each page holds up to MaxSessionPanes (9) panes in a 3x3 grid.
+func (m *SessionDashboardModel) TotalPages() int {
+	if len(m.panes) == 0 {
+		return 1
+	}
+	return (len(m.panes) + MaxSessionPanes - 1) / MaxSessionPanes
+}
+
+// CurrentPagePanes returns the slice of panes for the current page.
+func (m *SessionDashboardModel) CurrentPagePanes() []SessionPaneModel {
+	total := len(m.panes)
+	if total == 0 {
+		return nil
+	}
+	start := m.currentPage * MaxSessionPanes
+	if start >= total {
+		return nil
+	}
+	end := start + MaxSessionPanes
+	if end > total {
+		end = total
+	}
+	return m.panes[start:end]
+}
+
+// clampCurrentPage ensures currentPage is within valid bounds.
+func (m *SessionDashboardModel) clampCurrentPage() {
+	totalPages := m.TotalPages()
+	if m.currentPage >= totalPages {
+		m.currentPage = totalPages - 1
+	}
+	if m.currentPage < 0 {
+		m.currentPage = 0
+	}
+}
+
+// navigatePageForward moves to the next page if available.
+// Returns true if the page changed.
+func (m *SessionDashboardModel) navigatePageForward() bool {
+	if m.currentPage < m.TotalPages()-1 {
+		m.currentPage++
+		m.focusIndex = 0
+		m.markGridDirty()
+		m.markAllPanesDirty()
+		return true
+	}
+	return false
+}
+
+// navigatePageBack moves to the previous page if available.
+// Returns true if the page changed.
+func (m *SessionDashboardModel) navigatePageBack() bool {
+	if m.currentPage > 0 {
+		m.currentPage--
+		m.focusIndex = 0
+		m.markGridDirty()
+		m.markAllPanesDirty()
+		return true
+	}
+	return false
 }
 
 // markPaneDirty marks a specific pane as needing re-rendering.
@@ -396,37 +462,42 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			oldFocus := m.focusIndex
 			m.focusIndex = m.moveFocus("up")
 			if oldFocus != m.focusIndex {
-				m.markPaneDirty(oldFocus)
-				m.markPaneDirty(m.focusIndex)
+				pageStart := m.currentPage * MaxSessionPanes
+				m.markPaneDirty(pageStart + oldFocus)
+				m.markPaneDirty(pageStart + m.focusIndex)
 			}
 			return m, nil
 		case "down", "j":
 			oldFocus := m.focusIndex
 			m.focusIndex = m.moveFocus("down")
 			if oldFocus != m.focusIndex {
-				m.markPaneDirty(oldFocus)
-				m.markPaneDirty(m.focusIndex)
+				pageStart := m.currentPage * MaxSessionPanes
+				m.markPaneDirty(pageStart + oldFocus)
+				m.markPaneDirty(pageStart + m.focusIndex)
 			}
 			return m, nil
 		case "left", "h":
 			oldFocus := m.focusIndex
 			m.focusIndex = m.moveFocus("left")
 			if oldFocus != m.focusIndex {
-				m.markPaneDirty(oldFocus)
-				m.markPaneDirty(m.focusIndex)
+				pageStart := m.currentPage * MaxSessionPanes
+				m.markPaneDirty(pageStart + oldFocus)
+				m.markPaneDirty(pageStart + m.focusIndex)
 			}
 			return m, nil
 		case "right", "l":
 			oldFocus := m.focusIndex
 			m.focusIndex = m.moveFocus("right")
 			if oldFocus != m.focusIndex {
-				m.markPaneDirty(oldFocus)
-				m.markPaneDirty(m.focusIndex)
+				pageStart := m.currentPage * MaxSessionPanes
+				m.markPaneDirty(pageStart + oldFocus)
+				m.markPaneDirty(pageStart + m.focusIndex)
 			}
 			return m, nil
 		case "enter":
-			if m.focusIndex >= 0 && m.focusIndex < len(m.panes) {
-				pane := m.panes[m.focusIndex]
+			globalIdx := m.currentPage*MaxSessionPanes + m.focusIndex
+			if globalIdx >= 0 && globalIdx < len(m.panes) {
+				pane := m.panes[globalIdx]
 				if pane.jsonlPath == "" {
 					return m, nil
 				}
@@ -441,6 +512,13 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			return m, nil
+
+		case "[":
+			m.navigatePageBack()
+			return m, nil
+		case "]":
+			m.navigatePageForward()
 			return m, nil
 
 		case "c":
@@ -483,8 +561,9 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.frameGovernor != nil && m.frameGovernor.ShouldSkipNonEssential() {
 			// Under budget pressure: only allow essential dirty panes.
 			// Keep gridDirty and focused pane dirty; clear others.
+			globalFocusIdx := m.currentPage*MaxSessionPanes + m.focusIndex
 			for i := range m.panes {
-				if i != m.focusIndex && m.panes[i].dirty && !m.gridDirty {
+				if i != globalFocusIdx && m.panes[i].dirty && !m.gridDirty {
 					m.panes[i].dirty = false
 					m.frameGovernor.RecordSkip()
 				}
@@ -518,6 +597,8 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // handleScanResult processes a scan result and adds/removes panes.
+// On each scan tick, panes whose PIDs are no longer in the scan results
+// (i.e., dead/ended sessions) are removed from the dashboard.
 func (m SessionDashboardModel) handleScanResult(result session.ScanResult) (tea.Model, tea.Cmd) {
 	if result.Err != nil {
 		return m, nil
@@ -526,7 +607,81 @@ func (m SessionDashboardModel) handleScanResult(result session.ScanResult) (tea.
 	// Filter sessions for our project
 	projectSessions := m.filterSessionsForProject(result.Sessions)
 
-	// Find new sessions (not yet displayed as panes)
+	// Deduplicate sessions sharing the same sessionId, keeping only the
+	// latest PID. This prevents ghost panes when a Claude Code process
+	// restarts and reuses the same sessionId with a new PID.
+	projectSessions = session.DeduplicateBySessionID(projectSessions)
+
+	// Build set of live PIDs from scan results for dead session filtering.
+	// The scanner already filters out dead PIDs (PID liveness check in Scan()),
+	// so any pane whose PID is absent from a full scan has exited.
+	// Sessions in the SessionRemoved state (5+ minutes of no JSONL writes) are
+	// excluded from the live set so their panes are removed from the dashboard.
+	livePIDs := make(map[int]bool, len(projectSessions))
+	sessionByPID := make(map[int]session.ActiveSession, len(projectSessions))
+	for _, sess := range projectSessions {
+		if sess.State != session.SessionRemoved {
+			livePIDs[sess.Meta.PID] = true
+		}
+		sessionByPID[sess.Meta.PID] = sess
+	}
+
+	// Update session state on existing panes so lifecycle transitions
+	// (Active → Idle → Removed) are reflected in the dashboard.
+	for i := range m.panes {
+		pid := m.panes[i].session.Meta.PID
+		if updated, ok := sessionByPID[pid]; ok {
+			m.panes[i].session.State = updated.State
+			m.panes[i].session.JSONLLastModified = updated.JSONLLastModified
+		}
+	}
+
+	// Use the IsFullScan flag from the scanner to determine whether this result
+	// represents a complete directory scan. Full scans enumerate ALL alive sessions,
+	// so any pane whose PID is absent has truly exited (dead PID via syscall.Kill).
+	// This ensures dead PIDs are removed immediately regardless of JSONL timing,
+	// even when ALL sessions die simultaneously.
+	// Non-full-scan results (e.g., synthetic single-session events) only add panes
+	// and never trigger removal, to avoid false positives.
+	isFullScan := result.IsFullScan && len(m.panes) > 0
+
+	// Remove panes for dead/ended sessions whose PIDs are no longer alive.
+	removedAny := false
+	if isFullScan {
+		for i := len(m.panes) - 1; i >= 0; i-- {
+			pid := m.panes[i].session.Meta.PID
+			if !livePIDs[pid] {
+				// Close watcher for dead session
+				if m.panes[i].watcher != nil {
+					_ = m.panes[i].watcher.Close()
+				}
+				// Untrack from monitor
+				m.monitor.UntrackSession(pid)
+				// Remove pane
+				m.panes = append(m.panes[:i], m.panes[i+1:]...)
+				removedAny = true
+			}
+		}
+	}
+
+	if removedAny {
+		// Auto-retreat: if current page is now empty, go back to last valid page
+		m.clampCurrentPage()
+
+		// Adjust focus within current page
+		visibleCount := m.currentPagePaneCount()
+		if visibleCount == 0 {
+			m.focusIndex = 0
+		} else if m.focusIndex >= visibleCount {
+			m.focusIndex = visibleCount - 1
+		}
+		m.markGridDirty()
+		m.recalcPaneSizes()
+	}
+
+	// Find new sessions (not yet displayed as panes).
+	// Sessions in SessionRemoved state are not added as new panes — they have
+	// already exceeded the 5-minute inactivity removal threshold.
 	var cmds []tea.Cmd
 	existingPIDs := make(map[int]bool)
 	for _, pane := range m.panes {
@@ -537,8 +692,10 @@ func (m SessionDashboardModel) handleScanResult(result session.ScanResult) (tea.
 		if existingPIDs[sess.Meta.PID] {
 			continue // Already have pane for this session
 		}
-		if len(m.panes) >= MaxSessionPanes {
-			break // Max panes reached
+
+		// Do not add panes for sessions already past the removal threshold.
+		if sess.State == session.SessionRemoved {
+			continue
 		}
 
 		// Track in monitor for PID liveness checking
@@ -580,15 +737,76 @@ func (m SessionDashboardModel) handleScanResult(result session.ScanResult) (tea.
 func (m SessionDashboardModel) handleDirWatcherEvent(event session.SessionEvent) (tea.Model, tea.Cmd) {
 	switch event.Type {
 	case session.SessionOpened:
-		// Synthesise a single-session scan result so we reuse the deduplication
-		// and project-filter logic in handleScanResult.
-		syntheticResult := session.ScanResult{
-			Sessions: []session.ActiveSession{event.Session},
-		}
-		return m.handleScanResult(syntheticResult)
+		// Add a single new session pane without triggering dead-session removal.
+		// handleScanResult performs full reconciliation (removing panes not in
+		// the scan result), which would incorrectly remove all other panes when
+		// called with a synthetic single-session result. Instead, use the
+		// dedicated addSessionPane helper for incremental pane addition.
+		return m.addSessionPane(event.Session)
 
 	case session.SessionClosed:
 		return m.handleSessionClosed(event)
+	}
+	return m, nil
+}
+
+// addSessionPane adds a single new session pane if it passes the project filter
+// and isn't already displayed. This is used for incremental session additions
+// (e.g., from dir watcher events) that should not trigger dead-session removal.
+func (m SessionDashboardModel) addSessionPane(sess session.ActiveSession) (tea.Model, tea.Cmd) {
+	// Filter for our project
+	projectSessions := m.filterSessionsForProject([]session.ActiveSession{sess})
+	if len(projectSessions) == 0 {
+		return m, nil
+	}
+	sess = projectSessions[0]
+
+	// Check if already displayed (by PID)
+	for _, pane := range m.panes {
+		if pane.session.Meta.PID == sess.Meta.PID {
+			return m, nil // Already have pane for this session
+		}
+	}
+
+	// Deduplicate by sessionId: if a pane with the same sessionId already
+	// exists but with an older (lower) PID, remove the old pane so the new
+	// one replaces it. This handles process restarts that reuse a sessionId.
+	if sess.Meta.SessionID != "" {
+		for i := len(m.panes) - 1; i >= 0; i-- {
+			if m.panes[i].session.Meta.SessionID == sess.Meta.SessionID &&
+				m.panes[i].session.Meta.PID < sess.Meta.PID {
+				// Close watcher for the superseded pane
+				if m.panes[i].watcher != nil {
+					_ = m.panes[i].watcher.Close()
+				}
+				m.monitor.UntrackSession(m.panes[i].session.Meta.PID)
+				m.panes = append(m.panes[:i], m.panes[i+1:]...)
+			}
+		}
+	}
+
+	// Track in monitor for PID liveness checking
+	m.monitor.TrackSession(sess)
+
+	// Create new pane
+	pane := SessionPaneModel{
+		session: sess,
+		loading: true,
+	}
+
+	// Determine JSONL path from session metadata
+	jsonlPath := m.resolveJSONLPath(sess)
+	pane.jsonlPath = jsonlPath
+
+	m.panes = append(m.panes, pane)
+
+	// Recalculate dimensions for new pane count — grid layout changed
+	m.markGridDirty()
+	m.recalcPaneSizes()
+
+	// Load content for this pane
+	if jsonlPath != "" {
+		return m, loadSessionPaneContentCmd(sess.Meta.SessionID, jsonlPath)
 	}
 	return m, nil
 }
@@ -606,9 +824,15 @@ func (m SessionDashboardModel) handleSessionClosed(event session.SessionEvent) (
 			// Remove pane
 			m.panes = append(m.panes[:i], m.panes[i+1:]...)
 
-			// Adjust focus
-			if m.focusIndex >= len(m.panes) && m.focusIndex > 0 {
-				m.focusIndex = len(m.panes) - 1
+			// Auto-retreat: if current page is now empty, go back to last valid page
+			m.clampCurrentPage()
+
+			// Adjust focus within current page
+			visibleCount := m.currentPagePaneCount()
+			if visibleCount == 0 {
+				m.focusIndex = 0
+			} else if m.focusIndex >= visibleCount {
+				m.focusIndex = visibleCount - 1
 			}
 
 			// Recalculate dimensions — grid layout changed
@@ -930,12 +1154,30 @@ func (m SessionDashboardModel) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, waiting, helpText)
 	}
 
-	gridHeight := m.height - 1
+	// Pagination: determine which panes are visible on the current page
+	pageStart := m.currentPage * MaxSessionPanes
+	if pageStart >= len(m.panes) {
+		pageStart = 0 // Safety fallback
+	}
+	pageEnd := pageStart + MaxSessionPanes
+	if pageEnd > len(m.panes) {
+		pageEnd = len(m.panes)
+	}
+	visiblePanes := m.panes[pageStart:pageEnd]
+	visibleCount := len(visiblePanes)
+
+	// Reserve space for help text and optional page indicator
+	reservedLines := 1
+	totalPages := m.TotalPages()
+	if totalPages > 1 {
+		reservedLines = 2 // Help text + page indicator
+	}
+	gridHeight := m.height - reservedLines
 	if gridHeight < 3 {
 		gridHeight = 3
 	}
 
-	layout := CalculateGridLayout(len(m.panes), m.width, gridHeight)
+	layout := CalculateGridLayout(visibleCount, m.width, gridHeight)
 	if layout.Rows == 0 || layout.Cols == 0 {
 		return ""
 	}
@@ -951,8 +1193,10 @@ func (m SessionDashboardModel) View() string {
 		panesInRow := rowPanes[r]
 		var colViews []string
 		for _, pl := range panesInRow {
-			if pl.Index < len(m.panes) {
-				pane := &m.panes[pl.Index]
+			if pl.Index < visibleCount {
+				// Map page-local index to global pane index
+				globalIdx := pageStart + pl.Index
+				pane := &m.panes[globalIdx]
 				pane.width = pl.Width
 				pane.height = pl.Height
 				focused := pl.Index == m.focusIndex
@@ -976,7 +1220,16 @@ func (m SessionDashboardModel) View() string {
 	grid := lipgloss.JoinVertical(lipgloss.Left, rowViews...)
 	helpText := Styles.HelpText.Render(sessionDashboardHelpText)
 
-	result := lipgloss.JoinVertical(lipgloss.Left, grid, helpText)
+	// Build page indicator if multiple pages exist
+	var parts []string
+	parts = append(parts, grid)
+	if totalPages > 1 {
+		pageIndicator := Styles.Muted.Render("Page " + itoa(m.currentPage+1) + "/" + itoa(totalPages))
+		parts = append(parts, pageIndicator)
+	}
+	parts = append(parts, helpText)
+
+	result := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
 	// Note: pane.cachedView, pane.dirty, and pane.lastFocused updates above persist
 	// because slices share the underlying array between value receiver and caller.
@@ -993,29 +1246,35 @@ func (m *SessionDashboardModel) SetSize(width, height int) {
 }
 
 // recalcPaneSizes recalculates pane dimensions using the adaptive grid layout engine.
+// Only recalculates for panes on the current page since those are the ones rendered.
 // Each pane gets its own size from CalculateGridLayout, which distributes
 // remainder pixels and handles non-uniform last rows.
 func (m *SessionDashboardModel) recalcPaneSizes() {
-	if len(m.panes) == 0 {
+	visibleCount := m.currentPagePaneCount()
+	if visibleCount == 0 {
 		return
 	}
+	pageStart := m.currentPage * MaxSessionPanes
 	gridHeight := m.height - 1
 	if gridHeight < 3 {
 		gridHeight = 3
 	}
-	layout := CalculateGridLayout(len(m.panes), m.width, gridHeight)
+	layout := CalculateGridLayout(visibleCount, m.width, gridHeight)
 	for _, pl := range layout.Panes {
-		if pl.Index < len(m.panes) {
-			m.panes[pl.Index].width = pl.Width
-			m.panes[pl.Index].height = pl.Height
+		globalIdx := pageStart + pl.Index
+		if globalIdx < len(m.panes) {
+			m.panes[globalIdx].width = pl.Width
+			m.panes[globalIdx].height = pl.Height
 		}
 	}
 }
 
 // moveFocus calculates new focus index for given direction.
 // Uses CalculateGridLayout to determine grid structure for navigation.
+// focusIndex is page-local (0-based within the current page's visible panes).
 func (m *SessionDashboardModel) moveFocus(direction string) int {
-	if len(m.panes) <= 1 {
+	visibleCount := m.currentPagePaneCount()
+	if visibleCount <= 1 {
 		return 0
 	}
 
@@ -1023,7 +1282,7 @@ func (m *SessionDashboardModel) moveFocus(direction string) int {
 	if gridHeight < 3 {
 		gridHeight = 3
 	}
-	layout := CalculateGridLayout(len(m.panes), m.width, gridHeight)
+	layout := CalculateGridLayout(visibleCount, m.width, gridHeight)
 	rows := layout.Rows
 	cols := layout.Cols
 
@@ -1046,15 +1305,43 @@ func (m *SessionDashboardModel) moveFocus(direction string) int {
 	}
 
 	newIdx := row*cols + col
-	if newIdx >= len(m.panes) {
-		newIdx = len(m.panes) - 1
+	if newIdx >= visibleCount {
+		newIdx = visibleCount - 1
 	}
 	return newIdx
+}
+
+// currentPagePaneCount returns the number of panes on the current page.
+func (m *SessionDashboardModel) currentPagePaneCount() int {
+	total := len(m.panes)
+	if total == 0 {
+		return 0
+	}
+	start := m.currentPage * MaxSessionPanes
+	if start >= total {
+		return 0
+	}
+	end := start + MaxSessionPanes
+	if end > total {
+		end = total
+	}
+	return end - start
 }
 
 // PaneCount returns the number of active panes.
 func (m SessionDashboardModel) PaneCount() int {
 	return len(m.panes)
+}
+
+// CurrentPage returns the current page index (zero-based). Exported for testing.
+func (m SessionDashboardModel) CurrentPage() int {
+	return m.currentPage
+}
+
+// SetCurrentPage sets the current page index (zero-based). Exported for testing.
+func (m *SessionDashboardModel) SetCurrentPage(page int) {
+	m.currentPage = page
+	m.clampCurrentPage()
 }
 
 // FrameGovernor returns the frame-rate governor for metrics and testing.
@@ -1117,7 +1404,13 @@ func (p SessionPaneModel) ViewWithFocus(focused bool) string {
 		displayName = TruncateToWidth(displayName, maxNameLen-3) + "..."
 	}
 
-	header := PaneHeaderStyle.
+	// Use warning style for idle sessions
+	headerStyle := PaneHeaderStyle
+	if p.session.State == session.SessionIdle {
+		headerStyle = PaneIdleHeaderStyle
+	}
+
+	header := headerStyle.
 		Width(innerWidth).
 		Render(displayName)
 
@@ -1159,6 +1452,10 @@ func (p SessionPaneModel) ViewWithFocus(focused bool) string {
 	}
 	innerContent := strings.Join(lines, "\n")
 
+	// Idle sessions always use the warning border color regardless of focus.
+	if p.session.State == session.SessionIdle {
+		return addBorderWithStyle(innerContent, p.width, PaneIdleBorderColor)
+	}
 	if focused {
 		return addBorderWithStyle(innerContent, p.width, PaneFocusedBorderColor)
 	}
@@ -1201,13 +1498,18 @@ func (m *SessionDashboardModel) PaneEntriesCount(idx int) int {
 }
 
 // paneDisplayName returns a compact display name for a session pane.
+// Idle sessions include a visual "⏸ IDLE" suffix to distinguish them from active sessions.
 func paneDisplayName(sess session.ActiveSession) string {
 	pid := sess.Meta.PID
 	kind := sess.Meta.Kind
 	if kind == "" {
 		kind = "session"
 	}
-	return strings.Join([]string{kind, "[", itoa(pid), "]"}, "")
+	name := strings.Join([]string{kind, "[", itoa(pid), "]"}, "")
+	if sess.State == session.SessionIdle {
+		name += " ⏸ IDLE"
+	}
+	return name
 }
 
 // itoa converts int to string without importing strconv.

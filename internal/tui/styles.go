@@ -436,6 +436,15 @@ var (
 	// Pane focus styles (Story 5.5)
 	PaneFocusedBorderColor   = DefaultTheme.Accent // Amber for focused pane
 	PaneUnfocusedBorderColor = DefaultTheme.Muted  // Gray for unfocused pane
+
+	// Pane idle warning style (session lifecycle)
+	PaneIdleBorderColor = WarningColor // Amber/yellow border for idle sessions
+
+	// PaneIdleHeaderStyle is the header style for idle session panes.
+	PaneIdleHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Align(lipgloss.Center).
+				Foreground(WarningColor)
 )
 
 // multipleNewlinesRe matches 3+ consecutive newlines for normalization (Story 4.5).

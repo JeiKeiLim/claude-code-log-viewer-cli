@@ -32,6 +32,9 @@ func (c *mockPIDCheckerForApp) IsAlive(pid int) bool {
 }
 
 // createTestSessionFile creates a session JSON file in the given directory.
+// When cwd and sessionID are both non-empty it also creates the corresponding
+// JSONL log file in the scanner-derived location so the scanner's
+// JSONL-existence check passes.
 func createTestSessionFile(t *testing.T, dir string, pid int, sessionID, cwd string) string {
 	t.Helper()
 	meta := session.SessionMeta{
@@ -49,6 +52,23 @@ func createTestSessionFile(t *testing.T, dir string, pid int, sessionID, cwd str
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
 		t.Fatal(err)
 	}
+
+	// Create the JSONL log file in the scanner-derived location so the scanner
+	// includes this session (JSONL existence is required since AC2).
+	if cwd != "" && sessionID != "" {
+		jsonlDir := session.CWDToProjectDir(cwd)
+		if jsonlDir != "" {
+			if mkErr := os.MkdirAll(jsonlDir, 0755); mkErr == nil {
+				jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
+				_ = os.WriteFile(jsonlPath, []byte("{}\n"), 0644)
+				t.Cleanup(func() {
+					_ = os.Remove(jsonlPath)
+					_ = os.Remove(jsonlDir)
+				})
+			}
+		}
+	}
+
 	return filePath
 }
 
@@ -307,6 +327,7 @@ func TestAppModel_SessionDashboard_ThreeSessions(t *testing.T) {
 	checker := newMockCheckerForApp(1001, 1002, 1003)
 	scanner := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(checker),
+		session.WithJSONLBaseDir(projectDir),
 	)
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -316,10 +337,14 @@ func TestAppModel_SessionDashboard_ThreeSessions(t *testing.T) {
 		WithSessionMonitor(monitor),
 	)
 
-	// Create session files
+	// Create session files and corresponding JSONL logs.
+	// The scanner requires a JSONL file to exist for each session.
 	createTestSessionFile(t, sessDir, 1001, "session-a", projectPath)
+	makeJSONLFile(t, projectDir, "session-a")
 	createTestSessionFile(t, sessDir, 1002, "session-b", projectPath)
+	makeJSONLFile(t, projectDir, "session-b")
 	createTestSessionFile(t, sessDir, 1003, "session-c", projectPath)
+	makeJSONLFile(t, projectDir, "session-c")
 
 	// Scan for sessions
 	result := scanner.Scan()
@@ -507,12 +532,20 @@ func TestAppModel_SessionDashboard_MaxNinePanes(t *testing.T) {
 	newModel, _ := model.Update(sessionScanResultMsg{result: result})
 	m := newModel.(AppModel)
 
-	paneCount := m.SessionDashboardState().PaneCount()
-	if paneCount > MaxSessionPanes {
-		t.Errorf("expected at most %d panes, got %d", MaxSessionPanes, paneCount)
+	// With pagination, all 10 sessions are stored (no hard cap)
+	dashState := m.SessionDashboardState()
+	paneCount := dashState.PaneCount()
+	if paneCount != 10 {
+		t.Errorf("expected 10 total panes (pagination stores all), got %d", paneCount)
 	}
-	if paneCount != MaxSessionPanes {
-		t.Errorf("expected exactly %d panes (max), got %d", MaxSessionPanes, paneCount)
+
+	// Only up to 9 are visible per page
+	visiblePanes := dashState.CurrentPagePanes()
+	if len(visiblePanes) > MaxSessionPanes {
+		t.Errorf("expected at most %d visible panes per page, got %d", MaxSessionPanes, len(visiblePanes))
+	}
+	if len(visiblePanes) != MaxSessionPanes {
+		t.Errorf("expected exactly %d visible panes on page 0, got %d", MaxSessionPanes, len(visiblePanes))
 	}
 }
 

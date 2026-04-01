@@ -45,6 +45,9 @@ func (c *testPIDChecker) SetAlive(pid int, alive bool) {
 }
 
 // makeSessionFile creates a session JSON file in the given directory.
+// When cwd and sessionID are both non-empty, it also creates the JSONL log
+// file in the path the scanner derives from the CWD, so that the scanner's
+// JSONL-existence check passes.
 func makeSessionFile(t *testing.T, dir string, pid int, sessionID, cwd string) string {
 	t.Helper()
 	meta := session.SessionMeta{
@@ -62,6 +65,23 @@ func makeSessionFile(t *testing.T, dir string, pid int, sessionID, cwd string) s
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
 		t.Fatal(err)
 	}
+
+	// Create the JSONL log file in the scanner-derived location so that the
+	// scanner's JSONL-existence check is satisfied during integration tests.
+	if cwd != "" && sessionID != "" {
+		jsonlDir := session.CWDToProjectDir(cwd)
+		if jsonlDir != "" {
+			if mkErr := os.MkdirAll(jsonlDir, 0755); mkErr == nil {
+				jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
+				_ = os.WriteFile(jsonlPath, []byte("{}\n"), 0644)
+				t.Cleanup(func() {
+					_ = os.Remove(jsonlPath)
+					_ = os.Remove(jsonlDir) // best-effort; only removes if empty
+				})
+			}
+		}
+	}
+
 	return filePath
 }
 
@@ -192,6 +212,104 @@ func TestSessionDashboardModel_HandleScanResult_NoDuplicatePanes(t *testing.T) {
 	}
 }
 
+// TestSessionDashboardModel_DeduplicateBySessionID_LatestPIDOnly verifies AC6:
+// when multiple scan entries share the same sessionId, only the pane for the
+// latest (highest) PID is created. Ghost panes from restarted processes must
+// not appear in the dashboard.
+func TestSessionDashboardModel_DeduplicateBySessionID_LatestPIDOnly(t *testing.T) {
+	checker := newTestPIDChecker(100, 200, 300)
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+	projectPath := "/tmp/dedup-test-project"
+
+	sc := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	mon := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, sc, mon)
+	m.SetSize(120, 40)
+
+	const sharedSessionID = "shared-session-id"
+	makeJSONLFile(t, projectDir, sharedSessionID)
+
+	// Three entries share the same sessionId with ascending PIDs.
+	// Only the highest PID (300) should survive deduplication.
+	scanResult := session.ScanResult{
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{Meta: session.SessionMeta{PID: 100, SessionID: sharedSessionID, CWD: projectPath}},
+			{Meta: session.SessionMeta{PID: 200, SessionID: sharedSessionID, CWD: projectPath}},
+			{Meta: session.SessionMeta{PID: 300, SessionID: sharedSessionID, CWD: projectPath}},
+		},
+	}
+
+	newModel, _ := m.Update(sessionScanResultMsg{result: scanResult})
+	updated := newModel.(SessionDashboardModel)
+
+	if updated.PaneCount() != 1 {
+		t.Fatalf("expected 1 pane after deduplication (3 entries, same sessionId), got %d", updated.PaneCount())
+	}
+	if updated.panes[0].session.Meta.PID != 300 {
+		t.Errorf("expected surviving pane PID=300 (latest), got PID=%d", updated.panes[0].session.Meta.PID)
+	}
+}
+
+// TestSessionDashboardModel_DeduplicateBySessionID_Mixed verifies that mixed
+// scan results (some unique sessionIds, some duplicates) are deduplicated
+// correctly: unique sessions each get their own pane; duplicate sessionIds
+// collapse to a single pane for the highest PID.
+func TestSessionDashboardModel_DeduplicateBySessionID_Mixed(t *testing.T) {
+	checker := newTestPIDChecker(100, 200, 300, 400)
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+	projectPath := "/tmp/dedup-mixed-test"
+
+	sc := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	mon := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, sc, mon)
+	m.SetSize(120, 40)
+
+	makeJSONLFile(t, projectDir, "sess-a")
+	makeJSONLFile(t, projectDir, "sess-b")
+	makeJSONLFile(t, projectDir, "sess-c")
+
+	scanResult := session.ScanResult{
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			// sess-a: two entries — PID 100 and 300; keep PID 300
+			{Meta: session.SessionMeta{PID: 100, SessionID: "sess-a", CWD: projectPath}},
+			{Meta: session.SessionMeta{PID: 300, SessionID: "sess-a", CWD: projectPath}},
+			// sess-b: unique
+			{Meta: session.SessionMeta{PID: 200, SessionID: "sess-b", CWD: projectPath}},
+			// sess-c: unique
+			{Meta: session.SessionMeta{PID: 400, SessionID: "sess-c", CWD: projectPath}},
+		},
+	}
+
+	newModel, _ := m.Update(sessionScanResultMsg{result: scanResult})
+	updated := newModel.(SessionDashboardModel)
+
+	// 4 entries → 3 unique sessionIds → 3 panes
+	if updated.PaneCount() != 3 {
+		t.Fatalf("expected 3 panes after dedup, got %d", updated.PaneCount())
+	}
+
+	pidBySessionID := make(map[string]int)
+	for _, p := range updated.panes {
+		pidBySessionID[p.session.Meta.SessionID] = p.session.Meta.PID
+	}
+
+	if pidBySessionID["sess-a"] != 300 {
+		t.Errorf("sess-a: expected PID 300, got %d", pidBySessionID["sess-a"])
+	}
+	if pidBySessionID["sess-b"] != 200 {
+		t.Errorf("sess-b: expected PID 200, got %d", pidBySessionID["sess-b"])
+	}
+	if pidBySessionID["sess-c"] != 400 {
+		t.Errorf("sess-c: expected PID 400, got %d", pidBySessionID["sess-c"])
+	}
+}
+
 func TestSessionDashboardModel_HandleScanResult_MaxPanes(t *testing.T) {
 	pids := make([]int, 12)
 	for i := range pids {
@@ -226,8 +344,20 @@ func TestSessionDashboardModel_HandleScanResult_MaxPanes(t *testing.T) {
 	newModel, _ := m.Update(sessionScanResultMsg{result: scanResult})
 	updated := newModel.(SessionDashboardModel)
 
-	if updated.PaneCount() != MaxSessionPanes {
-		t.Errorf("pane count = %d, want max %d", updated.PaneCount(), MaxSessionPanes)
+	// With pagination, all 12 sessions are stored (no cap at MaxSessionPanes)
+	if updated.PaneCount() != 12 {
+		t.Errorf("pane count = %d, want 12 (all sessions stored for pagination)", updated.PaneCount())
+	}
+
+	// But only up to 9 are visible on the current page
+	visiblePanes := updated.CurrentPagePanes()
+	if len(visiblePanes) != MaxSessionPanes {
+		t.Errorf("visible panes on page 0 = %d, want %d", len(visiblePanes), MaxSessionPanes)
+	}
+
+	// Total pages should be 2 (9 + 3)
+	if updated.TotalPages() != 2 {
+		t.Errorf("total pages = %d, want 2", updated.TotalPages())
 	}
 }
 
@@ -867,10 +997,13 @@ func TestSessionDashboardModel_PaneAppearsWithin3Seconds(t *testing.T) {
 	projectDir := t.TempDir()
 	projectPath := "/tmp/test"
 
-	// Create scanner with fast polling (100ms for test)
+	// Create scanner with fast polling (100ms for test).
+	// WithJSONLBaseDir directs the scanner to check projectDir for JSONL files
+	// rather than the real ~/.claude/projects tree (which test sessions don't use).
 	scanner := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(checker),
 		session.WithScanInterval(100*time.Millisecond),
+		session.WithJSONLBaseDir(projectDir),
 	)
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -923,6 +1056,7 @@ func TestSessionDashboardModel_MultipleSessionsAppear(t *testing.T) {
 	scanner := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(checker),
 		session.WithScanInterval(100*time.Millisecond),
+		session.WithJSONLBaseDir(projectDir),
 	)
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -1538,6 +1672,81 @@ func TestPaneDisplayName_DefaultKind(t *testing.T) {
 	name := paneDisplayName(sess)
 	if name != "session[42]" {
 		t.Errorf("got %q, want %q", name, "session[42]")
+	}
+}
+
+// TestPaneDisplayName_ActiveNoIdleSuffix verifies that active sessions
+// (State == SessionActive, i.e. JSONL modified within 2 minutes) display
+// without the "⏸ IDLE" suffix — they use the normal display name.
+func TestPaneDisplayName_ActiveNoIdleSuffix(t *testing.T) {
+	sess := session.ActiveSession{
+		Meta:  session.SessionMeta{PID: 999, Kind: "interactive"},
+		State: session.SessionActive,
+	}
+	name := paneDisplayName(sess)
+	if strings.Contains(name, "IDLE") {
+		t.Errorf("active session should not contain IDLE suffix, got %q", name)
+	}
+	if name != "interactive[999]" {
+		t.Errorf("got %q, want %q", name, "interactive[999]")
+	}
+}
+
+// TestSessionPaneModel_ViewWithFocus_ActiveUsesNormalStyle verifies that
+// active sessions (JSONL modified within 2 minutes) render with the normal
+// header style and normal border colors — not the idle warning style.
+func TestSessionPaneModel_ViewWithFocus_ActiveUsesNormalStyle(t *testing.T) {
+	pane := SessionPaneModel{
+		session: session.ActiveSession{
+			Meta:  session.SessionMeta{PID: 500, Kind: "interactive"},
+			State: session.SessionActive,
+		},
+		width:   40,
+		height:  10,
+		loading: true,
+	}
+
+	// Focused active pane should NOT contain idle markers
+	viewFocused := pane.ViewWithFocus(true)
+	if viewFocused == "" {
+		t.Fatal("focused active pane should not be empty")
+	}
+	if strings.Contains(viewFocused, "IDLE") {
+		t.Error("focused active pane should not show IDLE")
+	}
+
+	// Unfocused active pane should also NOT contain idle markers
+	viewUnfocused := pane.ViewWithFocus(false)
+	if viewUnfocused == "" {
+		t.Fatal("unfocused active pane should not be empty")
+	}
+	if strings.Contains(viewUnfocused, "IDLE") {
+		t.Error("unfocused active pane should not show IDLE")
+	}
+}
+
+// TestClassifySessionState_ActiveWithinTwoMinutes verifies the scanner
+// classifies sessions with JSONL modified within 2 minutes as Active.
+func TestClassifySessionState_ActiveWithinTwoMinutes(t *testing.T) {
+	now := time.Now()
+	testCases := []struct {
+		name string
+		age  time.Duration
+	}{
+		{"just now", 0},
+		{"10 seconds ago", 10 * time.Second},
+		{"1 minute ago", 1 * time.Minute},
+		{"1m59s ago", time.Minute + 59*time.Second},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			modTime := now.Add(-tc.age)
+			state := session.ClassifySessionState(modTime, now)
+			if state != session.SessionActive {
+				t.Errorf("JSONL modified %v ago should be Active, got %v", tc.age, state)
+			}
+		})
 	}
 }
 
@@ -3332,5 +3541,2230 @@ func TestSessionDashboardModel_PaneEntriesCount_OutOfRange(t *testing.T) {
 	// Out-of-range index → -1
 	if got := m.PaneEntriesCount(999); got != -1 {
 		t.Errorf("PaneEntriesCount(999) = %d, want -1", got)
+	}
+}
+
+// --- Partial page display tests (AC 5) ---
+
+// TestPartialPage_Page2Shows2Sessions verifies that page 2 of 11 sessions
+// correctly shows only 2 panes in a partial grid.
+func TestPartialPage_Page2Shows2Sessions(t *testing.T) {
+	m := newTestDashboardWithPanes(11) // 9 on page 1, 2 on page 2
+	m.currentPage = 1                  // page 2 (zero-indexed)
+
+	if got := m.TotalPages(); got != 2 {
+		t.Fatalf("TotalPages() = %d, want 2", got)
+	}
+
+	pagePanes := m.CurrentPagePanes()
+	if len(pagePanes) != 2 {
+		t.Fatalf("CurrentPagePanes() len = %d, want 2", len(pagePanes))
+	}
+
+	// Verify the panes are the correct ones (sessions 9 and 10)
+	if pagePanes[0].session.Meta.PID != 1009 {
+		t.Errorf("first pane PID = %d, want 1009", pagePanes[0].session.Meta.PID)
+	}
+	if pagePanes[1].session.Meta.PID != 1010 {
+		t.Errorf("second pane PID = %d, want 1010", pagePanes[1].session.Meta.PID)
+	}
+}
+
+// TestPartialPage_GridLayoutFor2Panes verifies the grid layout is 1x2 for 2 panes.
+func TestPartialPage_GridLayoutFor2Panes(t *testing.T) {
+	layout := CalculateGridLayout(2, 120, 60)
+	if layout.Rows != 1 || layout.Cols != 2 {
+		t.Errorf("grid for 2 panes = %dx%d, want 1x2", layout.Rows, layout.Cols)
+	}
+	if len(layout.Panes) != 2 {
+		t.Errorf("pane count = %d, want 2", len(layout.Panes))
+	}
+}
+
+// TestPartialPage_ViewRendersOnlyPartialPanes verifies View() renders
+// only the panes for the current partial page.
+func TestPartialPage_ViewRendersOnlyPartialPanes(t *testing.T) {
+	m := newTestDashboardWithPanes(11)
+	m.currentPage = 1
+	m.gridDirty = true
+
+	view := m.View()
+	if view == "" {
+		t.Fatal("View() returned empty string for partial page")
+	}
+
+	// Page 2 has sessions with PIDs 1009 and 1010 (displayed as "PID 1009", "PID 1010")
+	// Count PID references - only 2 should be visible
+	pidCount := 0
+	for i := 0; i < 11; i++ {
+		pid := fmt.Sprintf("%d", 1000+i)
+		if strings.Contains(view, pid) {
+			pidCount++
+		}
+	}
+	if pidCount != 2 {
+		t.Errorf("expected 2 PIDs visible on partial page, got %d", pidCount)
+	}
+}
+
+// TestPartialPage_SingleSessionOnPage2 verifies page 2 with exactly 1 session.
+func TestPartialPage_SingleSessionOnPage2(t *testing.T) {
+	m := newTestDashboardWithPanes(10) // 9 on page 1, 1 on page 2
+	m.currentPage = 1
+
+	pagePanes := m.CurrentPagePanes()
+	if len(pagePanes) != 1 {
+		t.Fatalf("CurrentPagePanes() len = %d, want 1", len(pagePanes))
+	}
+
+	// Grid for 1 pane is 1x1
+	layout := CalculateGridLayout(1, 120, 60)
+	if layout.Rows != 1 || layout.Cols != 1 {
+		t.Errorf("grid for 1 pane = %dx%d, want 1x1", layout.Rows, layout.Cols)
+	}
+}
+
+// TestPartialPage_FocusClampedToVisiblePanes verifies focusIndex is clamped
+// to the visible pane count on a partial page.
+func TestPartialPage_FocusClampedToVisiblePanes(t *testing.T) {
+	m := newTestDashboardWithPanes(11)
+	m.currentPage = 1
+	m.focusIndex = 5 // Out of range for page with 2 panes
+
+	// moveFocus should work correctly within partial page bounds
+	newIdx := m.moveFocus("right")
+	if newIdx >= 2 {
+		t.Errorf("moveFocus('right') = %d, want < 2 for partial page", newIdx)
+	}
+}
+
+// TestPartialPage_NavigationWrapsWithinPartialGrid verifies arrow key
+// navigation wraps correctly within a partial page's grid.
+func TestPartialPage_NavigationWrapsWithinPartialGrid(t *testing.T) {
+	m := newTestDashboardWithPanes(11)
+	m.currentPage = 1
+	m.focusIndex = 0
+
+	// Right from index 0 in 1x2 grid should go to index 1
+	newIdx := m.moveFocus("right")
+	if newIdx != 1 {
+		t.Errorf("moveFocus('right') from 0 = %d, want 1", newIdx)
+	}
+
+	// Right from index 1 should wrap to 0
+	m.focusIndex = 1
+	newIdx = m.moveFocus("right")
+	if newIdx != 0 {
+		t.Errorf("moveFocus('right') from 1 = %d, want 0 (wrap)", newIdx)
+	}
+}
+
+// TestPartialPage_CurrentPagePaneCount verifies currentPagePaneCount
+// returns correct counts for partial pages.
+func TestPartialPage_CurrentPagePaneCount(t *testing.T) {
+	tests := []struct {
+		totalPanes int
+		page       int
+		want       int
+	}{
+		{11, 0, 9}, // Full first page
+		{11, 1, 2}, // Partial second page
+		{10, 1, 1}, // Single pane on page 2
+		{18, 1, 9}, // Full second page
+		{19, 2, 1}, // Single pane on page 3
+		{9, 0, 9},  // Exactly one full page
+		{1, 0, 1},  // Single pane total
+		{5, 0, 5},  // Partial first page
+	}
+
+	for _, tt := range tests {
+		m := newTestDashboardWithPanes(tt.totalPanes)
+		m.currentPage = tt.page
+		got := m.currentPagePaneCount()
+		if got != tt.want {
+			t.Errorf("currentPagePaneCount(total=%d, page=%d) = %d, want %d",
+				tt.totalPanes, tt.page, got, tt.want)
+		}
+	}
+}
+
+// TestPartialPage_ViewPageIndicatorShowsCorrectPage verifies the page
+// indicator displays correct page numbers for partial pages.
+func TestPartialPage_ViewPageIndicatorShowsCorrectPage(t *testing.T) {
+	m := newTestDashboardWithPanes(11)
+	m.currentPage = 1
+	m.gridDirty = true
+
+	view := m.View()
+	// Should show "Page 2/2"
+	if !strings.Contains(view, "2/2") {
+		t.Errorf("View() should contain page indicator '2/2', got:\n%s", view)
+	}
+}
+
+// TestPartialPage_VariousPartialSizes verifies grid layout is correct
+// for all possible partial page sizes (1-8 panes).
+func TestPartialPage_VariousPartialSizes(t *testing.T) {
+	expectedGrids := map[int][2]int{
+		1: {1, 1},
+		2: {1, 2},
+		3: {1, 3},
+		4: {2, 2},
+		5: {2, 3},
+		6: {2, 3},
+		7: {3, 3},
+		8: {3, 3},
+	}
+
+	for count, expected := range expectedGrids {
+		layout := CalculateGridLayout(count, 120, 60)
+		if layout.Rows != expected[0] || layout.Cols != expected[1] {
+			t.Errorf("grid for %d panes = %dx%d, want %dx%d",
+				count, layout.Rows, layout.Cols, expected[0], expected[1])
+		}
+		if len(layout.Panes) != count {
+			t.Errorf("pane count for %d panes = %d", count, len(layout.Panes))
+		}
+	}
+}
+
+// TestPartialPage_PartialGridUsesFullWidth verifies that panes on a partial
+// page expand to use the full terminal width.
+func TestPartialPage_PartialGridUsesFullWidth(t *testing.T) {
+	// 2 panes should split the full 120-column width
+	layout := CalculateGridLayout(2, 120, 60)
+	totalWidth := 0
+	for _, p := range layout.Panes {
+		totalWidth += p.Width
+	}
+	if totalWidth != 120 {
+		t.Errorf("total pane width = %d, want 120 (full width)", totalWidth)
+	}
+
+	// 1 pane should use the full width
+	layout = CalculateGridLayout(1, 120, 60)
+	if layout.Panes[0].Width != 120 {
+		t.Errorf("single pane width = %d, want 120", layout.Panes[0].Width)
+	}
+}
+
+// TestPartialPage_AutoRetreatOnSessionRemoval verifies that when sessions
+// are removed making the current partial page empty, the dashboard retreats
+// to the previous page.
+func TestPartialPage_AutoRetreatOnSessionRemoval(t *testing.T) {
+	m := newTestDashboardWithPanes(10) // 9 on page 1, 1 on page 2
+	m.currentPage = 1                  // On page 2
+
+	// Remove the last pane (the only one on page 2)
+	m.panes = m.panes[:9]
+	m.clampCurrentPage()
+
+	if m.currentPage != 0 {
+		t.Errorf("currentPage after removing last pane = %d, want 0", m.currentPage)
+	}
+	if m.currentPagePaneCount() != 9 {
+		t.Errorf("pane count after retreat = %d, want 9", m.currentPagePaneCount())
+	}
+}
+
+func TestSessionDashboardModel_ViewShowsPageIndicator(t *testing.T) {
+	// Create dashboard with >9 sessions to trigger multi-page display
+	pids := make([]int, 12)
+	for i := range pids {
+		pids[i] = 100 + i
+	}
+	checker := newTestPIDChecker(pids...)
+	sessDir := t.TempDir()
+	projectPath := "/tmp/page-indicator-project"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	// Build 12 sessions
+	sessions := make([]session.ActiveSession, 12)
+	for i := 0; i < 12; i++ {
+		sid := fmt.Sprintf("sess-%d", i)
+		makeJSONLFile(t, projectDir, sid)
+		sessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{PID: pids[i], SessionID: sid, CWD: projectPath},
+		}
+	}
+
+	scanResult := session.ScanResult{Sessions: sessions}
+	newModel, _ := m.Update(sessionScanResultMsg{result: scanResult})
+	updated := newModel.(SessionDashboardModel)
+
+	// View on page 0 should show "Page 1/2"
+	view := updated.View()
+	if !strings.Contains(view, "Page 1/2") {
+		t.Errorf("View on page 0 should contain 'Page 1/2', got:\n%s", view)
+	}
+
+	// Navigate to page 1 via ] key
+	newModel2, _ := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	updated2 := newModel2.(SessionDashboardModel)
+
+	view2 := updated2.View()
+	if !strings.Contains(view2, "Page 2/2") {
+		t.Errorf("View on page 1 should contain 'Page 2/2', got:\n%s", view2)
+	}
+
+	// Single page (<=9 sessions) should NOT show page indicator
+	smallScan := session.ScanResult{Sessions: sessions[:5]}
+	newModel3, _ := m.Update(sessionScanResultMsg{result: smallScan})
+	updated3 := newModel3.(SessionDashboardModel)
+
+	view3 := updated3.View()
+	if strings.Contains(view3, "Page ") {
+		t.Errorf("View with single page should NOT show page indicator, got:\n%s", view3)
+	}
+}
+
+// --- Page stability tests (AC 7) ---
+// These tests verify that when the current page is still populated after
+// session changes, the dashboard stays on the current page number.
+
+// TestPageStability_RemoveFromOtherPageStaysOnCurrentPage verifies that
+// removing a session from a different page does not change the current page.
+func TestPageStability_RemoveFromOtherPageStaysOnCurrentPage(t *testing.T) {
+	// 12 sessions: page 0 has 9, page 1 has 3
+	m := newTestDashboardWithPanes(12)
+	m.currentPage = 1 // On page 2 (zero-indexed)
+
+	// Remove a session from page 1 (index 4, PID 1004)
+	m.panes = append(m.panes[:4], m.panes[5:]...)
+	m.clampCurrentPage()
+
+	// 11 sessions remain: page 0 has 9, page 1 has 2 → page 1 is still valid
+	if m.currentPage != 1 {
+		t.Errorf("currentPage = %d, want 1 (should stay on page 2)", m.currentPage)
+	}
+	if m.currentPagePaneCount() != 2 {
+		t.Errorf("pane count on page 1 = %d, want 2", m.currentPagePaneCount())
+	}
+}
+
+// TestPageStability_RemoveFromCurrentPageStaysIfStillPopulated verifies that
+// removing a session from the current page keeps the page if sessions remain.
+func TestPageStability_RemoveFromCurrentPageStaysIfStillPopulated(t *testing.T) {
+	// 12 sessions: page 0 has 9, page 1 has 3
+	m := newTestDashboardWithPanes(12)
+	m.currentPage = 1 // On page 2 (zero-indexed)
+
+	// Remove one session from page 2 (index 9, PID 1009 — first on page 2)
+	m.panes = append(m.panes[:9], m.panes[10:]...)
+	m.clampCurrentPage()
+
+	// 11 sessions remain: page 0 has 9, page 1 has 2 → page 1 still valid
+	if m.currentPage != 1 {
+		t.Errorf("currentPage = %d, want 1 (page 2 still has sessions)", m.currentPage)
+	}
+	if m.currentPagePaneCount() != 2 {
+		t.Errorf("pane count on page 1 = %d, want 2", m.currentPagePaneCount())
+	}
+}
+
+// TestPageStability_AddNewSessionStaysOnCurrentPage verifies that adding
+// new sessions during polling does not change the current page.
+func TestPageStability_AddNewSessionStaysOnCurrentPage(t *testing.T) {
+	// 11 sessions: page 0 has 9, page 1 has 2
+	m := newTestDashboardWithPanes(11)
+	m.currentPage = 1 // On page 2
+
+	// Add a new session (simulating what handleScanResult does)
+	newPane := SessionPaneModel{
+		session: session.ActiveSession{
+			Meta: session.SessionMeta{
+				PID:       2000,
+				SessionID: "sess-new",
+				Kind:      "interactive",
+			},
+		},
+		width:  40,
+		height: 20,
+	}
+	m.panes = append(m.panes, newPane)
+
+	// 12 sessions now: page 0 has 9, page 1 has 3
+	// currentPage should remain 1
+	if m.currentPage != 1 {
+		t.Errorf("currentPage = %d, want 1 (should stay on page 2 after add)", m.currentPage)
+	}
+	if m.currentPagePaneCount() != 3 {
+		t.Errorf("pane count on page 1 = %d, want 3", m.currentPagePaneCount())
+	}
+}
+
+// TestPageStability_RemoveFromPage1StaysOnPage1 verifies that removing a
+// session from page 1 while viewing page 1 keeps the page at 0.
+func TestPageStability_RemoveFromPage1StaysOnPage1(t *testing.T) {
+	m := newTestDashboardWithPanes(12)
+	m.currentPage = 0 // On page 1
+
+	// Remove one session from page 1 (index 3)
+	m.panes = append(m.panes[:3], m.panes[4:]...)
+	m.clampCurrentPage()
+
+	if m.currentPage != 0 {
+		t.Errorf("currentPage = %d, want 0 (page 1 still has 8 sessions)", m.currentPage)
+	}
+	if m.currentPagePaneCount() != 9 {
+		// After removal, 11 sessions. Page 0 still has min(9, 11) = 9
+		t.Errorf("pane count on page 0 = %d, want 9", m.currentPagePaneCount())
+	}
+}
+
+// TestPageStability_HandleScanResultPreservesPage verifies that the full
+// handleScanResult flow preserves the current page when it's still valid.
+func TestPageStability_HandleScanResultPreservesPage(t *testing.T) {
+	pids := make([]int, 12)
+	for i := range pids {
+		pids[i] = 1000 + i
+	}
+	checker := newTestPIDChecker(pids...)
+	sessDir := t.TempDir()
+	projectPath := "/tmp/page-stability-project"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	// Build 12 sessions
+	sessions := make([]session.ActiveSession, 12)
+	for i := range sessions {
+		sessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{
+				PID:       1000 + i,
+				SessionID: fmt.Sprintf("sess-stability-%d", i),
+				CWD:       projectPath,
+				Kind:      "interactive",
+			},
+		}
+	}
+
+	// First scan: populate all 12 panes
+	scanResult := session.ScanResult{Sessions: sessions}
+	newModel, _ := m.Update(sessionScanResultMsg{result: scanResult})
+	m = newModel.(SessionDashboardModel)
+
+	if len(m.panes) != 12 {
+		t.Fatalf("expected 12 panes, got %d", len(m.panes))
+	}
+
+	// Navigate to page 2
+	m.SetCurrentPage(1)
+	if m.currentPage != 1 {
+		t.Fatalf("failed to set page to 1")
+	}
+
+	// Kill one session on page 1 (PID 1004)
+	checker.SetAlive(1004, false)
+
+	// Rescan with 11 alive sessions
+	var aliveSessions []session.ActiveSession
+	for _, s := range sessions {
+		if s.Meta.PID != 1004 {
+			aliveSessions = append(aliveSessions, s)
+		}
+	}
+	scanResult2 := session.ScanResult{Sessions: aliveSessions, IsFullScan: true}
+	newModel2, _ := m.Update(sessionScanResultMsg{result: scanResult2})
+	m = newModel2.(SessionDashboardModel)
+
+	// Page 1 still has 2 sessions (was 3, removed 0 from page 2)
+	// Actually removing PID 1004 from page 1 shifts indices, page 2 now has 2
+	if m.currentPage != 1 {
+		t.Errorf("currentPage after scan = %d, want 1 (page 2 still populated)", m.currentPage)
+	}
+	if len(m.panes) != 11 {
+		t.Errorf("total panes = %d, want 11", len(m.panes))
+	}
+	if m.currentPagePaneCount() != 2 {
+		t.Errorf("pane count on page 1 = %d, want 2", m.currentPagePaneCount())
+	}
+}
+
+// TestPageStability_HandleSessionClosedPreservesPage verifies that
+// handleSessionClosed keeps the current page when it's still valid.
+func TestPageStability_HandleSessionClosedPreservesPage(t *testing.T) {
+	pids := make([]int, 12)
+	for i := range pids {
+		pids[i] = 1000 + i
+	}
+	checker := newTestPIDChecker(pids...)
+	sessDir := t.TempDir()
+	projectPath := "/tmp/page-closed-project"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	// Build 12 sessions and populate panes
+	sessions := make([]session.ActiveSession, 12)
+	for i := range sessions {
+		sessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{
+				PID:       1000 + i,
+				SessionID: fmt.Sprintf("sess-closed-%d", i),
+				CWD:       projectPath,
+				Kind:      "interactive",
+			},
+		}
+	}
+
+	scanResult := session.ScanResult{Sessions: sessions}
+	newModel, _ := m.Update(sessionScanResultMsg{result: scanResult})
+	m = newModel.(SessionDashboardModel)
+
+	// Navigate to page 2
+	m.SetCurrentPage(1)
+
+	// Close a session on page 1 via sessionClosedMsg
+	closeEvent := session.SessionEvent{
+		Type:    session.SessionClosed,
+		Session: sessions[2], // PID 1002, on page 1
+	}
+	newModel2, _ := m.Update(sessionClosedMsg{event: closeEvent})
+	m = newModel2.(SessionDashboardModel)
+
+	// Page 2 still has sessions (11 total → page 0 has 9, page 1 has 2)
+	if m.currentPage != 1 {
+		t.Errorf("currentPage after close = %d, want 1 (page 2 still populated)", m.currentPage)
+	}
+	if len(m.panes) != 11 {
+		t.Errorf("total panes = %d, want 11", len(m.panes))
+	}
+}
+
+// TestPageStability_MultipleRemovalsStayOnPageIfPopulated verifies that
+// multiple sequential session removals preserve the current page when
+// the page remains populated after each removal.
+func TestPageStability_MultipleRemovalsStayOnPageIfPopulated(t *testing.T) {
+	// 20 sessions: page 0 has 9, page 1 has 9, page 2 has 2
+	m := newTestDashboardWithPanes(20)
+	m.currentPage = 1 // On page 2
+
+	// Remove 3 sessions from page 1 (indices 0, 1, 2)
+	m.panes = append(m.panes[:0], m.panes[3:]...)
+	m.clampCurrentPage()
+
+	// 17 sessions: page 0 has 9, page 1 has 8
+	if m.currentPage != 1 {
+		t.Errorf("currentPage = %d, want 1 after removing from page 1", m.currentPage)
+	}
+
+	// Remove 2 more from page 1
+	m.panes = append(m.panes[:0], m.panes[2:]...)
+	m.clampCurrentPage()
+
+	// 15 sessions: page 0 has 9, page 1 has 6
+	if m.currentPage != 1 {
+		t.Errorf("currentPage = %d, want 1 after more removals from page 1", m.currentPage)
+	}
+
+	if m.currentPagePaneCount() != 6 {
+		t.Errorf("pane count on page 1 = %d, want 6", m.currentPagePaneCount())
+	}
+}
+
+// TestPageStability_ClampDoesNotChangeValidPage verifies that clampCurrentPage
+// is a no-op when the current page is within valid bounds.
+func TestPageStability_ClampDoesNotChangeValidPage(t *testing.T) {
+	tests := []struct {
+		name       string
+		totalPanes int
+		page       int
+		wantPage   int
+	}{
+		{"page 0 of 1 page", 5, 0, 0},
+		{"page 0 of 2 pages", 12, 0, 0},
+		{"page 1 of 2 pages", 12, 1, 1},
+		{"page 1 of 3 pages", 20, 1, 1},
+		{"page 2 of 3 pages", 20, 2, 2},
+		{"page 0 with exactly 9", 9, 0, 0},
+		{"page 1 with exactly 18", 18, 1, 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestDashboardWithPanes(tt.totalPanes)
+			m.currentPage = tt.page
+			m.clampCurrentPage()
+
+			if m.currentPage != tt.wantPage {
+				t.Errorf("clampCurrentPage() changed page from %d to %d, want %d",
+					tt.page, m.currentPage, tt.wantPage)
+			}
+		})
+	}
+}
+
+// TestAutoRetreat_ScanResultRemovesAllOnCurrentPage verifies that when a scan
+// result removes all sessions on the current page, the dashboard auto-retreats
+// to the last non-empty page.
+func TestAutoRetreat_ScanResultRemovesAllOnCurrentPage(t *testing.T) {
+	// Create 12 sessions (page 0: 9, page 1: 3)
+	projectPath := "/test/project"
+	checker := newTestPIDChecker()
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+
+	for i := 0; i < 12; i++ {
+		checker.SetAlive(1000+i, true)
+	}
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 61)
+
+	// Manually set up 12 panes
+	panes := make([]SessionPaneModel, 12)
+	for i := range panes {
+		panes[i] = SessionPaneModel{
+			session: session.ActiveSession{
+				Meta: session.SessionMeta{
+					PID:       1000 + i,
+					SessionID: fmt.Sprintf("sess-%d", i),
+					CWD:       projectPath,
+					Kind:      "interactive",
+				},
+			},
+			width:  40,
+			height: 20,
+		}
+	}
+	m.panes = panes
+	m.currentPage = 1 // On page 2 (showing sessions 9-11)
+
+	// Now scan returns only 9 sessions (page 2 sessions are gone)
+	liveSessions := make([]session.ActiveSession, 9)
+	for i := 0; i < 9; i++ {
+		liveSessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{
+				PID:       1000 + i,
+				SessionID: fmt.Sprintf("sess-%d", i),
+				CWD:       projectPath,
+				Kind:      "interactive",
+			},
+		}
+	}
+
+	result := session.ScanResult{Sessions: liveSessions, IsFullScan: true}
+	newModel, _ := m.handleScanResult(result)
+	updated := newModel.(SessionDashboardModel)
+
+	// Should auto-retreat to page 0 (only page left)
+	if updated.currentPage != 0 {
+		t.Errorf("currentPage = %d, want 0 (should auto-retreat)", updated.currentPage)
+	}
+	if updated.TotalPages() != 1 {
+		t.Errorf("TotalPages = %d, want 1", updated.TotalPages())
+	}
+}
+
+// TestAutoRetreat_ScanResultRetreatsToLastNonEmptyPage verifies retreat goes
+// to the correct page when multiple pages become empty.
+func TestAutoRetreat_ScanResultRetreatsToLastNonEmptyPage(t *testing.T) {
+	projectPath := "/test/project"
+	checker := newTestPIDChecker()
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+
+	// 20 sessions = 3 pages (9+9+2), currently on page 2
+	for i := 0; i < 20; i++ {
+		checker.SetAlive(1000+i, true)
+	}
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 61)
+
+	panes := make([]SessionPaneModel, 20)
+	for i := range panes {
+		panes[i] = SessionPaneModel{
+			session: session.ActiveSession{
+				Meta: session.SessionMeta{
+					PID:       1000 + i,
+					SessionID: fmt.Sprintf("sess-%d", i),
+					CWD:       projectPath,
+					Kind:      "interactive",
+				},
+			},
+			width:  40,
+			height: 20,
+		}
+	}
+	m.panes = panes
+	m.currentPage = 2 // On page 3 (last page, showing 2 sessions)
+
+	// Scan now returns only 5 sessions (all on page 1)
+	liveSessions := make([]session.ActiveSession, 5)
+	for i := 0; i < 5; i++ {
+		liveSessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{
+				PID:       1000 + i,
+				SessionID: fmt.Sprintf("sess-%d", i),
+				CWD:       projectPath,
+				Kind:      "interactive",
+			},
+		}
+	}
+
+	result := session.ScanResult{Sessions: liveSessions, IsFullScan: true}
+	newModel, _ := m.handleScanResult(result)
+	updated := newModel.(SessionDashboardModel)
+
+	// Should retreat to page 0 (5 sessions fit on 1 page)
+	if updated.currentPage != 0 {
+		t.Errorf("currentPage = %d, want 0 (should retreat to last non-empty)", updated.currentPage)
+	}
+	if updated.PaneCount() != 5 {
+		t.Errorf("PaneCount = %d, want 5", updated.PaneCount())
+	}
+}
+
+// TestAutoRetreat_SessionClosedClampsPage verifies that handleSessionClosed
+// auto-retreats when the last session on the current page disappears.
+func TestAutoRetreat_SessionClosedClampsPage(t *testing.T) {
+	m := newTestDashboardWithPanes(10) // 9 on page 0, 1 on page 1
+	m.currentPage = 1
+	m.focusIndex = 0
+
+	// Close the only session on page 1 (PID 1009, index 9)
+	event := session.SessionEvent{
+		Type:    session.SessionClosed,
+		Session: session.ActiveSession{Meta: session.SessionMeta{PID: 1009}},
+	}
+
+	newModel, _ := m.handleSessionClosed(event)
+	updated := newModel.(SessionDashboardModel)
+
+	if updated.currentPage != 0 {
+		t.Errorf("currentPage = %d, want 0 (should auto-retreat after last pane on page removed)", updated.currentPage)
+	}
+	if updated.PaneCount() != 9 {
+		t.Errorf("PaneCount = %d, want 9", updated.PaneCount())
+	}
+}
+
+// TestAutoRetreat_AllSessionsDisappear verifies that when all sessions
+// disappear, currentPage retreats to 0.
+func TestAutoRetreat_AllSessionsDisappear(t *testing.T) {
+	projectPath := "/test/project"
+	checker := newTestPIDChecker()
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+
+	// At least 1 alive PID needed for the scanner's liveness check
+	checker.SetAlive(1000, true)
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 61)
+
+	// 12 panes, on page 1
+	panes := make([]SessionPaneModel, 12)
+	for i := range panes {
+		panes[i] = SessionPaneModel{
+			session: session.ActiveSession{
+				Meta: session.SessionMeta{
+					PID:       1000 + i,
+					SessionID: fmt.Sprintf("sess-%d", i),
+					CWD:       projectPath,
+					Kind:      "interactive",
+				},
+			},
+			width:  40,
+			height: 20,
+		}
+	}
+	m.panes = panes
+	m.currentPage = 1
+
+	// Scan returns only PID 1000 alive (full scan triggers removal of rest)
+	liveSessions := []session.ActiveSession{
+		{
+			Meta: session.SessionMeta{
+				PID:       1000,
+				SessionID: "sess-0",
+				CWD:       projectPath,
+				Kind:      "interactive",
+			},
+		},
+	}
+
+	result := session.ScanResult{Sessions: liveSessions, IsFullScan: true}
+	newModel, _ := m.handleScanResult(result)
+	updated := newModel.(SessionDashboardModel)
+
+	// Only 1 session left, should be on page 0
+	if updated.currentPage != 0 {
+		t.Errorf("currentPage = %d, want 0", updated.currentPage)
+	}
+	if updated.PaneCount() != 1 {
+		t.Errorf("PaneCount = %d, want 1", updated.PaneCount())
+	}
+}
+
+// TestAutoRetreat_FocusIndexClampedWithinPage verifies that focus is
+// properly adjusted when auto-retreating to a page with fewer panes.
+func TestAutoRetreat_FocusIndexClampedWithinPage(t *testing.T) {
+	projectPath := "/test/project"
+	checker := newTestPIDChecker()
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+
+	for i := 0; i < 12; i++ {
+		checker.SetAlive(1000+i, true)
+	}
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 61)
+
+	panes := make([]SessionPaneModel, 12)
+	for i := range panes {
+		panes[i] = SessionPaneModel{
+			session: session.ActiveSession{
+				Meta: session.SessionMeta{
+					PID:       1000 + i,
+					SessionID: fmt.Sprintf("sess-%d", i),
+					CWD:       projectPath,
+					Kind:      "interactive",
+				},
+			},
+			width:  40,
+			height: 20,
+		}
+	}
+	m.panes = panes
+	m.currentPage = 1
+	m.focusIndex = 2 // Focused on 3rd pane of page 2
+
+	// Remove all page-2 sessions, leaving only 3 on page 0
+	liveSessions := make([]session.ActiveSession, 3)
+	for i := 0; i < 3; i++ {
+		liveSessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{
+				PID:       1000 + i,
+				SessionID: fmt.Sprintf("sess-%d", i),
+				CWD:       projectPath,
+				Kind:      "interactive",
+			},
+		}
+	}
+
+	result := session.ScanResult{Sessions: liveSessions, IsFullScan: true}
+	newModel, _ := m.handleScanResult(result)
+	updated := newModel.(SessionDashboardModel)
+
+	if updated.currentPage != 0 {
+		t.Errorf("currentPage = %d, want 0", updated.currentPage)
+	}
+	// focusIndex should be clamped to valid range (0-2 for 3 panes)
+	if updated.focusIndex >= updated.PaneCount() {
+		t.Errorf("focusIndex = %d, should be < %d", updated.focusIndex, updated.PaneCount())
+	}
+}
+
+// --- AC 8: New sessions appearing during polling are included in the paginated list ---
+
+// TestNewSessionsDuringPolling_IncludedInPaginatedList verifies that when new
+// sessions appear during subsequent polling cycles (scan results), they are
+// properly appended to the pane list and accessible via pagination.
+func TestNewSessionsDuringPolling_IncludedInPaginatedList(t *testing.T) {
+	// Start with 9 sessions (fills page 1), then add 3 more via a second scan.
+	allPIDs := make([]int, 12)
+	for i := range allPIDs {
+		allPIDs[i] = 1000 + i
+	}
+	checker := newTestPIDChecker(allPIDs...)
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+	projectPath := "/tmp/test-project"
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	// Create JSONL files for all sessions
+	for i := 0; i < 12; i++ {
+		makeJSONLFile(t, projectDir, fmt.Sprintf("sess-%d", i))
+	}
+
+	// First poll: 9 sessions fill page 1
+	firstSessions := make([]session.ActiveSession, 9)
+	for i := 0; i < 9; i++ {
+		firstSessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{
+				PID:       1000 + i,
+				SessionID: fmt.Sprintf("sess-%d", i),
+				CWD:       projectPath,
+				Kind:      "interactive",
+			},
+		}
+	}
+	scan1 := session.ScanResult{Sessions: firstSessions}
+	newModel, _ := m.Update(sessionScanResultMsg{result: scan1})
+	m = newModel.(SessionDashboardModel)
+
+	if m.PaneCount() != 9 {
+		t.Fatalf("after first poll: pane count = %d, want 9", m.PaneCount())
+	}
+	if m.TotalPages() != 1 {
+		t.Fatalf("after first poll: total pages = %d, want 1", m.TotalPages())
+	}
+
+	// Second poll: 3 new sessions appear (total 12)
+	allSessions := make([]session.ActiveSession, 12)
+	for i := 0; i < 12; i++ {
+		allSessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{
+				PID:       1000 + i,
+				SessionID: fmt.Sprintf("sess-%d", i),
+				CWD:       projectPath,
+				Kind:      "interactive",
+			},
+		}
+	}
+	scan2 := session.ScanResult{Sessions: allSessions}
+	newModel2, _ := m.Update(sessionScanResultMsg{result: scan2})
+	m = newModel2.(SessionDashboardModel)
+
+	// All 12 sessions should be in the pane list
+	if m.PaneCount() != 12 {
+		t.Errorf("after second poll: pane count = %d, want 12", m.PaneCount())
+	}
+
+	// Pagination should now show 2 pages
+	if m.TotalPages() != 2 {
+		t.Errorf("after second poll: total pages = %d, want 2", m.TotalPages())
+	}
+
+	// Page 1 should have 9 panes
+	page1Panes := m.CurrentPagePanes()
+	if len(page1Panes) != 9 {
+		t.Errorf("page 1 panes = %d, want 9", len(page1Panes))
+	}
+
+	// Navigate to page 2 and verify the new sessions are there
+	m.navigatePageForward()
+	if m.CurrentPage() != 1 {
+		t.Errorf("after navigate forward: current page = %d, want 1", m.CurrentPage())
+	}
+	page2Panes := m.CurrentPagePanes()
+	if len(page2Panes) != 3 {
+		t.Errorf("page 2 panes = %d, want 3", len(page2Panes))
+	}
+
+	// Verify the new sessions are specifically the ones added in the second poll
+	for _, pane := range page2Panes {
+		pid := pane.session.Meta.PID
+		if pid < 1009 || pid > 1011 {
+			t.Errorf("page 2 contains unexpected PID %d (expected 1009-1011)", pid)
+		}
+	}
+}
+
+// TestNewSessionsDuringPolling_SingleSessionAddsNewPage verifies that even a
+// single new session appearing during polling creates a new page when page 1 is full.
+func TestNewSessionsDuringPolling_SingleSessionAddsNewPage(t *testing.T) {
+	allPIDs := make([]int, 10)
+	for i := range allPIDs {
+		allPIDs[i] = 500 + i
+	}
+	checker := newTestPIDChecker(allPIDs...)
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+	projectPath := "/tmp/test-proj"
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	for i := 0; i < 10; i++ {
+		makeJSONLFile(t, projectDir, fmt.Sprintf("s-%d", i))
+	}
+
+	// First poll: 9 sessions (full page)
+	firstSessions := make([]session.ActiveSession, 9)
+	for i := 0; i < 9; i++ {
+		firstSessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{PID: 500 + i, SessionID: fmt.Sprintf("s-%d", i), CWD: projectPath},
+		}
+	}
+	newModel, _ := m.Update(sessionScanResultMsg{result: session.ScanResult{Sessions: firstSessions}})
+	m = newModel.(SessionDashboardModel)
+
+	if m.TotalPages() != 1 {
+		t.Fatalf("before new session: total pages = %d, want 1", m.TotalPages())
+	}
+
+	// Second poll: 1 new session (10th) appears
+	allSessions := make([]session.ActiveSession, 10)
+	copy(allSessions, firstSessions)
+	allSessions[9] = session.ActiveSession{
+		Meta: session.SessionMeta{PID: 509, SessionID: "s-9", CWD: projectPath},
+	}
+	newModel2, _ := m.Update(sessionScanResultMsg{result: session.ScanResult{Sessions: allSessions}})
+	m = newModel2.(SessionDashboardModel)
+
+	if m.PaneCount() != 10 {
+		t.Errorf("pane count = %d, want 10", m.PaneCount())
+	}
+	if m.TotalPages() != 2 {
+		t.Errorf("total pages = %d, want 2", m.TotalPages())
+	}
+
+	// Navigate to page 2 and verify the 10th session is there
+	m.navigatePageForward()
+	page2 := m.CurrentPagePanes()
+	if len(page2) != 1 {
+		t.Errorf("page 2 panes = %d, want 1", len(page2))
+	}
+	if len(page2) > 0 && page2[0].session.Meta.PID != 509 {
+		t.Errorf("page 2 pane PID = %d, want 509", page2[0].session.Meta.PID)
+	}
+}
+
+// TestNewSessionsDuringPolling_MultiplePollingCycles verifies that sessions
+// appearing across many polling cycles are all properly accumulated.
+func TestNewSessionsDuringPolling_MultiplePollingCycles(t *testing.T) {
+	allPIDs := make([]int, 20)
+	for i := range allPIDs {
+		allPIDs[i] = 2000 + i
+	}
+	checker := newTestPIDChecker(allPIDs...)
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+	projectPath := "/tmp/multi-poll"
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	for i := 0; i < 20; i++ {
+		makeJSONLFile(t, projectDir, fmt.Sprintf("mp-%d", i))
+	}
+
+	// Simulate 4 polling cycles, each adding 5 sessions
+	var currentSessions []session.ActiveSession
+	for cycle := 0; cycle < 4; cycle++ {
+		for i := 0; i < 5; i++ {
+			idx := cycle*5 + i
+			currentSessions = append(currentSessions, session.ActiveSession{
+				Meta: session.SessionMeta{
+					PID:       2000 + idx,
+					SessionID: fmt.Sprintf("mp-%d", idx),
+					CWD:       projectPath,
+					Kind:      "interactive",
+				},
+			})
+		}
+
+		scanResult := session.ScanResult{Sessions: currentSessions}
+		newModel, _ := m.Update(sessionScanResultMsg{result: scanResult})
+		m = newModel.(SessionDashboardModel)
+	}
+
+	// After 4 cycles: 20 sessions total
+	if m.PaneCount() != 20 {
+		t.Errorf("pane count = %d, want 20", m.PaneCount())
+	}
+
+	// 20 sessions / 9 per page = 3 pages (9 + 9 + 2)
+	expectedPages := 3 // ceil(20/9) = 3
+	if m.TotalPages() != expectedPages {
+		t.Errorf("total pages = %d, want %d", m.TotalPages(), expectedPages)
+	}
+
+	// Verify page 1 has 9 panes
+	if len(m.CurrentPagePanes()) != 9 {
+		t.Errorf("page 1 panes = %d, want 9", len(m.CurrentPagePanes()))
+	}
+
+	// Page 2 has 9 panes
+	m.navigatePageForward()
+	if len(m.CurrentPagePanes()) != 9 {
+		t.Errorf("page 2 panes = %d, want 9", len(m.CurrentPagePanes()))
+	}
+
+	// Page 3 has 2 panes
+	m.navigatePageForward()
+	if len(m.CurrentPagePanes()) != 2 {
+		t.Errorf("page 3 panes = %d, want 2", len(m.CurrentPagePanes()))
+	}
+
+	// Verify last page has sessions from the final polling cycle.
+	// After deduplication the append order within a single scan result is
+	// non-deterministic (map iteration), so we only check that ALL PIDs on
+	// the last page belong to the full set of 20 sessions (2000-2019).
+	lastPage := m.CurrentPagePanes()
+	for _, pane := range lastPage {
+		pid := pane.session.Meta.PID
+		if pid < 2000 || pid > 2019 {
+			t.Errorf("page 3 contains out-of-range PID %d (expected 2000-2019)", pid)
+		}
+	}
+}
+
+// TestNewSessionsDuringPolling_DirWatcherAddsBeyondPage verifies that sessions
+// added via directory watcher events (not just scan results) are also properly
+// included in the paginated list.
+func TestNewSessionsDuringPolling_DirWatcherAddsBeyondPage(t *testing.T) {
+	allPIDs := make([]int, 10)
+	for i := range allPIDs {
+		allPIDs[i] = 3000 + i
+	}
+	checker := newTestPIDChecker(allPIDs...)
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+	projectPath := "/tmp/dw-test"
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	for i := 0; i < 10; i++ {
+		makeJSONLFile(t, projectDir, fmt.Sprintf("dw-%d", i))
+	}
+
+	// Initial scan: 9 sessions fill page 1
+	initialSessions := make([]session.ActiveSession, 9)
+	for i := 0; i < 9; i++ {
+		initialSessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{PID: 3000 + i, SessionID: fmt.Sprintf("dw-%d", i), CWD: projectPath},
+		}
+	}
+	newModel, _ := m.Update(sessionScanResultMsg{result: session.ScanResult{Sessions: initialSessions}})
+	m = newModel.(SessionDashboardModel)
+
+	if m.TotalPages() != 1 {
+		t.Fatalf("before dir watcher event: total pages = %d, want 1", m.TotalPages())
+	}
+
+	// Dir watcher detects a new session (10th)
+	newSess := session.ActiveSession{
+		Meta: session.SessionMeta{PID: 3009, SessionID: "dw-9", CWD: projectPath},
+	}
+	dwEvent := sessionDirWatcherEventMsg{
+		event: session.SessionEvent{
+			Type:    session.SessionOpened,
+			Session: newSess,
+		},
+	}
+	newModel2, _ := m.Update(dwEvent)
+	m = newModel2.(SessionDashboardModel)
+
+	// Should now have 10 panes across 2 pages
+	if m.PaneCount() != 10 {
+		t.Errorf("pane count = %d, want 10", m.PaneCount())
+	}
+	if m.TotalPages() != 2 {
+		t.Errorf("total pages = %d, want 2", m.TotalPages())
+	}
+
+	// The new session should be on page 2
+	m.navigatePageForward()
+	page2 := m.CurrentPagePanes()
+	if len(page2) != 1 {
+		t.Errorf("page 2 panes = %d, want 1", len(page2))
+	}
+	if len(page2) > 0 && page2[0].session.Meta.PID != 3009 {
+		t.Errorf("page 2 PID = %d, want 3009", page2[0].session.Meta.PID)
+	}
+}
+
+// TestNewSessionsDuringPolling_ViewUpdatesPageIndicator verifies that the
+// page indicator in the View() output updates when new sessions create
+// additional pages.
+func TestNewSessionsDuringPolling_ViewUpdatesPageIndicator(t *testing.T) {
+	allPIDs := make([]int, 10)
+	for i := range allPIDs {
+		allPIDs[i] = 4000 + i
+	}
+	checker := newTestPIDChecker(allPIDs...)
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+	projectPath := "/tmp/view-test"
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	for i := 0; i < 10; i++ {
+		makeJSONLFile(t, projectDir, fmt.Sprintf("vt-%d", i))
+	}
+
+	// 9 sessions: should NOT show page indicator (single page)
+	firstSessions := make([]session.ActiveSession, 9)
+	for i := 0; i < 9; i++ {
+		firstSessions[i] = session.ActiveSession{
+			Meta: session.SessionMeta{PID: 4000 + i, SessionID: fmt.Sprintf("vt-%d", i), CWD: projectPath},
+		}
+	}
+	newModel, _ := m.Update(sessionScanResultMsg{result: session.ScanResult{Sessions: firstSessions}})
+	m = newModel.(SessionDashboardModel)
+
+	view1 := m.View()
+	if strings.Contains(view1, "Page") {
+		t.Error("single page should not show page indicator")
+	}
+
+	// 10th session appears: should now show "Page 1/2"
+	allSessions := make([]session.ActiveSession, 10)
+	copy(allSessions, firstSessions)
+	allSessions[9] = session.ActiveSession{
+		Meta: session.SessionMeta{PID: 4009, SessionID: "vt-9", CWD: projectPath},
+	}
+	newModel2, _ := m.Update(sessionScanResultMsg{result: session.ScanResult{Sessions: allSessions}})
+	m = newModel2.(SessionDashboardModel)
+
+	view2 := m.View()
+	if !strings.Contains(view2, "Page 1/2") {
+		t.Errorf("view should contain 'Page 1/2' after new session creates second page, got:\n%s", view2)
+	}
+}
+
+// TestNewSessionsDuringPolling_NoDuplicatesAcrossPolls verifies that the same
+// session appearing in multiple poll results is not added twice.
+func TestNewSessionsDuringPolling_NoDuplicatesAcrossPolls(t *testing.T) {
+	checker := newTestPIDChecker(100, 200, 300)
+	sessDir := t.TempDir()
+	projectDir := t.TempDir()
+	projectPath := "/tmp/nodup"
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	makeJSONLFile(t, projectDir, "s1")
+	makeJSONLFile(t, projectDir, "s2")
+	makeJSONLFile(t, projectDir, "s3")
+
+	sessions := []session.ActiveSession{
+		{Meta: session.SessionMeta{PID: 100, SessionID: "s1", CWD: projectPath}},
+		{Meta: session.SessionMeta{PID: 200, SessionID: "s2", CWD: projectPath}},
+	}
+
+	// Poll 1: 2 sessions
+	newModel, _ := m.Update(sessionScanResultMsg{result: session.ScanResult{Sessions: sessions}})
+	m = newModel.(SessionDashboardModel)
+
+	// Poll 2: same 2 sessions + 1 new
+	sessions = append(sessions, session.ActiveSession{
+		Meta: session.SessionMeta{PID: 300, SessionID: "s3", CWD: projectPath},
+	})
+	newModel2, _ := m.Update(sessionScanResultMsg{result: session.ScanResult{Sessions: sessions}})
+	m = newModel2.(SessionDashboardModel)
+
+	if m.PaneCount() != 3 {
+		t.Errorf("pane count = %d, want 3 (no duplicates)", m.PaneCount())
+	}
+
+	// Poll 3: exact same 3 sessions again — should not grow
+	newModel3, _ := m.Update(sessionScanResultMsg{result: session.ScanResult{Sessions: sessions}})
+	m = newModel3.(SessionDashboardModel)
+
+	if m.PaneCount() != 3 {
+		t.Errorf("pane count after re-poll = %d, want 3 (still no duplicates)", m.PaneCount())
+	}
+}
+
+// --- Pagination key navigation tests ---
+
+func TestSessionDashboardModel_TotalPages(t *testing.T) {
+	tests := []struct {
+		name      string
+		paneCount int
+		want      int
+	}{
+		{"zero panes", 0, 1},
+		{"one pane", 1, 1},
+		{"nine panes", 9, 1},
+		{"ten panes", 10, 2},
+		{"eighteen panes", 18, 2},
+		{"nineteen panes", 19, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := SessionDashboardModel{}
+			m.panes = make([]SessionPaneModel, tt.paneCount)
+			if got := m.TotalPages(); got != tt.want {
+				t.Errorf("TotalPages() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSessionDashboardModel_NavigatePageForward(t *testing.T) {
+	m := SessionDashboardModel{width: 120, height: 40}
+	// Create 12 panes (2 pages)
+	m.panes = make([]SessionPaneModel, 12)
+	for i := range m.panes {
+		m.panes[i] = SessionPaneModel{
+			session: session.ActiveSession{
+				Meta: session.SessionMeta{PID: 100 + i},
+			},
+		}
+	}
+
+	// Start on page 0
+	if m.currentPage != 0 {
+		t.Fatalf("initial page = %d, want 0", m.currentPage)
+	}
+
+	// Navigate forward
+	changed := m.navigatePageForward()
+	if !changed {
+		t.Error("navigatePageForward() returned false, want true")
+	}
+	if m.currentPage != 1 {
+		t.Errorf("currentPage = %d, want 1", m.currentPage)
+	}
+	if m.focusIndex != 0 {
+		t.Errorf("focusIndex = %d, want 0 after page change", m.focusIndex)
+	}
+
+	// Try to navigate forward again (already on last page)
+	changed = m.navigatePageForward()
+	if changed {
+		t.Error("navigatePageForward() returned true on last page, want false")
+	}
+	if m.currentPage != 1 {
+		t.Errorf("currentPage = %d, want 1 (should stay)", m.currentPage)
+	}
+}
+
+func TestSessionDashboardModel_NavigatePageBack(t *testing.T) {
+	m := SessionDashboardModel{width: 120, height: 40}
+	m.panes = make([]SessionPaneModel, 12)
+	for i := range m.panes {
+		m.panes[i] = SessionPaneModel{
+			session: session.ActiveSession{
+				Meta: session.SessionMeta{PID: 100 + i},
+			},
+		}
+	}
+	m.currentPage = 1
+
+	// Navigate back
+	changed := m.navigatePageBack()
+	if !changed {
+		t.Error("navigatePageBack() returned false, want true")
+	}
+	if m.currentPage != 0 {
+		t.Errorf("currentPage = %d, want 0", m.currentPage)
+	}
+	if m.focusIndex != 0 {
+		t.Errorf("focusIndex = %d, want 0 after page change", m.focusIndex)
+	}
+
+	// Try to navigate back again (already on first page)
+	changed = m.navigatePageBack()
+	if changed {
+		t.Error("navigatePageBack() returned true on first page, want false")
+	}
+	if m.currentPage != 0 {
+		t.Errorf("currentPage = %d, want 0 (should stay)", m.currentPage)
+	}
+}
+
+func TestSessionDashboardModel_BracketKeyNavigation(t *testing.T) {
+	checker := newTestPIDChecker()
+	sessDir := t.TempDir()
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel("/tmp/p", "/tmp/pd", scanner, monitor)
+	m.SetSize(120, 40)
+
+	// Create 12 panes (2 pages)
+	m.panes = make([]SessionPaneModel, 12)
+	for i := range m.panes {
+		m.panes[i] = SessionPaneModel{
+			session: session.ActiveSession{
+				Meta: session.SessionMeta{PID: 100 + i},
+			},
+			width:   40,
+			height:  20,
+			loading: true,
+		}
+	}
+
+	// Press ] to go forward
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}}
+	result, _ := m.Update(keyMsg)
+	updated := result.(SessionDashboardModel)
+	if updated.currentPage != 1 {
+		t.Errorf("after ']' press: currentPage = %d, want 1", updated.currentPage)
+	}
+
+	// Press [ to go back
+	keyMsg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}}
+	result, _ = updated.Update(keyMsg)
+	updated = result.(SessionDashboardModel)
+	if updated.currentPage != 0 {
+		t.Errorf("after '[' press: currentPage = %d, want 0", updated.currentPage)
+	}
+
+	// Press [ again - should stay on page 0
+	result, _ = updated.Update(keyMsg)
+	updated = result.(SessionDashboardModel)
+	if updated.currentPage != 0 {
+		t.Errorf("after second '[' press: currentPage = %d, want 0", updated.currentPage)
+	}
+}
+
+func TestSessionDashboardModel_ClampCurrentPage(t *testing.T) {
+	m := SessionDashboardModel{}
+	m.panes = make([]SessionPaneModel, 5) // 1 page
+
+	m.currentPage = 3
+	m.clampCurrentPage()
+	if m.currentPage != 0 {
+		t.Errorf("after clamp with 5 panes, currentPage = %d, want 0", m.currentPage)
+	}
+
+	m.currentPage = -1
+	m.clampCurrentPage()
+	if m.currentPage != 0 {
+		t.Errorf("after clamp with negative page, currentPage = %d, want 0", m.currentPage)
+	}
+}
+
+func TestSessionDashboardModel_CurrentPagePanes(t *testing.T) {
+	m := SessionDashboardModel{}
+	m.panes = make([]SessionPaneModel, 12)
+	for i := range m.panes {
+		m.panes[i] = SessionPaneModel{
+			session: session.ActiveSession{
+				Meta: session.SessionMeta{PID: 100 + i},
+			},
+		}
+	}
+
+	// Page 0: first 9 panes
+	m.currentPage = 0
+	pagePanes := m.CurrentPagePanes()
+	if len(pagePanes) != 9 {
+		t.Errorf("page 0 pane count = %d, want 9", len(pagePanes))
+	}
+
+	// Page 1: remaining 3 panes
+	m.currentPage = 1
+	pagePanes = m.CurrentPagePanes()
+	if len(pagePanes) != 3 {
+		t.Errorf("page 1 pane count = %d, want 3", len(pagePanes))
+	}
+
+	// Out of range page
+	m.currentPage = 5
+	pagePanes = m.CurrentPagePanes()
+	if pagePanes != nil {
+		t.Errorf("out of range page should return nil, got %d panes", len(pagePanes))
+	}
+}
+
+func TestSessionDashboardModel_HelpTextContainsPagination(t *testing.T) {
+	if !strings.Contains(sessionDashboardHelpText, "[/]:page") {
+		t.Errorf("help text should contain pagination keybinding hint, got: %s", sessionDashboardHelpText)
+	}
+}
+
+func TestSessionDashboardModel_BracketKeyNoOpSinglePage(t *testing.T) {
+	// When there's only 1 page, both [ and ] should be no-ops
+	checker := newTestPIDChecker()
+	sessDir := t.TempDir()
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+
+	m := NewSessionDashboardModel("/tmp/p", "/tmp/pd", scanner, monitor)
+	m.SetSize(120, 40)
+
+	// Create 5 panes (1 page only)
+	m.panes = make([]SessionPaneModel, 5)
+	for i := range m.panes {
+		m.panes[i] = SessionPaneModel{
+			session: session.ActiveSession{
+				Meta: session.SessionMeta{PID: 100 + i},
+			},
+			width:   40,
+			height:  20,
+			loading: true,
+		}
+	}
+
+	// Press ] - should stay on page 0
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}}
+	result, _ := m.Update(keyMsg)
+	updated := result.(SessionDashboardModel)
+	if updated.currentPage != 0 {
+		t.Errorf("after ']' on single page: currentPage = %d, want 0", updated.currentPage)
+	}
+
+	// Press [ - should stay on page 0
+	keyMsg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}}
+	result, _ = updated.Update(keyMsg)
+	updated = result.(SessionDashboardModel)
+	if updated.currentPage != 0 {
+		t.Errorf("after '[' on single page: currentPage = %d, want 0", updated.currentPage)
+	}
+}
+
+// TestPaneDisplayName_BothEntrypointTypes verifies that both sdk-cli (user sessions)
+// and sdk-py (Ouroboros agent sessions) produce valid display names. The entrypoint
+// field itself does not appear in the pane title — the Kind field drives the label —
+// but both types must render without errors and follow the same format.
+func TestPaneDisplayName_BothEntrypointTypes(t *testing.T) {
+	tests := []struct {
+		name       string
+		sess       session.ActiveSession
+		wantPrefix string
+		wantIdle   bool
+	}{
+		{
+			name: "sdk-cli interactive active",
+			sess: session.ActiveSession{
+				Meta:  session.SessionMeta{PID: 1000, Kind: "interactive", Entrypoint: "sdk-cli"},
+				State: session.SessionActive,
+			},
+			wantPrefix: "interactive[1000]",
+			wantIdle:   false,
+		},
+		{
+			name: "sdk-py task active",
+			sess: session.ActiveSession{
+				Meta:  session.SessionMeta{PID: 2000, Kind: "task", Entrypoint: "sdk-py"},
+				State: session.SessionActive,
+			},
+			wantPrefix: "task[2000]",
+			wantIdle:   false,
+		},
+		{
+			name: "sdk-cli interactive idle",
+			sess: session.ActiveSession{
+				Meta:  session.SessionMeta{PID: 1001, Kind: "interactive", Entrypoint: "sdk-cli"},
+				State: session.SessionIdle,
+			},
+			wantPrefix: "interactive[1001]",
+			wantIdle:   true,
+		},
+		{
+			name: "sdk-py task idle",
+			sess: session.ActiveSession{
+				Meta:  session.SessionMeta{PID: 2001, Kind: "task", Entrypoint: "sdk-py"},
+				State: session.SessionIdle,
+			},
+			wantPrefix: "task[2001]",
+			wantIdle:   true,
+		},
+		{
+			name: "sdk-py with empty kind defaults to session",
+			sess: session.ActiveSession{
+				Meta:  session.SessionMeta{PID: 2002, Kind: "", Entrypoint: "sdk-py"},
+				State: session.SessionActive,
+			},
+			wantPrefix: "session[2002]",
+			wantIdle:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name := paneDisplayName(tt.sess)
+			if !strings.HasPrefix(name, tt.wantPrefix) {
+				t.Errorf("paneDisplayName() = %q, want prefix %q", name, tt.wantPrefix)
+			}
+			if tt.wantIdle && !strings.Contains(name, "IDLE") {
+				t.Errorf("idle session should contain IDLE suffix, got %q", name)
+			}
+			if !tt.wantIdle && strings.Contains(name, "IDLE") {
+				t.Errorf("active session should not contain IDLE suffix, got %q", name)
+			}
+		})
+	}
+}
+
+// TestSessionDashboard_HandleScanResult_BothEntrypointTypes verifies that
+// handleScanResult correctly processes a mix of sdk-cli and sdk-py sessions,
+// creating panes for both types and applying lifecycle states identically.
+func TestSessionDashboard_HandleScanResult_BothEntrypointTypes(t *testing.T) {
+	checker := newTestPIDChecker(1000, 2000)
+	sessDir := t.TempDir()
+	projectPath := "/test/entrypoint-project"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	makeJSONLFile(t, projectDir, "cli-sess")
+	makeJSONLFile(t, projectDir, "py-sess")
+
+	now := time.Now()
+	scanResult := session.ScanResult{
+		ScanTime: now,
+		Sessions: []session.ActiveSession{
+			{
+				Meta: session.SessionMeta{
+					PID: 1000, SessionID: "cli-sess", CWD: projectPath,
+					Kind: "interactive", Entrypoint: "sdk-cli",
+				},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-10 * time.Second),
+				JSONLDir:          projectDir,
+			},
+			{
+				Meta: session.SessionMeta{
+					PID: 2000, SessionID: "py-sess", CWD: projectPath,
+					Kind: "task", Entrypoint: "sdk-py",
+				},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-15 * time.Second),
+				JSONLDir:          projectDir,
+			},
+		},
+	}
+
+	result, _ := m.handleScanResult(scanResult)
+	updated := result.(SessionDashboardModel)
+
+	if len(updated.panes) != 2 {
+		t.Fatalf("expected 2 panes (one per entrypoint type), got %d", len(updated.panes))
+	}
+
+	// Verify both entrypoint types got panes
+	entrypoints := make(map[string]bool)
+	for _, pane := range updated.panes {
+		entrypoints[pane.session.Meta.Entrypoint] = true
+	}
+	if !entrypoints["sdk-cli"] {
+		t.Error("expected sdk-cli session to have a pane")
+	}
+	if !entrypoints["sdk-py"] {
+		t.Error("expected sdk-py session to have a pane")
+	}
+}
+
+// TestSessionDashboard_IdleStateAppliesToBothEntrypoints verifies that
+// lifecycle state updates (Active → Idle) apply equally to sdk-cli and sdk-py sessions.
+func TestSessionDashboard_IdleStateAppliesToBothEntrypoints(t *testing.T) {
+	checker := newTestPIDChecker(1000, 2000)
+	sessDir := t.TempDir()
+	projectPath := "/test/idle-entrypoint-project"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	makeJSONLFile(t, projectDir, "cli-sess")
+	makeJSONLFile(t, projectDir, "py-sess")
+
+	now := time.Now()
+
+	// First scan: both sessions active
+	scanResult1 := session.ScanResult{
+		ScanTime: now,
+		Sessions: []session.ActiveSession{
+			{
+				Meta: session.SessionMeta{
+					PID: 1000, SessionID: "cli-sess", CWD: projectPath,
+					Entrypoint: "sdk-cli",
+				},
+				State:             session.SessionActive,
+				JSONLLastModified: now,
+				JSONLDir:          projectDir,
+			},
+			{
+				Meta: session.SessionMeta{
+					PID: 2000, SessionID: "py-sess", CWD: projectPath,
+					Entrypoint: "sdk-py",
+				},
+				State:             session.SessionActive,
+				JSONLLastModified: now,
+				JSONLDir:          projectDir,
+			},
+		},
+	}
+
+	result, _ := m.handleScanResult(scanResult1)
+	m = result.(SessionDashboardModel)
+
+	// Second scan: both sessions now idle (3 minutes later)
+	laterTime := now.Add(3 * time.Minute)
+	scanResult2 := session.ScanResult{
+		ScanTime: laterTime,
+		Sessions: []session.ActiveSession{
+			{
+				Meta: session.SessionMeta{
+					PID: 1000, SessionID: "cli-sess", CWD: projectPath,
+					Entrypoint: "sdk-cli",
+				},
+				State:             session.SessionIdle,
+				JSONLLastModified: now, // unchanged
+				JSONLDir:          projectDir,
+			},
+			{
+				Meta: session.SessionMeta{
+					PID: 2000, SessionID: "py-sess", CWD: projectPath,
+					Entrypoint: "sdk-py",
+				},
+				State:             session.SessionIdle,
+				JSONLLastModified: now, // unchanged
+				JSONLDir:          projectDir,
+			},
+		},
+	}
+
+	result, _ = m.handleScanResult(scanResult2)
+	m = result.(SessionDashboardModel)
+
+	// Both panes should now reflect idle state
+	for _, pane := range m.panes {
+		if pane.session.State != session.SessionIdle {
+			t.Errorf("PID=%d entrypoint=%q: expected Idle state, got %s",
+				pane.session.Meta.PID, pane.session.Meta.Entrypoint, pane.session.State)
+		}
+	}
+}
+
+// TestHandleScanResult_DeadPIDRemovedImmediately verifies AC5:
+// when a PID is dead (absent from a full scan result), its dashboard pane is
+// removed immediately — even if the session's last known state was Active
+// (JSONL recently modified). PID death takes priority over JSONL timing.
+func TestHandleScanResult_DeadPIDRemovedImmediately(t *testing.T) {
+	checker := newTestPIDChecker(1000, 2000)
+	sessDir := t.TempDir()
+	projectPath := "/test/ac5-dead-pid-dashboard"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	now := time.Now()
+
+	// First scan: two sessions, both Active (JSONL recently modified)
+	scanResult1 := session.ScanResult{
+		ScanTime:   now,
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{
+				Meta: session.SessionMeta{
+					PID: 1000, SessionID: "sess-alive", CWD: projectPath,
+					Entrypoint: "sdk-cli",
+				},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-10 * time.Second),
+			},
+			{
+				Meta: session.SessionMeta{
+					PID: 2000, SessionID: "sess-dies", CWD: projectPath,
+					Entrypoint: "sdk-cli",
+				},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-5 * time.Second), // very recent — still "Active"
+			},
+		},
+	}
+	result, _ := m.handleScanResult(scanResult1)
+	m = result.(SessionDashboardModel)
+
+	if len(m.panes) != 2 {
+		t.Fatalf("setup: expected 2 panes, got %d", len(m.panes))
+	}
+
+	// PID 2000 dies. The scanner won't include it in the next scan because
+	// IsAlive(2000) returns false. The JSONL is still recent — but the PID is dead.
+	// The full scan result arrives without PID 2000.
+	scanResult2 := session.ScanResult{
+		ScanTime:   now.Add(30 * time.Second), // only 30s later — JSONL still "Active"
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{
+				Meta: session.SessionMeta{
+					PID: 1000, SessionID: "sess-alive", CWD: projectPath,
+					Entrypoint: "sdk-cli",
+				},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-10 * time.Second),
+			},
+			// PID 2000 intentionally absent — scanner excluded it because IsAlive(2000)==false
+		},
+	}
+	result, _ = m.handleScanResult(scanResult2)
+	m = result.(SessionDashboardModel)
+
+	// PID 2000's pane must be removed immediately, regardless of JSONL timing
+	if len(m.panes) != 1 {
+		t.Fatalf("expected 1 pane after dead PID removed, got %d", len(m.panes))
+	}
+	if m.panes[0].session.Meta.PID != 1000 {
+		t.Errorf("expected PID 1000 to remain, got PID %d", m.panes[0].session.Meta.PID)
+	}
+	if m.panes[0].session.State != session.SessionActive {
+		t.Errorf("surviving session should remain Active, got %s", m.panes[0].session.State)
+	}
+}
+
+// TestHandleScanResult_DeadPIDRemovedImmediately_NonFullScanNoRemoval verifies
+// that non-full scan results do NOT remove panes, since they may be incomplete.
+func TestHandleScanResult_DeadPIDRemovedImmediately_NonFullScanNoRemoval(t *testing.T) {
+	checker := newTestPIDChecker(1000, 2000)
+	sessDir := t.TempDir()
+	projectPath := "/test/ac5-nonfull-scan"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	now := time.Now()
+
+	// First populate 2 panes via a full scan
+	fullScan := session.ScanResult{
+		ScanTime:   now,
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{
+				Meta:  session.SessionMeta{PID: 1000, SessionID: "s1", CWD: projectPath},
+				State: session.SessionActive,
+			},
+			{
+				Meta:  session.SessionMeta{PID: 2000, SessionID: "s2", CWD: projectPath},
+				State: session.SessionActive,
+			},
+		},
+	}
+	result, _ := m.handleScanResult(fullScan)
+	m = result.(SessionDashboardModel)
+	if len(m.panes) != 2 {
+		t.Fatalf("setup: expected 2 panes, got %d", len(m.panes))
+	}
+
+	// Non-full scan arrives with only 1 session (PID 2000 absent).
+	// Since IsFullScan=false, no panes should be removed.
+	partialScan := session.ScanResult{
+		ScanTime:   now.Add(time.Second),
+		IsFullScan: false, // NOT a full scan — must not trigger removal
+		Sessions: []session.ActiveSession{
+			{
+				Meta:  session.SessionMeta{PID: 1000, SessionID: "s1", CWD: projectPath},
+				State: session.SessionActive,
+			},
+		},
+	}
+	result, _ = m.handleScanResult(partialScan)
+	m = result.(SessionDashboardModel)
+
+	// Both panes must remain — non-full scan must not remove panes
+	if len(m.panes) != 2 {
+		t.Errorf("non-full scan must not remove panes; expected 2 panes, got %d", len(m.panes))
+	}
+}
+
+// TestHandleScanResult_PaneRemovedAfter5MinutesOfJSONLInactivity verifies AC4:
+// a session pane is removed from the dashboard when the session's JSONL file
+// has not been modified for 5+ minutes (SessionRemoved state), even if the
+// underlying process (PID) is still technically alive.
+func TestHandleScanResult_PaneRemovedAfter5MinutesOfJSONLInactivity(t *testing.T) {
+	checker := newTestPIDChecker(1000, 2000)
+	sessDir := t.TempDir()
+	projectPath := "/test/ac4-removal-project"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	now := time.Now()
+
+	// First scan: two sessions, both Active (JSONL recently modified)
+	scanResult1 := session.ScanResult{
+		ScanTime:   now,
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{
+				Meta: session.SessionMeta{
+					PID: 1000, SessionID: "active-sess", CWD: projectPath,
+					Kind: "interactive",
+				},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-30 * time.Second),
+				JSONLDir:          projectDir,
+			},
+			{
+				Meta: session.SessionMeta{
+					PID: 2000, SessionID: "stale-sess", CWD: projectPath,
+					Kind: "interactive",
+				},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-30 * time.Second),
+				JSONLDir:          projectDir,
+			},
+		},
+	}
+
+	result, _ := m.handleScanResult(scanResult1)
+	m = result.(SessionDashboardModel)
+
+	if len(m.panes) != 2 {
+		t.Fatalf("setup: expected 2 panes after first scan, got %d", len(m.panes))
+	}
+
+	// Second scan: 6 minutes later. PID 2000 is still alive but JSONL has not
+	// been written for 6 minutes → SessionRemoved state.
+	// PID 1000 remains active.
+	laterTime := now.Add(6 * time.Minute)
+	scanResult2 := session.ScanResult{
+		ScanTime:   laterTime,
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{
+				Meta: session.SessionMeta{
+					PID: 1000, SessionID: "active-sess", CWD: projectPath,
+					Kind: "interactive",
+				},
+				State:             session.SessionActive,
+				JSONLLastModified: laterTime.Add(-10 * time.Second), // still being updated
+				JSONLDir:          projectDir,
+			},
+			{
+				// PID 2000 is alive but JSONL has 6 minutes of inactivity → Removed
+				Meta: session.SessionMeta{
+					PID: 2000, SessionID: "stale-sess", CWD: projectPath,
+					Kind: "interactive",
+				},
+				State:             session.SessionRemoved,
+				JSONLLastModified: now.Add(-30 * time.Second), // same as before — no new writes
+				JSONLDir:          projectDir,
+			},
+		},
+	}
+
+	result, _ = m.handleScanResult(scanResult2)
+	m = result.(SessionDashboardModel)
+
+	// PID 2000's pane must be removed after 5+ minutes of JSONL inactivity
+	if len(m.panes) != 1 {
+		t.Fatalf("expected 1 pane after stale session removed, got %d", len(m.panes))
+	}
+	if m.panes[0].session.Meta.PID != 1000 {
+		t.Errorf("expected PID 1000 to remain, got PID %d", m.panes[0].session.Meta.PID)
+	}
+	if m.panes[0].session.State != session.SessionActive {
+		t.Errorf("surviving session should remain Active, got %s", m.panes[0].session.State)
+	}
+}
+
+// TestHandleScanResult_RemovedSessionNotAddedAsPane verifies AC4:
+// a session already in SessionRemoved state (JSONL not modified for 5+ minutes)
+// when first seen in a scan result must NOT be added as a new dashboard pane.
+func TestHandleScanResult_RemovedSessionNotAddedAsPane(t *testing.T) {
+	checker := newTestPIDChecker(1000)
+	sessDir := t.TempDir()
+	projectPath := "/test/ac4-no-add-removed"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	now := time.Now()
+
+	// Scan returns a session that is already in SessionRemoved state.
+	// This can happen when the dashboard first starts and finds old sessions.
+	scanResult := session.ScanResult{
+		ScanTime:   now,
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{
+				Meta: session.SessionMeta{
+					PID: 1000, SessionID: "ancient-sess", CWD: projectPath,
+					Kind: "interactive",
+				},
+				State:             session.SessionRemoved,
+				JSONLLastModified: now.Add(-6 * time.Minute), // 6 minutes old
+				JSONLDir:          projectDir,
+			},
+		},
+	}
+
+	result, _ := m.handleScanResult(scanResult)
+	m = result.(SessionDashboardModel)
+
+	// Session past the removal threshold must not get a pane
+	if len(m.panes) != 0 {
+		t.Errorf("expected 0 panes for already-removed session (5+ min old JSONL), got %d", len(m.panes))
+	}
+}
+
+// TestSessionPaneModel_ViewWithFocus_IdleShowsWarningState verifies AC7:
+// idle sessions (JSONL not modified for 2–5 minutes) display a distinct visual
+// warning state in the dashboard — the "⏸ IDLE" suffix appears in the header
+// and the pane consistently shows the idle indicator for both focused and
+// unfocused states.
+func TestSessionPaneModel_ViewWithFocus_IdleShowsWarningState(t *testing.T) {
+	pane := SessionPaneModel{
+		session: session.ActiveSession{
+			Meta:  session.SessionMeta{PID: 777, Kind: "interactive"},
+			State: session.SessionIdle,
+		},
+		width:   40,
+		height:  10,
+		loading: true,
+	}
+
+	// Focused idle pane must show IDLE indicator
+	viewFocused := pane.ViewWithFocus(true)
+	if viewFocused == "" {
+		t.Fatal("focused idle pane should not be empty")
+	}
+	if !strings.Contains(viewFocused, "IDLE") {
+		t.Error("focused idle pane should show IDLE indicator, got:\n" + viewFocused)
+	}
+
+	// Unfocused idle pane must also show IDLE indicator
+	viewUnfocused := pane.ViewWithFocus(false)
+	if viewUnfocused == "" {
+		t.Fatal("unfocused idle pane should not be empty")
+	}
+	if !strings.Contains(viewUnfocused, "IDLE") {
+		t.Error("unfocused idle pane should show IDLE indicator, got:\n" + viewUnfocused)
+	}
+
+	// The IDLE indicator must include the pause symbol
+	if !strings.Contains(viewFocused, "⏸") {
+		t.Error("idle pane header should include pause symbol ⏸")
+	}
+}
+
+// TestSessionPaneModel_ViewWithFocus_IdleVsActive_VisuallyDistinct verifies AC7:
+// the visual output of an idle pane is different from an active pane with the
+// same dimensions and content, ensuring the user can distinguish idle sessions.
+func TestSessionPaneModel_ViewWithFocus_IdleVsActive_VisuallyDistinct(t *testing.T) {
+	activePane := SessionPaneModel{
+		session: session.ActiveSession{
+			Meta:  session.SessionMeta{PID: 100, Kind: "interactive"},
+			State: session.SessionActive,
+		},
+		width:   40,
+		height:  10,
+		loading: true,
+	}
+
+	idlePane := SessionPaneModel{
+		session: session.ActiveSession{
+			Meta:  session.SessionMeta{PID: 100, Kind: "interactive"},
+			State: session.SessionIdle,
+		},
+		width:   40,
+		height:  10,
+		loading: true,
+	}
+
+	activeView := activePane.ViewWithFocus(false)
+	idleView := idlePane.ViewWithFocus(false)
+
+	if activeView == idleView {
+		t.Error("idle pane should render differently from active pane with same content")
+	}
+	if !strings.Contains(idleView, "IDLE") {
+		t.Error("idle pane view should contain IDLE, got:\n" + idleView)
+	}
+	if strings.Contains(activeView, "IDLE") {
+		t.Error("active pane view should not contain IDLE, got:\n" + activeView)
+	}
+}
+
+// TestHandleScanResult_IdleSessionUpdatesExistingPane verifies AC7:
+// when a scan result transitions an existing pane's session from Active to Idle,
+// the pane's session state is updated so the idle visual is shown.
+func TestHandleScanResult_IdleSessionUpdatesExistingPane(t *testing.T) {
+	checker := newTestPIDChecker(500)
+	sessDir := t.TempDir()
+	projectPath := "/test/ac7-idle-update"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	now := time.Now()
+
+	// First scan: session is Active
+	scanResult1 := session.ScanResult{
+		ScanTime:   now,
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{
+				Meta:              session.SessionMeta{PID: 500, SessionID: "sess-500", CWD: projectPath, Kind: "interactive"},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-30 * time.Second),
+				JSONLDir:          projectDir,
+			},
+		},
+	}
+	result, _ := m.handleScanResult(scanResult1)
+	m = result.(SessionDashboardModel)
+
+	if len(m.panes) != 1 {
+		t.Fatalf("setup: expected 1 pane, got %d", len(m.panes))
+	}
+	if m.panes[0].session.State != session.SessionActive {
+		t.Errorf("initial state should be Active, got %s", m.panes[0].session.State)
+	}
+
+	// Second scan: 3 minutes later — session is now Idle
+	laterTime := now.Add(3 * time.Minute)
+	scanResult2 := session.ScanResult{
+		ScanTime:   laterTime,
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{
+				Meta:              session.SessionMeta{PID: 500, SessionID: "sess-500", CWD: projectPath, Kind: "interactive"},
+				State:             session.SessionIdle,
+				JSONLLastModified: now.Add(-30 * time.Second), // unchanged
+				JSONLDir:          projectDir,
+			},
+		},
+	}
+	result, _ = m.handleScanResult(scanResult2)
+	m = result.(SessionDashboardModel)
+
+	if len(m.panes) != 1 {
+		t.Fatalf("expected 1 pane to remain after idle transition, got %d", len(m.panes))
+	}
+	if m.panes[0].session.State != session.SessionIdle {
+		t.Errorf("pane should show Idle state after 3 minutes of inactivity, got %s",
+			m.panes[0].session.State)
+	}
+
+	// The pane's visual output should show the idle indicator
+	view := m.panes[0].ViewWithFocus(false)
+	if !strings.Contains(view, "IDLE") {
+		t.Errorf("idle pane visual should contain IDLE indicator, got:\n%s", view)
+	}
+}
+
+// TestHandleScanResult_AllSessionsRemovedAfter5MinuteInactivity verifies AC4:
+// when ALL sessions exceed the 5-minute JSONL inactivity threshold in a full scan,
+// all panes are removed and the dashboard becomes empty.
+func TestHandleScanResult_AllSessionsRemovedAfter5MinuteInactivity(t *testing.T) {
+	checker := newTestPIDChecker(1000, 2000, 3000)
+	sessDir := t.TempDir()
+	projectPath := "/test/ac4-all-removed"
+	projectDir := t.TempDir()
+
+	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
+	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
+	m := NewSessionDashboardModel(projectPath, projectDir, scanner, monitor)
+	m.SetSize(120, 40)
+
+	now := time.Now()
+
+	// First scan: three active sessions
+	scanResult1 := session.ScanResult{
+		ScanTime:   now,
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{
+				Meta:              session.SessionMeta{PID: 1000, SessionID: "s1", CWD: projectPath, Kind: "interactive"},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-10 * time.Second),
+				JSONLDir:          projectDir,
+			},
+			{
+				Meta:              session.SessionMeta{PID: 2000, SessionID: "s2", CWD: projectPath, Kind: "interactive"},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-20 * time.Second),
+				JSONLDir:          projectDir,
+			},
+			{
+				Meta:              session.SessionMeta{PID: 3000, SessionID: "s3", CWD: projectPath, Kind: "interactive"},
+				State:             session.SessionActive,
+				JSONLLastModified: now.Add(-30 * time.Second),
+				JSONLDir:          projectDir,
+			},
+		},
+	}
+
+	result, _ := m.handleScanResult(scanResult1)
+	m = result.(SessionDashboardModel)
+
+	if len(m.panes) != 3 {
+		t.Fatalf("setup: expected 3 panes after first scan, got %d", len(m.panes))
+	}
+
+	// Second scan: 6 minutes later — all sessions have exceeded the removal threshold.
+	// All PIDs are still alive, but JSONL files haven't been updated.
+	laterTime := now.Add(6 * time.Minute)
+	scanResult2 := session.ScanResult{
+		ScanTime:   laterTime,
+		IsFullScan: true,
+		Sessions: []session.ActiveSession{
+			{
+				Meta:              session.SessionMeta{PID: 1000, SessionID: "s1", CWD: projectPath, Kind: "interactive"},
+				State:             session.SessionRemoved,
+				JSONLLastModified: now.Add(-10 * time.Second), // unchanged
+				JSONLDir:          projectDir,
+			},
+			{
+				Meta:              session.SessionMeta{PID: 2000, SessionID: "s2", CWD: projectPath, Kind: "interactive"},
+				State:             session.SessionRemoved,
+				JSONLLastModified: now.Add(-20 * time.Second), // unchanged
+				JSONLDir:          projectDir,
+			},
+			{
+				Meta:              session.SessionMeta{PID: 3000, SessionID: "s3", CWD: projectPath, Kind: "interactive"},
+				State:             session.SessionRemoved,
+				JSONLLastModified: now.Add(-30 * time.Second), // unchanged
+				JSONLDir:          projectDir,
+			},
+		},
+	}
+
+	result, _ = m.handleScanResult(scanResult2)
+	m = result.(SessionDashboardModel)
+
+	// All panes must be removed — no pane should persist past the 5-minute threshold
+	if len(m.panes) != 0 {
+		t.Errorf("expected 0 panes after all sessions exceed 5-minute removal threshold, got %d", len(m.panes))
 	}
 }

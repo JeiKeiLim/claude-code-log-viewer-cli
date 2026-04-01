@@ -24,17 +24,19 @@ func DefaultSessionsPath() string {
 
 // ScanResult holds the results of a single session directory scan.
 type ScanResult struct {
-	Sessions []ActiveSession
-	ScanTime time.Time
-	Err      error
+	Sessions   []ActiveSession
+	ScanTime   time.Time
+	Err        error
+	IsFullScan bool // True when this result represents a complete directory scan (not a synthetic single-session event)
 }
 
 // SessionScanner polls the sessions directory for {pid}.json files
 // and returns detected sessions with metadata.
 type SessionScanner struct {
-	sessionsDir string
-	pidChecker  PIDChecker
-	interval    time.Duration
+	sessionsDir  string
+	pidChecker   PIDChecker
+	interval     time.Duration
+	jsonlBaseDir string // Optional override for JSONL file lookup directory (primarily for tests)
 
 	mu       sync.Mutex
 	stopCh   chan struct{}
@@ -58,6 +60,18 @@ func WithScanInterval(d time.Duration) ScannerOption {
 func WithScannerPIDChecker(checker PIDChecker) ScannerOption {
 	return func(s *SessionScanner) {
 		s.pidChecker = checker
+	}
+}
+
+// WithJSONLBaseDir overrides the directory in which the scanner looks for
+// JSONL log files when checking session activity. By default the scanner
+// derives the lookup directory from each session's CWD using CWDToProjectDir.
+// Supplying a non-empty dir causes the scanner to look in that directory
+// instead, which is useful in tests where JSONL files live in a temp directory
+// rather than the real ~/.claude/projects tree.
+func WithJSONLBaseDir(dir string) ScannerOption {
+	return func(s *SessionScanner) {
+		s.jsonlBaseDir = dir
 	}
 }
 
@@ -94,10 +108,13 @@ func (s *SessionScanner) Interval() time.Duration {
 
 // Scan performs a single scan of the sessions directory and returns
 // all detected session files with their parsed metadata. Only sessions
-// whose PIDs are alive are included.
+// whose PIDs are alive and whose JSONL log file exists are included.
+// Sessions without a JSONL log file are skipped entirely — PID liveness
+// alone is never sufficient.
 func (s *SessionScanner) Scan() ScanResult {
 	result := ScanResult{
-		ScanTime: time.Now(),
+		ScanTime:   time.Now(),
+		IsFullScan: true,
 	}
 
 	entries, err := os.ReadDir(s.sessionsDir)
@@ -132,10 +149,59 @@ func (s *SessionScanner) Scan() ScanResult {
 			continue // Skip unreadable/corrupt/invalid files
 		}
 
+		// Skip sessions without a JSONL log file.
+		// The lookup directory is either the override (jsonlBaseDir, used in tests)
+		// or the project directory derived from the session's CWD.
+		jsonlLookupDir := s.jsonlBaseDir
+		if jsonlLookupDir == "" {
+			// Default: derive from CWD — requires a non-empty JSONLDir.
+			if session.JSONLDir == "" {
+				continue
+			}
+			jsonlLookupDir = session.JSONLDir
+		}
+		jsonlPath := filepath.Join(jsonlLookupDir, session.Meta.SessionID+".jsonl")
+		jsonlStat, err := os.Stat(jsonlPath)
+		if err != nil {
+			continue // JSONL file does not exist or is inaccessible
+		}
+
+		// Use JSONL file last-modified time as the primary activity signal.
+		modTime := jsonlStat.ModTime()
+		session.JSONLLastModified = modTime
+		session.State = ClassifySessionState(modTime, result.ScanTime)
+
 		result.Sessions = append(result.Sessions, session)
 	}
 
 	return result
+}
+
+// JSONLPath returns the full path to the JSONL log file for a session.
+// Returns an empty string if JSONLDir is empty.
+func JSONLPath(sess ActiveSession) string {
+	if sess.JSONLDir == "" {
+		return ""
+	}
+	return filepath.Join(sess.JSONLDir, sess.Meta.SessionID+".jsonl")
+}
+
+// ClassifySessionState determines the lifecycle state of a session based on
+// the JSONL file's last modification time relative to the current time.
+//
+// State transitions:
+//   - Active: JSONL modified within IdleThreshold (2 minutes)
+//   - Idle: JSONL not modified for IdleThreshold..RemovalThreshold (2–5 minutes)
+//   - Removed: JSONL not modified for longer than RemovalThreshold (5+ minutes)
+func ClassifySessionState(jsonlModTime, now time.Time) SessionState {
+	age := now.Sub(jsonlModTime)
+	if age >= RemovalThreshold {
+		return SessionRemoved
+	}
+	if age >= IdleThreshold {
+		return SessionIdle
+	}
+	return SessionActive
 }
 
 // ScanOnce performs a scan and caches the result. Thread-safe.
@@ -271,6 +337,49 @@ func CWDToProjectDir(cwd string) string {
 	// On Unix, paths start with / which becomes a leading -
 	// On Windows, this would need different handling
 	return filepath.Join(home, ".claude", "projects", encoded)
+}
+
+// DeduplicateBySessionID removes duplicate sessions that share the same sessionId,
+// keeping only the one with the highest (latest) PID. When multiple PIDs reference
+// the same sessionId (e.g., after a Claude Code process restart), only the most
+// recent incarnation should be shown to avoid ghost panes.
+//
+// The relative order of surviving sessions is preserved (matches their first
+// winning appearance in the input slice). The input slice is not modified;
+// a new slice is returned. Returns nil when the input is empty.
+func DeduplicateBySessionID(sessions []ActiveSession) []ActiveSession {
+	if len(sessions) == 0 {
+		return nil
+	}
+
+	// First pass: determine the highest PID for each sessionId.
+	bestPID := make(map[string]int, len(sessions))
+	for _, s := range sessions {
+		id := s.Meta.SessionID
+		if id == "" {
+			id = s.FilePath
+		}
+		if s.Meta.PID > bestPID[id] {
+			bestPID[id] = s.Meta.PID
+		}
+	}
+
+	// Second pass: iterate in original order, keeping only the session whose
+	// PID equals the best PID for its sessionId. This preserves insertion order
+	// and ensures stable, deterministic output even when no duplicates exist.
+	seen := make(map[string]bool, len(bestPID))
+	out := make([]ActiveSession, 0, len(bestPID))
+	for _, s := range sessions {
+		id := s.Meta.SessionID
+		if id == "" {
+			id = s.FilePath
+		}
+		if !seen[id] && s.Meta.PID == bestPID[id] {
+			out = append(out, s)
+			seen[id] = true
+		}
+	}
+	return out
 }
 
 // FilterByProject returns the subset of sessions whose CWD matches the given

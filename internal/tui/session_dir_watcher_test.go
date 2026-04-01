@@ -287,11 +287,19 @@ func TestHandleDirWatcherEvent_SessionOpened_MaxPanesLimit(t *testing.T) {
 		current = newModel.(SessionDashboardModel)
 	}
 
-	if current.PaneCount() > MaxSessionPanes {
-		t.Errorf("pane count = %d, exceeded max %d", current.PaneCount(), MaxSessionPanes)
+	// With pagination, all sessions are stored (no hard cap at MaxSessionPanes)
+	expectedTotal := len(pids)
+	if current.PaneCount() != expectedTotal {
+		t.Errorf("pane count = %d, want %d (all stored for pagination)", current.PaneCount(), expectedTotal)
 	}
-	if current.PaneCount() != MaxSessionPanes {
-		t.Errorf("pane count = %d, want %d", current.PaneCount(), MaxSessionPanes)
+
+	// Verify pagination: page 0 shows up to 9, page 1 shows the rest
+	visiblePanes := current.CurrentPagePanes()
+	if len(visiblePanes) != MaxSessionPanes {
+		t.Errorf("page 0 visible panes = %d, want %d", len(visiblePanes), MaxSessionPanes)
+	}
+	if current.TotalPages() != 2 {
+		t.Errorf("total pages = %d, want 2", current.TotalPages())
 	}
 }
 

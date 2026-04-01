@@ -43,6 +43,8 @@ func regFormatFilename(pid int) string {
 }
 
 // regWriteSessionFile writes a valid {pid}.json session file to dir and returns its path.
+// It also creates the corresponding JSONL log file so that the scanner's
+// JSONL-existence check passes.
 func regWriteSessionFile(t *testing.T, dir string, pid int, sessionID string) string {
 	t.Helper()
 	meta := SessionMeta{
@@ -60,6 +62,24 @@ func regWriteSessionFile(t *testing.T, dir string, pid int, sessionID string) st
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatalf("write session file %s: %v", path, err)
 	}
+
+	// Create the JSONL log file so the scanner includes this session.
+	jsonlDir := CWDToProjectDir(meta.CWD)
+	if jsonlDir != "" {
+		if err := os.MkdirAll(jsonlDir, 0755); err != nil {
+			t.Fatalf("create JSONL dir %s: %v", jsonlDir, err)
+		}
+		jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
+		if err := os.WriteFile(jsonlPath, []byte("{}\n"), 0644); err != nil {
+			t.Fatalf("write JSONL file %s: %v", jsonlPath, err)
+		}
+		t.Cleanup(func() {
+			os.Remove(jsonlPath)
+			// Try to remove the dir if empty; ignore errors
+			os.Remove(jsonlDir)
+		})
+	}
+
 	return path
 }
 

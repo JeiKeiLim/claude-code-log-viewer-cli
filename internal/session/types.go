@@ -32,11 +32,47 @@ func (s SessionMeta) ProjectName() string {
 	return filepath.Base(s.CWD)
 }
 
+// SessionState represents the lifecycle state of a session.
+type SessionState int
+
+const (
+	// SessionActive means the session's JSONL file was modified within the idle threshold.
+	SessionActive SessionState = iota
+	// SessionIdle means the JSONL file has not been modified for longer than the idle threshold
+	// but less than the removal threshold.
+	SessionIdle
+	// SessionRemoved means the JSONL file has not been modified for longer than the removal
+	// threshold, and the session should be removed from the dashboard.
+	SessionRemoved
+)
+
+// String returns a human-readable label for the session state.
+func (s SessionState) String() string {
+	switch s {
+	case SessionActive:
+		return "Active"
+	case SessionIdle:
+		return "Idle"
+	case SessionRemoved:
+		return "Removed"
+	default:
+		return "Unknown"
+	}
+}
+
+// IdleThreshold is the duration of no JSONL writes after which a session is considered idle.
+const IdleThreshold = 2 * time.Minute
+
+// RemovalThreshold is the duration of no JSONL writes after which a session is removed.
+const RemovalThreshold = 5 * time.Minute
+
 // ActiveSession represents a detected active Claude Code session.
 type ActiveSession struct {
-	Meta     SessionMeta
-	FilePath string // Path to the session JSON file
-	JSONLDir string // Project directory containing the JSONL file
+	Meta              SessionMeta
+	FilePath          string       // Path to the session JSON file
+	JSONLDir          string       // Project directory containing the JSONL file
+	State             SessionState // Lifecycle state (Active, Idle)
+	JSONLLastModified time.Time    // Last modification time of the JSONL log file
 }
 
 // SessionEvent represents a lifecycle event for a session.
