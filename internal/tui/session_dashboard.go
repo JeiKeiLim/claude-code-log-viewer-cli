@@ -110,6 +110,13 @@ type SessionPaneModel struct {
 	dirty       bool   // True when pane content has changed
 	cachedView  string // Cached ViewWithFocus output
 	lastFocused bool   // Whether pane was focused in last render
+
+	// scanMissCount tracks consecutive full scans where this pane's PID was
+	// absent from the results. A transient file-read failure (race with Claude
+	// writing to {pid}.json) can cause a single miss; requiring multiple
+	// consecutive misses before removal avoids destroying the viewer and
+	// losing follow-mode state. Reset to 0 whenever the PID reappears.
+	scanMissCount int
 }
 
 // Message types for session dashboard
@@ -717,11 +724,18 @@ func (m SessionDashboardModel) handleScanResult(result session.ScanResult) (tea.
 	isFullScan := result.IsFullScan && len(m.panes) > 0
 
 	// Remove panes for dead/ended sessions whose PIDs are no longer alive.
+	// Use a grace period (scanMissThreshold consecutive misses) to avoid
+	// removing panes due to transient file-read races with Claude Code.
+	const scanMissThreshold = 3 // ~6 seconds at 2s scan interval
 	removedAny := false
 	if isFullScan {
 		for i := len(m.panes) - 1; i >= 0; i-- {
 			pid := m.panes[i].session.Meta.PID
 			if !livePIDs[pid] {
+				m.panes[i].scanMissCount++
+				if m.panes[i].scanMissCount < scanMissThreshold {
+					continue // Grace period: wait for more consecutive misses
+				}
 				// Close watcher for dead session
 				if m.panes[i].watcher != nil {
 					_ = m.panes[i].watcher.Close()
@@ -731,6 +745,9 @@ func (m SessionDashboardModel) handleScanResult(result session.ScanResult) (tea.
 				// Remove pane
 				m.panes = append(m.panes[:i], m.panes[i+1:]...)
 				removedAny = true
+			} else {
+				// PID reappeared — reset miss counter
+				m.panes[i].scanMissCount = 0
 			}
 		}
 	}

@@ -3870,9 +3870,9 @@ func TestPageStability_HandleScanResultPreservesPage(t *testing.T) {
 			aliveSessions = append(aliveSessions, s)
 		}
 	}
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
 	scanResult2 := session.ScanResult{Sessions: aliveSessions, IsFullScan: true}
-	newModel2, _ := m.Update(sessionScanResultMsg{result: scanResult2})
-	m = newModel2.(SessionDashboardModel)
+	m = applyScanResultNTimes(t, m, sessionScanResultMsg{result: scanResult2}, testScanMissThreshold)
 
 	// Page 1 still has 2 sessions (was 3, removed 0 from page 2)
 	// Actually removing PID 1004 from page 1 shifts indices, page 2 now has 2
@@ -4056,9 +4056,9 @@ func TestAutoRetreat_ScanResultRemovesAllOnCurrentPage(t *testing.T) {
 		}
 	}
 
-	result := session.ScanResult{Sessions: liveSessions, IsFullScan: true}
-	newModel, _ := m.handleScanResult(result)
-	updated := newModel.(SessionDashboardModel)
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
+	scanMsg := sessionScanResultMsg{result: session.ScanResult{Sessions: liveSessions, IsFullScan: true}}
+	updated := applyScanResultNTimes(t, m, scanMsg, testScanMissThreshold)
 
 	// Should auto-retreat to page 0 (only page left)
 	if updated.currentPage != 0 {
@@ -4119,9 +4119,9 @@ func TestAutoRetreat_ScanResultRetreatsToLastNonEmptyPage(t *testing.T) {
 		}
 	}
 
-	result := session.ScanResult{Sessions: liveSessions, IsFullScan: true}
-	newModel, _ := m.handleScanResult(result)
-	updated := newModel.(SessionDashboardModel)
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
+	scanMsg := sessionScanResultMsg{result: session.ScanResult{Sessions: liveSessions, IsFullScan: true}}
+	updated := applyScanResultNTimes(t, m, scanMsg, testScanMissThreshold)
 
 	// Should retreat to page 0 (5 sessions fit on 1 page)
 	if updated.currentPage != 0 {
@@ -4204,9 +4204,9 @@ func TestAutoRetreat_AllSessionsDisappear(t *testing.T) {
 		},
 	}
 
-	result := session.ScanResult{Sessions: liveSessions, IsFullScan: true}
-	newModel, _ := m.handleScanResult(result)
-	updated := newModel.(SessionDashboardModel)
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
+	scanMsg := sessionScanResultMsg{result: session.ScanResult{Sessions: liveSessions, IsFullScan: true}}
+	updated := applyScanResultNTimes(t, m, scanMsg, testScanMissThreshold)
 
 	// Only 1 session left, should be on page 0
 	if updated.currentPage != 0 {
@@ -5159,8 +5159,9 @@ func TestSessionDashboard_IdleStateAppliesToBothEntrypoints(t *testing.T) {
 
 // TestHandleScanResult_DeadPIDRemovedImmediately verifies AC5:
 // when a PID is dead (absent from a full scan result), its dashboard pane is
-// removed immediately — even if the session's last known state was Active
-// (JSONL recently modified). PID death takes priority over JSONL timing.
+// removed after the grace period (scanMissThreshold consecutive misses) — even
+// if the session's last known state was Active (JSONL recently modified).
+// PID death takes priority over JSONL timing.
 func TestHandleScanResult_DeadPIDRemovedImmediately(t *testing.T) {
 	checker := newTestPIDChecker(1000, 2000)
 	sessDir := t.TempDir()
@@ -5222,10 +5223,11 @@ func TestHandleScanResult_DeadPIDRemovedImmediately(t *testing.T) {
 			// PID 2000 intentionally absent — scanner excluded it because IsAlive(2000)==false
 		},
 	}
-	result, _ = m.handleScanResult(scanResult2)
-	m = result.(SessionDashboardModel)
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
+	scanMsg := sessionScanResultMsg{result: scanResult2}
+	m = applyScanResultNTimes(t, m, scanMsg, testScanMissThreshold)
 
-	// PID 2000's pane must be removed immediately, regardless of JSONL timing
+	// PID 2000's pane must be removed after grace period, regardless of JSONL timing
 	if len(m.panes) != 1 {
 		t.Fatalf("expected 1 pane after dead PID removed, got %d", len(m.panes))
 	}
@@ -5374,10 +5376,11 @@ func TestHandleScanResult_PaneRemovedAfter5MinutesOfJSONLInactivity(t *testing.T
 		},
 	}
 
-	result, _ = m.handleScanResult(scanResult2)
-	m = result.(SessionDashboardModel)
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
+	scanMsg := sessionScanResultMsg{result: scanResult2}
+	m = applyScanResultNTimes(t, m, scanMsg, testScanMissThreshold)
 
-	// PID 2000's pane must be removed after 5+ minutes of JSONL inactivity
+	// PID 2000's pane must be removed after 5+ minutes of JSONL inactivity (grace period satisfied)
 	if len(m.panes) != 1 {
 		t.Fatalf("expected 1 pane after stale session removed, got %d", len(m.panes))
 	}
@@ -5658,10 +5661,11 @@ func TestHandleScanResult_AllSessionsRemovedAfter5MinuteInactivity(t *testing.T)
 		},
 	}
 
-	result, _ = m.handleScanResult(scanResult2)
-	m = result.(SessionDashboardModel)
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
+	scanMsg := sessionScanResultMsg{result: scanResult2}
+	m = applyScanResultNTimes(t, m, scanMsg, testScanMissThreshold)
 
-	// All panes must be removed — no pane should persist past the 5-minute threshold
+	// All panes must be removed — no pane should persist past the 5-minute threshold (grace period satisfied)
 	if len(m.panes) != 0 {
 		t.Errorf("expected 0 panes after all sessions exceed 5-minute removal threshold, got %d", len(m.panes))
 	}

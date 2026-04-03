@@ -317,6 +317,7 @@ func TestSingleSession_GridTo1_ViewSwitchesToViewer(t *testing.T) {
 	}
 
 	// Now remove sess-2 → 1 session → single-session mode
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
 	checker.SetAlive(200, false)
 	scan2 := session.ScanResult{
 		IsFullScan: true,
@@ -325,8 +326,7 @@ func TestSingleSession_GridTo1_ViewSwitchesToViewer(t *testing.T) {
 		},
 		ScanTime: time.Now(),
 	}
-	newModel, _ = m.Update(sessionScanResultMsg{result: scan2})
-	m = newModel.(SessionDashboardModel)
+	m = applyScanResultNTimes(t, m, sessionScanResultMsg{result: scan2}, testScanMissThreshold)
 
 	if m.ViewMode() != DashboardViewSingleSession {
 		t.Fatalf("expected single-session mode after dropping to 1, got %v", m.ViewMode())

@@ -117,3 +117,20 @@ func writeTestSessionJSON(t *testing.T, dir string, pid int, meta session.Sessio
 	}
 	return path
 }
+
+// scanMissThreshold matches the constant in session_dashboard.go.
+// Tests that need to trigger pane removal must send this many consecutive
+// scans with the PID absent.
+const testScanMissThreshold = 3
+
+// applyScanResultNTimes sends the same scan result msg N times through
+// the dashboard's Update loop. Used to satisfy the grace-period miss
+// counter before a pane is actually removed.
+func applyScanResultNTimes(t *testing.T, m SessionDashboardModel, msg sessionScanResultMsg, n int) SessionDashboardModel {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		newModel, _ := m.Update(msg)
+		m = newModel.(SessionDashboardModel)
+	}
+	return m
+}

@@ -45,6 +45,7 @@ func TestAutoTransition_GridToSingle_ViaScanResult(t *testing.T) {
 	}
 
 	// Second scan: PID 200 gone → 1 session → auto-transition to single-session mode
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
 	checker.SetAlive(200, false)
 	scan2 := session.ScanResult{
 		IsFullScan: true,
@@ -53,8 +54,7 @@ func TestAutoTransition_GridToSingle_ViaScanResult(t *testing.T) {
 		},
 		ScanTime: time.Now(),
 	}
-	newModel2, _ := updated.Update(sessionScanResultMsg{result: scan2})
-	updated2 := newModel2.(SessionDashboardModel)
+	updated2 := applyScanResultNTimes(t, updated, sessionScanResultMsg{result: scan2}, testScanMissThreshold)
 
 	if updated2.PaneCount() != 1 {
 		t.Fatalf("expected 1 pane after session removal, got %d", updated2.PaneCount())
@@ -99,6 +99,7 @@ func TestAutoTransition_GridToZero_ViaScanResult(t *testing.T) {
 	}
 
 	// Second scan: both PIDs gone → 0 sessions → auto-transition to zero-session mode
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
 	checker.SetAlive(100, false)
 	checker.SetAlive(200, false)
 	scan2 := session.ScanResult{
@@ -106,8 +107,7 @@ func TestAutoTransition_GridToZero_ViaScanResult(t *testing.T) {
 		Sessions:   []session.ActiveSession{},
 		ScanTime:   time.Now(),
 	}
-	newModel2, _ := updated.Update(sessionScanResultMsg{result: scan2})
-	updated2 := newModel2.(SessionDashboardModel)
+	updated2 := applyScanResultNTimes(t, updated, sessionScanResultMsg{result: scan2}, testScanMissThreshold)
 
 	if updated2.PaneCount() != 0 {
 		t.Fatalf("expected 0 panes after all sessions removed, got %d", updated2.PaneCount())
@@ -462,6 +462,7 @@ func TestAutoTransition_FullCycle_ZeroToSingleToGridAndBack(t *testing.T) {
 	}
 
 	// Step 3: 2→1 (grid → single) via scan with dead PID
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
 	checker.SetAlive(200, false)
 	scan = session.ScanResult{
 		IsFullScan: true,
@@ -470,8 +471,7 @@ func TestAutoTransition_FullCycle_ZeroToSingleToGridAndBack(t *testing.T) {
 		},
 		ScanTime: time.Now(),
 	}
-	newModel, _ = m.Update(sessionScanResultMsg{result: scan})
-	m = newModel.(SessionDashboardModel)
+	m = applyScanResultNTimes(t, m, sessionScanResultMsg{result: scan}, testScanMissThreshold)
 
 	if m.ViewMode() != DashboardViewSingleSession {
 		t.Fatalf("step 3: expected single-session mode after 2→1, got %v", m.ViewMode())
@@ -547,6 +547,7 @@ func TestAutoTransition_FreshStateOnEveryTransition(t *testing.T) {
 	}
 
 	// Go back to single session (remove second)
+	// Grace period requires testScanMissThreshold consecutive misses before removal.
 	checker.SetAlive(200, false)
 	scan3 := session.ScanResult{
 		IsFullScan: true,
@@ -555,8 +556,7 @@ func TestAutoTransition_FreshStateOnEveryTransition(t *testing.T) {
 		},
 		ScanTime: time.Now(),
 	}
-	newModel, _ = m.Update(sessionScanResultMsg{result: scan3})
-	m = newModel.(SessionDashboardModel)
+	m = applyScanResultNTimes(t, m, sessionScanResultMsg{result: scan3}, testScanMissThreshold)
 
 	if m.ViewMode() != DashboardViewSingleSession {
 		t.Fatalf("expected single-session mode after returning from grid, got %v", m.ViewMode())
