@@ -5,7 +5,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,20 +18,6 @@ import (
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-// writeSessionJSONForTUI writes a {pid}.json session file to dir and returns its path.
-func writeSessionJSONForTUI(t *testing.T, dir string, pid int, meta session.SessionMeta) string {
-	t.Helper()
-	data, err := json.Marshal(meta)
-	if err != nil {
-		t.Fatalf("marshal session meta: %v", err)
-	}
-	path := filepath.Join(dir, fmt.Sprintf("%d.json", pid))
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		t.Fatalf("write session file: %v", err)
-	}
-	return path
-}
 
 // newDashboardWithDirWatcher creates a SessionDashboardModel with a real
 // SessionDirectoryWatcher attached, wired to a temp sessions directory.
@@ -578,7 +563,7 @@ func TestStartDirWatcherCmd_StartsWatcher(t *testing.T) {
 
 	// Write a session file — watcher should detect it
 	makeJSONLFile(t, projectDir, "start-test-sess")
-	writeSessionJSONForTUI(t, sessDir, pid, session.SessionMeta{
+	writeTestSessionJSON(t, sessDir, pid, session.SessionMeta{
 		PID:       pid,
 		SessionID: "start-test-sess",
 		CWD:       projectPath,
@@ -853,7 +838,7 @@ func TestDirWatcher_EndToEnd_FileCreation_PaneAppears(t *testing.T) {
 
 	// Create session file — dir watcher should detect it
 	start := time.Now()
-	writeSessionJSONForTUI(t, sessDir, pid, session.SessionMeta{
+	writeTestSessionJSON(t, sessDir, pid, session.SessionMeta{
 		PID:       pid,
 		SessionID: sessionID,
 		CWD:       projectPath,
@@ -923,7 +908,7 @@ func TestDirWatcher_EndToEnd_FileDeletion_PaneRemoved(t *testing.T) {
 	makeJSONLFile(t, projectDir, sessionID)
 
 	// First: create session file and wait for SessionOpened event
-	sessionFile := writeSessionJSONForTUI(t, sessDir, pid, session.SessionMeta{
+	sessionFile := writeTestSessionJSON(t, sessDir, pid, session.SessionMeta{
 		PID:       pid,
 		SessionID: sessionID,
 		CWD:       projectPath,
@@ -1024,7 +1009,7 @@ func TestDirWatcher_EndToEnd_MultipleSessionsLifecycle(t *testing.T) {
 	for i, pid := range pids {
 		sid := fmt.Sprintf("multi-e2e-%d", i)
 		makeJSONLFile(t, projectDir, sid)
-		sessionFiles[i] = writeSessionJSONForTUI(t, sessDir, pid, session.SessionMeta{
+		sessionFiles[i] = writeTestSessionJSON(t, sessDir, pid, session.SessionMeta{
 			PID:       pid,
 			SessionID: sid,
 			CWD:       projectPath,
@@ -1151,7 +1136,7 @@ func TestDirWatcher_NoGoroutineLeak_WithEvents(t *testing.T) {
 		// Create session file to trigger events
 		sid := fmt.Sprintf("leak-e-%d", cycle)
 		makeJSONLFile(t, projectDir, sid)
-		writeSessionJSONForTUI(t, sessDir, pid, session.SessionMeta{
+		writeTestSessionJSON(t, sessDir, pid, session.SessionMeta{
 			PID:       pid,
 			SessionID: sid,
 			CWD:       projectPath,
@@ -1226,7 +1211,7 @@ func TestDirWatcher_FileModification_SeenPIDSuppressed(t *testing.T) {
 	makeJSONLFile(t, projectDir, sessionID)
 
 	// Create session file — first write triggers SessionOpened
-	sessionFile := writeSessionJSONForTUI(t, sessDir, pid, session.SessionMeta{
+	sessionFile := writeTestSessionJSON(t, sessDir, pid, session.SessionMeta{
 		PID:       pid,
 		SessionID: sessionID,
 		CWD:       projectPath,
@@ -1255,7 +1240,7 @@ gotFirstOpen:
 	// Modify the session file multiple times — should NOT create duplicate panes
 	// because the PID is already in seenPIDs
 	for i := 0; i < 3; i++ {
-		writeSessionJSONForTUI(t, sessDir, pid, session.SessionMeta{
+		writeTestSessionJSON(t, sessDir, pid, session.SessionMeta{
 			PID:       pid,
 			SessionID: sessionID,
 			CWD:       projectPath,
@@ -1307,7 +1292,7 @@ func TestDirWatcher_SessionFileNotForProject_Ignored(t *testing.T) {
 	startCmd()
 
 	// Create session file for a DIFFERENT project
-	writeSessionJSONForTUI(t, sessDir, pid, session.SessionMeta{
+	writeTestSessionJSON(t, sessDir, pid, session.SessionMeta{
 		PID:       pid,
 		SessionID: "other-project-sess",
 		CWD:       "/tmp/other-project", // Not our project

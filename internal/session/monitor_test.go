@@ -7,37 +7,6 @@ import (
 	"time"
 )
 
-// monitorMockPIDChecker is a test double for PIDChecker that allows controlling
-// which PIDs are alive or dead.
-type monitorMockPIDChecker struct {
-	mu    sync.RWMutex
-	alive map[int]bool
-	calls int
-}
-
-func newMonitorMockPIDChecker() *monitorMockPIDChecker {
-	return &monitorMockPIDChecker{alive: make(map[int]bool)}
-}
-
-func (m *monitorMockPIDChecker) SetAlive(pid int, alive bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.alive[pid] = alive
-}
-
-func (m *monitorMockPIDChecker) IsAlive(pid int) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.calls++
-	return m.alive[pid]
-}
-
-func (m *monitorMockPIDChecker) CallCount() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.calls
-}
-
 // helper to create a test session
 func testSession(pid int, sessionID string) ActiveSession {
 	return ActiveSession{
@@ -70,7 +39,7 @@ func TestNewMonitor_Defaults(t *testing.T) {
 }
 
 func TestNewMonitor_WithOptions(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithPollInterval(2*time.Second),
 		WithMonitorPIDChecker(checker),
@@ -194,7 +163,7 @@ func TestIsTracking_NotTracked(t *testing.T) {
 }
 
 func TestCheckNow_DetectsDeadPID(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithEventBufferSize(4),
@@ -243,7 +212,7 @@ func TestCheckNow_DetectsDeadPID(t *testing.T) {
 }
 
 func TestCheckNow_AllAlive(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithEventBufferSize(4),
@@ -273,7 +242,7 @@ func TestCheckNow_AllAlive(t *testing.T) {
 }
 
 func TestCheckNow_MultipleDeadPIDs(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithEventBufferSize(16),
@@ -315,7 +284,7 @@ func TestCheckNow_MultipleDeadPIDs(t *testing.T) {
 }
 
 func TestCheckNow_EmptySessions(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithEventBufferSize(4),
@@ -337,7 +306,7 @@ func TestCheckNow_EmptySessions(t *testing.T) {
 }
 
 func TestPollLoop_DetectsClosure(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithPollInterval(100*time.Millisecond), // Will be clamped to MinPollInterval
@@ -374,7 +343,7 @@ func TestPollLoop_DetectsClosure(t *testing.T) {
 
 func TestPollLoop_DetectsClosureWithin5Seconds(t *testing.T) {
 	// This test validates the core AC: session closure detected within 5 seconds
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithPollInterval(MinPollInterval), // 500ms for fast test
@@ -435,7 +404,7 @@ func TestPollLoop_DefaultIntervalMeetsSubAC1Constraint(t *testing.T) {
 }
 
 func TestStop_GracefulShutdown(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithPollInterval(MinPollInterval),
@@ -476,7 +445,7 @@ func TestStop_Idempotent(t *testing.T) {
 }
 
 func TestContextCancellation_StopsPolling(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithPollInterval(MinPollInterval),
@@ -507,7 +476,7 @@ func TestContextCancellation_StopsPolling(t *testing.T) {
 }
 
 func TestConcurrentAccess(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithPollInterval(MinPollInterval),
@@ -539,7 +508,7 @@ func TestConcurrentAccess(t *testing.T) {
 }
 
 func TestPollLoop_NoGoroutineLeak(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 
 	for i := 0; i < 5; i++ {
 		m := NewMonitor(
@@ -561,7 +530,7 @@ func TestPollLoop_NoGoroutineLeak(t *testing.T) {
 
 func TestCheckNow_RaceConditionPIDDiesWhileChecking(t *testing.T) {
 	// Simulate a PID that dies between the snapshot read and the check
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithEventBufferSize(4),
@@ -606,7 +575,7 @@ func TestCheckNow_RaceConditionPIDDiesWhileChecking(t *testing.T) {
 }
 
 func TestTrackSession_DuringPolling(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithPollInterval(MinPollInterval),
@@ -652,7 +621,7 @@ func TestMonitor_EventChannelNotClosed(t *testing.T) {
 }
 
 func TestCheckNow_PIDCheckerCallCount(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithEventBufferSize(4),
@@ -679,7 +648,7 @@ func TestCheckNow_PIDCheckerCallCount(t *testing.T) {
 // checkAllPIDs — specifically the case where the context is cancelled while
 // the monitor is attempting to send closure events on a full channel.
 func TestCheckAllPIDs_ContextCancelledDuringEmit(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	// Use a buffer of 1 so the second event send blocks and we can cancel.
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
@@ -719,7 +688,7 @@ func TestCheckAllPIDs_ContextCancelledDuringEmit(t *testing.T) {
 // a session file is detected, the PID is killed, and a SessionClosed event is
 // received within the ≤5 second end-to-end SLA.
 func TestSessionCloseCallback_EndToEndLatency(t *testing.T) {
-	checker := newMonitorMockPIDChecker()
+	checker := newMockPIDChecker()
 	m := NewMonitor(
 		WithMonitorPIDChecker(checker),
 		WithPollInterval(MinPollInterval), // fastest allowed: 500ms

@@ -33,13 +33,6 @@ import (
 
 // ─────────────────────────────── test helpers ───────────────────────────────
 
-// integrationPIDChecker is a thread-safe PIDChecker that reports every queried
-// PID as alive.  It is intentionally separate from the other test doubles in
-// this package to avoid redeclaration conflicts across _test.go files.
-type integrationPIDChecker struct{}
-
-func (integrationPIDChecker) IsAlive(_ int) bool { return true }
-
 // bridgeScannerToModel starts the given scanner and forwards all ScanResults to
 // the model's scanResultChan.  Returns a stop function that terminates the bridge.
 func bridgeScannerToModel(ctx context.Context, sc *session.SessionScanner, resultChan chan<- session.ScanResult) func() {
@@ -134,7 +127,7 @@ func writeIntegrationSessionFile(t *testing.T, dir string, pid int, sessionID, p
 		StartedAt: time.Now().UnixMilli(),
 		Kind:      "interactive",
 	}
-	return makeSessionFile(t, dir, pid, meta.SessionID, meta.CWD)
+	return makeTestSessionFile(t, dir, pid, meta.SessionID, meta.CWD)
 }
 
 // latencyThreshold is the acceptance criterion: all detections must be faster.
@@ -163,12 +156,12 @@ func TestIntegration_Scanner_DetectionUnder2Seconds(t *testing.T) {
 	// WithJSONLBaseDir directs the scanner to projectDir (temp dir) rather than
 	// the real ~/.claude/projects tree, which test sessions do not populate.
 	sc := session.NewSessionScanner(sessDir,
-		session.WithScannerPIDChecker(integrationPIDChecker{}),
+		session.WithScannerPIDChecker(newAlwaysAlivePIDChecker()),
 		session.WithScanInterval(1500*time.Millisecond),
 		session.WithJSONLBaseDir(projectDir),
 	)
 	mon := session.NewMonitor(
-		session.WithMonitorPIDChecker(integrationPIDChecker{}),
+		session.WithMonitorPIDChecker(newAlwaysAlivePIDChecker()),
 	)
 
 	m := NewSessionDashboardModel(projectPath, projectDir, sc, mon)
@@ -221,12 +214,12 @@ func TestIntegration_Scanner_ConsistentDetectionUnder2Seconds(t *testing.T) {
 			sessionID := fmt.Sprintf("consistent-session-%d", run)
 
 			sc := session.NewSessionScanner(sessDir,
-				session.WithScannerPIDChecker(integrationPIDChecker{}),
+				session.WithScannerPIDChecker(newAlwaysAlivePIDChecker()),
 				session.WithScanInterval(scanInterval),
 				session.WithJSONLBaseDir(projectDir),
 			)
 			mon := session.NewMonitor(
-				session.WithMonitorPIDChecker(integrationPIDChecker{}),
+				session.WithMonitorPIDChecker(newAlwaysAlivePIDChecker()),
 			)
 
 			m := NewSessionDashboardModel(projectPath, projectDir, sc, mon)
@@ -286,7 +279,7 @@ func TestIntegration_DirWatcher_DetectionUnder1Second(t *testing.T) {
 	const pid = 79001
 	const sessionID = "dirwatcher-latency-session"
 
-	checker := integrationPIDChecker{}
+	checker := newAlwaysAlivePIDChecker()
 	dw, err := session.NewSessionDirectoryWatcher(sessDir,
 		session.WithDirWatcherPIDChecker(checker),
 		session.WithDirWatcherEventBuffer(32),
@@ -353,7 +346,7 @@ func TestIntegration_DirWatcher_ConsistentDetectionUnder2Seconds(t *testing.T) {
 			pid := 80000 + run
 			sessionID := fmt.Sprintf("dw-consistent-%d", run)
 
-			checker := integrationPIDChecker{}
+			checker := newAlwaysAlivePIDChecker()
 			dw, err := session.NewSessionDirectoryWatcher(sessDir,
 				session.WithDirWatcherPIDChecker(checker),
 				session.WithDirWatcherEventBuffer(32),
@@ -428,12 +421,12 @@ func TestIntegration_MultipleSessionsAllDetectedUnder2Seconds(t *testing.T) {
 	}
 
 	sc := session.NewSessionScanner(sessDir,
-		session.WithScannerPIDChecker(integrationPIDChecker{}),
+		session.WithScannerPIDChecker(newAlwaysAlivePIDChecker()),
 		session.WithScanInterval(1000*time.Millisecond),
 		session.WithJSONLBaseDir(projectDir),
 	)
 	mon := session.NewMonitor(
-		session.WithMonitorPIDChecker(integrationPIDChecker{}),
+		session.WithMonitorPIDChecker(newAlwaysAlivePIDChecker()),
 	)
 
 	m := NewSessionDashboardModel(projectPath, projectDir, sc, mon)
@@ -486,7 +479,7 @@ func TestIntegration_Combined_DetectionUnder2Seconds(t *testing.T) {
 	const pid = 82001
 	const sessionID = "combined-latency-session"
 
-	checker := integrationPIDChecker{}
+	checker := newAlwaysAlivePIDChecker()
 
 	dw, err := session.NewSessionDirectoryWatcher(sessDir,
 		session.WithDirWatcherPIDChecker(checker),
@@ -547,11 +540,11 @@ func TestIntegration_NonexistentSessionsDir_NoHang(t *testing.T) {
 	const projectPath = "/tmp/integ-nodir-test"
 
 	sc := session.NewSessionScanner(nonexistent,
-		session.WithScannerPIDChecker(integrationPIDChecker{}),
+		session.WithScannerPIDChecker(newAlwaysAlivePIDChecker()),
 		session.WithScanInterval(200*time.Millisecond),
 	)
 	mon := session.NewMonitor(
-		session.WithMonitorPIDChecker(integrationPIDChecker{}),
+		session.WithMonitorPIDChecker(newAlwaysAlivePIDChecker()),
 	)
 
 	m := NewSessionDashboardModel(projectPath, projectDir, sc, mon)
@@ -628,7 +621,7 @@ func TestIntegration_Registry_DashboardLatency_Under2Seconds(t *testing.T) {
 	const pid = 83001
 	const sessionID = "registry-latency-session"
 
-	checker := integrationPIDChecker{}
+	checker := newAlwaysAlivePIDChecker()
 
 	// Build Registry with realistic (but shortened) intervals.
 	reg := session.NewRegistry(sessDir,
@@ -853,12 +846,12 @@ func TestIntegration_NineSessions_AllDetectedUnder2Seconds(t *testing.T) {
 	}
 
 	sc := session.NewSessionScanner(sessDir,
-		session.WithScannerPIDChecker(integrationPIDChecker{}),
+		session.WithScannerPIDChecker(newAlwaysAlivePIDChecker()),
 		session.WithScanInterval(1000*time.Millisecond),
 		session.WithJSONLBaseDir(projectDir),
 	)
 	mon := session.NewMonitor(
-		session.WithMonitorPIDChecker(integrationPIDChecker{}),
+		session.WithMonitorPIDChecker(newAlwaysAlivePIDChecker()),
 	)
 
 	m := NewSessionDashboardModel(projectPath, projectDir, sc, mon)
@@ -1009,12 +1002,12 @@ func TestIntegration_ThreeSessions_StreamingInSplitPanes(t *testing.T) {
 	}
 
 	sc := session.NewSessionScanner(sessDir,
-		session.WithScannerPIDChecker(integrationPIDChecker{}),
+		session.WithScannerPIDChecker(newAlwaysAlivePIDChecker()),
 		session.WithScanInterval(1000*time.Millisecond),
 		session.WithJSONLBaseDir(projectDir),
 	)
 	mon := session.NewMonitor(
-		session.WithMonitorPIDChecker(integrationPIDChecker{}),
+		session.WithMonitorPIDChecker(newAlwaysAlivePIDChecker()),
 	)
 
 	m := NewSessionDashboardModel(projectPath, projectDir, sc, mon)
@@ -1094,12 +1087,12 @@ func TestIntegration_ThreeSessions_ConsistentStreaming(t *testing.T) {
 			}
 
 			sc := session.NewSessionScanner(sessDir,
-				session.WithScannerPIDChecker(integrationPIDChecker{}),
+				session.WithScannerPIDChecker(newAlwaysAlivePIDChecker()),
 				session.WithScanInterval(1000*time.Millisecond),
 				session.WithJSONLBaseDir(projectDir),
 			)
 			mon := session.NewMonitor(
-				session.WithMonitorPIDChecker(integrationPIDChecker{}),
+				session.WithMonitorPIDChecker(newAlwaysAlivePIDChecker()),
 			)
 
 			m := NewSessionDashboardModel(projectPath, projectDir, sc, mon)

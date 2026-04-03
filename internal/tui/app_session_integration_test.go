@@ -1,9 +1,7 @@
 package tui
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -14,68 +12,10 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
 
-// mockPIDCheckerForApp is a test double for PIDChecker.
-type mockPIDCheckerForApp struct {
-	alive map[int]bool
-}
-
-func newMockCheckerForApp(pids ...int) *mockPIDCheckerForApp {
-	m := &mockPIDCheckerForApp{alive: make(map[int]bool)}
-	for _, pid := range pids {
-		m.alive[pid] = true
-	}
-	return m
-}
-
-func (c *mockPIDCheckerForApp) IsAlive(pid int) bool {
-	return c.alive[pid]
-}
-
-// createTestSessionFile creates a session JSON file in the given directory.
-// When cwd and sessionID are both non-empty it also creates the corresponding
-// JSONL log file in the scanner-derived location so the scanner's
-// JSONL-existence check passes.
-func createTestSessionFile(t *testing.T, dir string, pid int, sessionID, cwd string) string {
-	t.Helper()
-	meta := session.SessionMeta{
-		PID:       pid,
-		SessionID: sessionID,
-		CWD:       cwd,
-		StartedAt: time.Now().UnixMilli(),
-		Kind:      "interactive",
-	}
-	data, err := json.Marshal(meta)
-	if err != nil {
-		t.Fatal(err)
-	}
-	filePath := filepath.Join(dir, itoa(pid)+".json")
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create the JSONL log file in the scanner-derived location so the scanner
-	// includes this session (JSONL existence is required since AC2).
-	if cwd != "" && sessionID != "" {
-		jsonlDir := session.CWDToProjectDir(cwd)
-		if jsonlDir != "" {
-			if mkErr := os.MkdirAll(jsonlDir, 0755); mkErr == nil {
-				jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
-				_ = os.WriteFile(jsonlPath, []byte("{}\n"), 0644)
-				t.Cleanup(func() {
-					_ = os.Remove(jsonlPath)
-					_ = os.Remove(jsonlDir)
-				})
-			}
-		}
-	}
-
-	return filePath
-}
-
 // TestNewAppModelForSessions creates a session dashboard app model.
 func TestNewAppModelForSessions(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -111,7 +51,7 @@ func TestNewAppModelForSessions_DefaultScanner(t *testing.T) {
 // TestAppModel_Init_SessionDashboard verifies Init starts session detection.
 func TestAppModel_Init_SessionDashboard(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -129,7 +69,7 @@ func TestAppModel_Init_SessionDashboard(t *testing.T) {
 // TestAppModel_WindowSize_SessionDashboard forwards size to session dashboard.
 func TestAppModel_WindowSize_SessionDashboard(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -156,7 +96,7 @@ func TestAppModel_WindowSize_SessionDashboard(t *testing.T) {
 // TestAppModel_View_SessionDashboard renders session dashboard view.
 func TestAppModel_View_SessionDashboard(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -174,7 +114,7 @@ func TestAppModel_View_SessionDashboard(t *testing.T) {
 // TestAppModel_GoBackFromSessionDashboard returns to project list.
 func TestAppModel_GoBackFromSessionDashboard(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -195,7 +135,7 @@ func TestAppModel_GoBackFromSessionDashboard(t *testing.T) {
 // TestAppModel_OpenViewerFromSessionDashboard transitions to loading.
 func TestAppModel_OpenViewerFromSessionDashboard(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -228,7 +168,7 @@ func TestAppModel_OpenViewerFromSessionDashboard(t *testing.T) {
 // TestAppModel_GoBackMsg_FromSessionDashboard returns to session dashboard.
 func TestAppModel_GoBackMsg_FromSessionDashboard(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -256,7 +196,7 @@ func TestAppModel_GoBackMsg_FromSessionDashboard(t *testing.T) {
 // TestAppModel_SessionDashboard_ForwardsMessages verifies message routing.
 func TestAppModel_SessionDashboard_ForwardsMessages(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -281,7 +221,7 @@ func TestAppModel_SessionDashboard_ForwardsMessages(t *testing.T) {
 func TestAppModel_SessionDashboard_ScanResultAddsPane(t *testing.T) {
 	sessDir := t.TempDir()
 	projectDir := t.TempDir()
-	checker := newMockCheckerForApp(1234)
+	checker := newTestPIDChecker(1234)
 	scanner := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(checker),
 		session.WithScanInterval(50*time.Millisecond),
@@ -324,7 +264,7 @@ func TestAppModel_SessionDashboard_ScanResultAddsPane(t *testing.T) {
 func TestAppModel_SessionDashboard_ThreeSessions(t *testing.T) {
 	sessDir := t.TempDir()
 	projectDir := t.TempDir()
-	checker := newMockCheckerForApp(1001, 1002, 1003)
+	checker := newTestPIDChecker(1001, 1002, 1003)
 	scanner := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(checker),
 		session.WithJSONLBaseDir(projectDir),
@@ -339,11 +279,11 @@ func TestAppModel_SessionDashboard_ThreeSessions(t *testing.T) {
 
 	// Create session files and corresponding JSONL logs.
 	// The scanner requires a JSONL file to exist for each session.
-	createTestSessionFile(t, sessDir, 1001, "session-a", projectPath)
+	makeTestSessionFile(t, sessDir, 1001, "session-a", projectPath)
 	makeJSONLFile(t, projectDir, "session-a")
-	createTestSessionFile(t, sessDir, 1002, "session-b", projectPath)
+	makeTestSessionFile(t, sessDir, 1002, "session-b", projectPath)
 	makeJSONLFile(t, projectDir, "session-b")
-	createTestSessionFile(t, sessDir, 1003, "session-c", projectPath)
+	makeTestSessionFile(t, sessDir, 1003, "session-c", projectPath)
 	makeJSONLFile(t, projectDir, "session-c")
 
 	// Scan for sessions
@@ -374,7 +314,7 @@ func TestAppModel_SessionDashboard_ThreeSessions(t *testing.T) {
 func TestAppModel_SessionDashboard_SessionClosure(t *testing.T) {
 	sessDir := t.TempDir()
 	projectDir := t.TempDir()
-	checker := newMockCheckerForApp(1001, 1002)
+	checker := newTestPIDChecker(1001, 1002)
 	scanner := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(checker),
 	)
@@ -430,7 +370,7 @@ func TestViewState_SessionDashboard(t *testing.T) {
 // TestWithSessionScanner_Option verifies the option function.
 func TestWithSessionScanner_Option(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	s := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 
 	cfg := sessionDashboardConfig{}
@@ -444,7 +384,7 @@ func TestWithSessionScanner_Option(t *testing.T) {
 
 // TestWithSessionMonitor_Option verifies the option function.
 func TestWithSessionMonitor_Option(t *testing.T) {
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	m := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
 	cfg := sessionDashboardConfig{}
@@ -459,7 +399,7 @@ func TestWithSessionMonitor_Option(t *testing.T) {
 // TestSessionDashboardState_Accessor verifies the test accessor.
 func TestSessionDashboardState_Accessor(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -478,7 +418,7 @@ func TestSessionDashboardState_Accessor(t *testing.T) {
 // aren't forwarded to session dashboard (no overlay spinner support).
 func TestAppModel_SessionDashboard_SpinnerNotForwarded(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -503,7 +443,7 @@ func TestAppModel_SessionDashboard_MaxNinePanes(t *testing.T) {
 	sessDir := t.TempDir()
 	projectDir := t.TempDir()
 	pids := []int{1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010}
-	checker := newMockCheckerForApp(pids...)
+	checker := newTestPIDChecker(pids...)
 	scanner := session.NewSessionScanner(sessDir,
 		session.WithScannerPIDChecker(checker),
 	)
@@ -521,7 +461,7 @@ func TestAppModel_SessionDashboard_MaxNinePanes(t *testing.T) {
 		sessions = append(sessions, session.ActiveSession{
 			Meta: session.SessionMeta{
 				PID:       pid,
-				SessionID: "session-" + itoa(i),
+				SessionID: "session-" + strconv.Itoa(i),
 				CWD:       projectPath,
 				Kind:      "interactive",
 			},
@@ -677,7 +617,7 @@ func TestOpenConversationsFromSessionDashboard_LoadsConversations(t *testing.T) 
 // the session dashboard emits OpenConversationsFromSessionDashboardMsg (AC 8).
 func TestSessionDashboard_CKeyNavigatesToConversations(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))
 
@@ -768,7 +708,7 @@ func containsSubstring(s, sub string) bool {
 // to the session dashboard model.
 func TestWithSessionDirWatcher_Option(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 
 	dw, err := session.NewSessionDirectoryWatcher(sessDir,
 		session.WithDirWatcherPIDChecker(checker),
@@ -793,7 +733,7 @@ func TestWithSessionDirWatcher_Option(t *testing.T) {
 // dashboard model (not replaced by the default dir watcher).
 func TestNewAppModelForSessions_WithDirWatcher(t *testing.T) {
 	sessDir := t.TempDir()
-	checker := newMockCheckerForApp()
+	checker := newTestPIDChecker()
 
 	scanner := session.NewSessionScanner(sessDir, session.WithScannerPIDChecker(checker))
 	monitor := session.NewMonitor(session.WithMonitorPIDChecker(checker))

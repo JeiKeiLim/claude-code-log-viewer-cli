@@ -5,36 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 )
-
-// scannerMockPIDChecker is a test double for PIDChecker used by scanner tests.
-type scannerMockPIDChecker struct {
-	mu    sync.RWMutex
-	alive map[int]bool
-}
-
-func newScannerMockChecker(alivePIDs ...int) *scannerMockPIDChecker {
-	m := &scannerMockPIDChecker{alive: make(map[int]bool)}
-	for _, pid := range alivePIDs {
-		m.alive[pid] = true
-	}
-	return m
-}
-
-func (m *scannerMockPIDChecker) IsAlive(pid int) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.alive[pid]
-}
-
-func (m *scannerMockPIDChecker) SetAlive(pid int, alive bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.alive[pid] = alive
-}
 
 func TestParsePIDFromFilename(t *testing.T) {
 	tests := []struct {
@@ -68,73 +41,10 @@ func TestParsePIDFromFilename(t *testing.T) {
 	}
 }
 
-func TestReadSessionMeta(t *testing.T) {
-	t.Run("valid file", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		meta := SessionMeta{
-			PID:        42,
-			SessionID:  "abc-123",
-			CWD:        "/home/user/project",
-			StartedAt:  1711900000000,
-			Kind:       "interactive",
-			Entrypoint: "claude",
-		}
-		data, _ := json.Marshal(meta)
-		path := filepath.Join(tmpDir, "42.json")
-		os.WriteFile(path, data, 0644)
-
-		got, err := readSessionMeta(path)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got.PID != 42 || got.SessionID != "abc-123" || got.CWD != "/home/user/project" {
-			t.Errorf("unexpected meta: %+v", got)
-		}
-		if got.Kind != "interactive" || got.Entrypoint != "claude" {
-			t.Errorf("unexpected meta fields: kind=%q entrypoint=%q", got.Kind, got.Entrypoint)
-		}
-	})
-
-	t.Run("invalid json", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		path := filepath.Join(tmpDir, "bad.json")
-		os.WriteFile(path, []byte("{invalid"), 0644)
-
-		_, err := readSessionMeta(path)
-		if err == nil {
-			t.Fatal("expected error for invalid JSON")
-		}
-	})
-
-	t.Run("nonexistent file", func(t *testing.T) {
-		_, err := readSessionMeta("/nonexistent/path/42.json")
-		if err == nil {
-			t.Fatal("expected error for nonexistent file")
-		}
-	})
-
-	t.Run("partial json fields", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		path := filepath.Join(tmpDir, "partial.json")
-		os.WriteFile(path, []byte(`{"pid": 99, "sessionId": "xyz"}`), 0644)
-
-		got, err := readSessionMeta(path)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got.PID != 99 || got.SessionID != "xyz" {
-			t.Errorf("unexpected meta: %+v", got)
-		}
-		if got.CWD != "" || got.Kind != "" {
-			t.Errorf("expected empty optional fields, got: %+v", got)
-		}
-	})
-}
-
 func TestSessionScanner_Scan(t *testing.T) {
 	t.Run("empty directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker()
+		checker := newMockPIDChecker()
 		scanner := NewSessionScanner(tmpDir, WithScannerPIDChecker(checker))
 
 		result := scanner.Scan()
@@ -148,7 +58,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("nonexistent directory", func(t *testing.T) {
 		scanner := NewSessionScanner("/nonexistent/sessions/dir",
-			WithScannerPIDChecker(newScannerMockChecker()))
+			WithScannerPIDChecker(newMockPIDChecker()))
 
 		result := scanner.Scan()
 		if result.Err != nil {
@@ -161,7 +71,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("detects alive sessions", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker(100, 200)
+		checker := newMockPIDChecker(100, 200)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{
 			PID:       100,
@@ -200,7 +110,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("filters dead PIDs", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker(100) // Only 100 is alive
+		checker := newMockPIDChecker(100) // Only 100 is alive
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "alive", CWD: "/test/filters-dead"})
 		writeSessionJSON(t, tmpDir, 200, SessionMeta{PID: 200, SessionID: "dead", CWD: "/test/filters-dead"})
@@ -218,7 +128,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("skips non-json files", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker(100)
+		checker := newMockPIDChecker(100)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "valid", CWD: "/test/skips-nonjson"})
 		os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("hello"), 0644)
@@ -234,7 +144,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("skips corrupt json", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker(100, 200)
+		checker := newMockPIDChecker(100, 200)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "valid", CWD: "/test/skips-corrupt"})
 		os.WriteFile(filepath.Join(tmpDir, "200.json"), []byte("{corrupt"), 0644)
@@ -249,7 +159,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("pid mismatch between filename and content", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker(100)
+		checker := newMockPIDChecker(100)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 999, SessionID: "mismatch"})
 
@@ -263,7 +173,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("pid zero in content uses filename pid", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker(100)
+		checker := newMockPIDChecker(100)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{SessionID: "no-pid-in-content", CWD: "/test/pid-zero"})
 
@@ -280,7 +190,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("skips directories", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker(100)
+		checker := newMockPIDChecker(100)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "valid", CWD: "/test/skips-dirs"})
 		os.MkdirAll(filepath.Join(tmpDir, "200.json"), 0755)
@@ -295,7 +205,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("scan time is set", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		scanner := NewSessionScanner(tmpDir, WithScannerPIDChecker(newScannerMockChecker()))
+		scanner := NewSessionScanner(tmpDir, WithScannerPIDChecker(newMockPIDChecker()))
 
 		before := time.Now()
 		result := scanner.Scan()
@@ -308,7 +218,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("JSONLDir is derived from CWD", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker(100)
+		checker := newMockPIDChecker(100)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{
 			PID:       100,
@@ -329,7 +239,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 
 	t.Run("empty CWD leaves JSONLDir empty — session skipped", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker(100)
+		checker := newMockPIDChecker(100)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{
 			PID:       100,
@@ -393,7 +303,7 @@ func TestSessionScanner_Options(t *testing.T) {
 
 func TestSessionScanner_ScanOnce(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(100)
+	checker := newMockPIDChecker(100)
 	writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "cached", CWD: "/test/scan-once"})
 
 	scanner := NewSessionScanner(tmpDir, WithScannerPIDChecker(checker))
@@ -414,7 +324,7 @@ func TestSessionScanner_ScanOnce(t *testing.T) {
 
 func TestSessionScanner_StartStop(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(100)
+	checker := newMockPIDChecker(100)
 	writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "polled", CWD: "/test/start-stop"})
 
 	scanner := NewSessionScanner(tmpDir,
@@ -467,7 +377,7 @@ func TestSessionScanner_StartStop(t *testing.T) {
 func TestSessionScanner_StartIdempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	scanner := NewSessionScanner(tmpDir,
-		WithScannerPIDChecker(newScannerMockChecker()),
+		WithScannerPIDChecker(newMockPIDChecker()),
 		WithScanInterval(50*time.Millisecond),
 	)
 
@@ -489,7 +399,7 @@ func TestSessionScanner_StartIdempotent(t *testing.T) {
 func TestSessionScanner_StopIdempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	scanner := NewSessionScanner(tmpDir,
-		WithScannerPIDChecker(newScannerMockChecker()),
+		WithScannerPIDChecker(newMockPIDChecker()),
 		WithScanInterval(50*time.Millisecond),
 	)
 
@@ -506,7 +416,7 @@ func TestSessionScanner_StopIdempotent(t *testing.T) {
 
 func TestSessionScanner_DynamicSessionLifecycle(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(100)
+	checker := newMockPIDChecker(100)
 
 	writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "initial", CWD: "/test/dynamic-lifecycle"})
 
@@ -545,7 +455,7 @@ func TestSessionScanner_DynamicSessionLifecycle(t *testing.T) {
 
 func TestSessionScanner_SessionClosure(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(100, 200)
+	checker := newMockPIDChecker(100, 200)
 
 	writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "stays", CWD: "/test/session-closure"})
 	writeSessionJSON(t, tmpDir, 200, SessionMeta{PID: 200, SessionID: "dies", CWD: "/test/session-closure"})
@@ -588,7 +498,7 @@ func TestSessionScanner_SessionClosure(t *testing.T) {
 func TestSessionScanner_NoGoroutineLeak(t *testing.T) {
 	tmpDir := t.TempDir()
 	scanner := NewSessionScanner(tmpDir,
-		WithScannerPIDChecker(newScannerMockChecker()),
+		WithScannerPIDChecker(newMockPIDChecker()),
 		WithScanInterval(50*time.Millisecond),
 	)
 
@@ -643,7 +553,7 @@ func TestDefaultSessionsPath(t *testing.T) {
 func TestSessionScanner_NewSessionDetectedWithin2Seconds(t *testing.T) {
 	t.Run("single new session detected within 2s", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker()
+		checker := newMockPIDChecker()
 
 		// Use a realistic polling interval (500ms) to ensure we still meet 2s.
 		scanner := NewSessionScanner(tmpDir,
@@ -695,7 +605,7 @@ func TestSessionScanner_NewSessionDetectedWithin2Seconds(t *testing.T) {
 
 	t.Run("multiple new sessions detected within 2s", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker(100)
+		checker := newMockPIDChecker(100)
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "existing", CWD: "/test/multi-detect"})
 
 		scanner := NewSessionScanner(tmpDir,
@@ -743,7 +653,7 @@ func TestSessionScanner_NewSessionDetectedWithin2Seconds(t *testing.T) {
 
 	t.Run("default 2s interval detects within threshold", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker()
+		checker := newMockPIDChecker()
 
 		// Use the default 2s interval — the real production configuration
 		scanner := NewSessionScanner(tmpDir,
@@ -792,7 +702,7 @@ func TestSessionScanner_NewSessionDetectedWithin2Seconds(t *testing.T) {
 
 	t.Run("rapid session creation detected within 2s", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker()
+		checker := newMockPIDChecker()
 
 		scanner := NewSessionScanner(tmpDir,
 			WithScannerPIDChecker(checker),
@@ -834,7 +744,7 @@ func TestSessionScanner_NewSessionDetectedWithin2Seconds(t *testing.T) {
 
 	t.Run("detection latency bounded by scan interval", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		checker := newScannerMockChecker()
+		checker := newMockPIDChecker()
 
 		interval := 200 * time.Millisecond
 		scanner := NewSessionScanner(tmpDir,
@@ -1033,7 +943,7 @@ func TestSessionScanner_Scan_DirectoryReadError(t *testing.T) {
 		_ = os.Chmod(sessDir, 0755) // restore for cleanup
 	})
 
-	scanner := NewSessionScanner(sessDir, WithScannerPIDChecker(newScannerMockChecker()))
+	scanner := NewSessionScanner(sessDir, WithScannerPIDChecker(newMockPIDChecker()))
 	result := scanner.Scan()
 
 	if result.Err == nil {
@@ -1050,7 +960,7 @@ func TestSessionScanner_Scan_DirectoryReadError(t *testing.T) {
 // the result channel fast enough.
 func TestSessionScanner_pollLoop_ChannelFull(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(100)
+	checker := newMockPIDChecker(100)
 	writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "channel-full-test", CWD: "/test/channel-full"})
 
 	scanner := NewSessionScanner(tmpDir,
@@ -1078,7 +988,7 @@ func TestSessionScanner_pollLoop_ChannelFull(t *testing.T) {
 // the correct pid, project name, and start time.
 func TestSessionScanner_ParsedMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(60696)
+	checker := newMockPIDChecker(60696)
 
 	startedAt := int64(1774909391881)
 	writeSessionJSON(t, tmpDir, 60696, SessionMeta{
@@ -1187,7 +1097,7 @@ func TestSessionScanner_MalformedFilesHandled(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			checker := newScannerMockChecker(tt.pidAlive)
+			checker := newMockPIDChecker(tt.pidAlive)
 
 			// Write the malformed file
 			path := filepath.Join(tmpDir, tt.filename)
@@ -1311,7 +1221,7 @@ func TestScanSetsIdleState(t *testing.T) {
 		t.Fatalf("failed to set JSONL mod time: %v", err)
 	}
 
-	checker := newScannerMockChecker(100)
+	checker := newMockPIDChecker(100)
 	scanner := NewSessionScanner(sessionsDir, WithScannerPIDChecker(checker))
 	result := scanner.Scan()
 
@@ -1356,7 +1266,7 @@ func TestScanSetsActiveState(t *testing.T) {
 	}
 	// File just written — mod time is now, so state should be Active
 
-	checker := newScannerMockChecker(200)
+	checker := newMockPIDChecker(200)
 	scanner := NewSessionScanner(sessionsDir, WithScannerPIDChecker(checker))
 	result := scanner.Scan()
 
@@ -1458,7 +1368,7 @@ func TestDeduplicateBySessionID_EmptySessionID(t *testing.T) {
 func TestScan_SkipsSessionsWithoutJSONL(t *testing.T) {
 	t.Run("session with CWD but no JSONL file is skipped", func(t *testing.T) {
 		sessionsDir := t.TempDir()
-		checker := newScannerMockChecker(100)
+		checker := newMockPIDChecker(100)
 
 		// Write a valid session file with CWD, but do NOT create the JSONL file.
 		// We write the JSON manually to avoid writeSessionJSON creating the JSONL.
@@ -1484,7 +1394,7 @@ func TestScan_SkipsSessionsWithoutJSONL(t *testing.T) {
 
 	t.Run("session without CWD is skipped", func(t *testing.T) {
 		sessionsDir := t.TempDir()
-		checker := newScannerMockChecker(200)
+		checker := newMockPIDChecker(200)
 
 		meta := SessionMeta{
 			PID:       200,
@@ -1507,7 +1417,7 @@ func TestScan_SkipsSessionsWithoutJSONL(t *testing.T) {
 
 	t.Run("session with JSONL file is included", func(t *testing.T) {
 		sessionsDir := t.TempDir()
-		checker := newScannerMockChecker(300)
+		checker := newMockPIDChecker(300)
 
 		// Use writeSessionJSON which creates the JSONL file
 		writeSessionJSON(t, sessionsDir, 300, SessionMeta{
@@ -1533,7 +1443,7 @@ func TestScan_SkipsSessionsWithoutJSONL(t *testing.T) {
 
 	t.Run("mixed sessions — only those with JSONL are returned", func(t *testing.T) {
 		sessionsDir := t.TempDir()
-		checker := newScannerMockChecker(400, 500, 600)
+		checker := newMockPIDChecker(400, 500, 600)
 
 		// Session with JSONL (included)
 		writeSessionJSON(t, sessionsDir, 400, SessionMeta{
@@ -1597,7 +1507,7 @@ func TestScan_DeadPIDRemovedImmediatelyRegardlessOfJSONLTiming(t *testing.T) {
 	t.Run("dead PID with very recent JSONL is excluded from results", func(t *testing.T) {
 		sessionsDir := t.TempDir()
 		// PID 100 is alive, PID 200 is dead — both have recent JSONL files.
-		checker := newScannerMockChecker(100) // only 100 is alive
+		checker := newMockPIDChecker(100) // only 100 is alive
 
 		writeSessionJSON(t, sessionsDir, 100, SessionMeta{
 			PID:       100,
@@ -1633,7 +1543,7 @@ func TestScan_DeadPIDRemovedImmediatelyRegardlessOfJSONLTiming(t *testing.T) {
 
 	t.Run("dead PID with Active-state JSONL is immediately excluded", func(t *testing.T) {
 		sessionsDir := t.TempDir()
-		checker := newScannerMockChecker(300) // 300 alive, 400 dead
+		checker := newMockPIDChecker(300) // 300 alive, 400 dead
 		writeSessionJSON(t, sessionsDir, 300, SessionMeta{
 			PID: 300, SessionID: "stays", CWD: "/test/ac5-immediate",
 		})
@@ -1655,7 +1565,7 @@ func TestScan_DeadPIDRemovedImmediatelyRegardlessOfJSONLTiming(t *testing.T) {
 
 	t.Run("PID that dies mid-run is excluded on next scan", func(t *testing.T) {
 		sessionsDir := t.TempDir()
-		checker := newScannerMockChecker(500, 600) // both alive initially
+		checker := newMockPIDChecker(500, 600) // both alive initially
 		writeSessionJSON(t, sessionsDir, 500, SessionMeta{
 			PID: 500, SessionID: "stays-alive", CWD: "/test/ac5-dies-midrun",
 		})
@@ -1715,7 +1625,7 @@ func TestScanSetsRemovedState(t *testing.T) {
 		t.Fatalf("failed to set JSONL mod time: %v", err)
 	}
 
-	checker := newScannerMockChecker(100)
+	checker := newMockPIDChecker(100)
 	scanner := NewSessionScanner(sessionsDir, WithScannerPIDChecker(checker))
 	result := scanner.Scan()
 
@@ -1777,7 +1687,7 @@ func TestScan_UserInitiatedSession_AllStates(t *testing.T) {
 		pid := 9100 + i
 		t.Run(tc.name, func(t *testing.T) {
 			sessionsDir := t.TempDir()
-			checker := newScannerMockChecker(pid)
+			checker := newMockPIDChecker(pid)
 
 			writeSessionJSON(t, sessionsDir, pid, SessionMeta{
 				PID:        pid,
@@ -1827,7 +1737,7 @@ func TestScan_DeduplicateSameSessionID_EndToEnd(t *testing.T) {
 	sessionsDir := t.TempDir()
 	sessionID := "shared-session-e2e"
 	cwd := "/test/dedup-e2e-project"
-	checker := newScannerMockChecker(100, 200, 300)
+	checker := newMockPIDChecker(100, 200, 300)
 
 	// Three PIDs all share the same sessionId (e.g. after successive restarts)
 	for _, pid := range []int{100, 200, 300} {
@@ -1875,7 +1785,7 @@ func TestScan_DeduplicateSameSessionID_EndToEnd(t *testing.T) {
 func TestScan_BothEntrypointTypes(t *testing.T) {
 	t.Run("sdk-cli and sdk-py sessions both included in scan", func(t *testing.T) {
 		sessionsDir := t.TempDir()
-		checker := newScannerMockChecker(1000, 2000)
+		checker := newMockPIDChecker(1000, 2000)
 
 		writeSessionJSON(t, sessionsDir, 1000, SessionMeta{
 			PID:        1000,

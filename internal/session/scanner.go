@@ -3,7 +3,6 @@
 package session
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -308,21 +307,6 @@ func parsePIDFromFilename(name string) (int, bool) {
 		return 0, false
 	}
 	return pid, true
-}
-
-// readSessionMeta reads and parses a session JSON file.
-func readSessionMeta(filePath string) (SessionMeta, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return SessionMeta{}, err
-	}
-
-	var meta SessionMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		return SessionMeta{}, fmt.Errorf("parsing session file %s: %w", filePath, err)
-	}
-
-	return meta, nil
 }
 
 // CWDToProjectDir converts a CWD path to the Claude projects directory path.

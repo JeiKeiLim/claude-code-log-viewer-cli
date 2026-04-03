@@ -1,12 +1,10 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -16,85 +14,6 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
 )
-
-// testPIDChecker is a controllable PID checker for tests.
-// It is safe for concurrent use: IsAlive and SetAlive hold a mutex.
-type testPIDChecker struct {
-	mu    sync.RWMutex
-	alive map[int]bool
-}
-
-func newTestPIDChecker(pids ...int) *testPIDChecker {
-	c := &testPIDChecker{alive: make(map[int]bool)}
-	for _, pid := range pids {
-		c.alive[pid] = true
-	}
-	return c
-}
-
-func (c *testPIDChecker) IsAlive(pid int) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.alive[pid]
-}
-
-func (c *testPIDChecker) SetAlive(pid int, alive bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.alive[pid] = alive
-}
-
-// makeSessionFile creates a session JSON file in the given directory.
-// When cwd and sessionID are both non-empty, it also creates the JSONL log
-// file in the path the scanner derives from the CWD, so that the scanner's
-// JSONL-existence check passes.
-func makeSessionFile(t *testing.T, dir string, pid int, sessionID, cwd string) string {
-	t.Helper()
-	meta := session.SessionMeta{
-		PID:       pid,
-		SessionID: sessionID,
-		CWD:       cwd,
-		StartedAt: time.Now().UnixMilli(),
-		Kind:      "interactive",
-	}
-	data, err := json.Marshal(meta)
-	if err != nil {
-		t.Fatal(err)
-	}
-	filePath := filepath.Join(dir, fmt.Sprintf("%d.json", pid))
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create the JSONL log file in the scanner-derived location so that the
-	// scanner's JSONL-existence check is satisfied during integration tests.
-	if cwd != "" && sessionID != "" {
-		jsonlDir := session.CWDToProjectDir(cwd)
-		if jsonlDir != "" {
-			if mkErr := os.MkdirAll(jsonlDir, 0755); mkErr == nil {
-				jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
-				_ = os.WriteFile(jsonlPath, []byte("{}\n"), 0644)
-				t.Cleanup(func() {
-					_ = os.Remove(jsonlPath)
-					_ = os.Remove(jsonlDir) // best-effort; only removes if empty
-				})
-			}
-		}
-	}
-
-	return filePath
-}
-
-// makeJSONLFile creates a minimal JSONL file for a session.
-func makeJSONLFile(t *testing.T, dir, sessionID string) string {
-	t.Helper()
-	filePath := filepath.Join(dir, sessionID+".jsonl")
-	content := `{"type":"user","message":{"role":"user","content":"hello"},"timestamp":"2026-03-31T00:00:00Z"}` + "\n"
-	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	return filePath
-}
 
 func TestNewSessionDashboardModel(t *testing.T) {
 	checker := newTestPIDChecker()
@@ -852,50 +771,29 @@ func TestPaneDisplayName(t *testing.T) {
 	}
 }
 
-func TestItoa(t *testing.T) {
-	tests := []struct {
-		input    int
-		expected string
-	}{
-		{0, "0"},
-		{1, "1"},
-		{42, "42"},
-		{12345, "12345"},
-		{-1, "-1"},
-		{-42, "-42"},
-	}
-
-	for _, tt := range tests {
-		if got := itoa(tt.input); got != tt.expected {
-			t.Errorf("itoa(%d) = %q, want %q", tt.input, got, tt.expected)
-		}
-	}
-}
-
 func TestFilterSessionsForProject(t *testing.T) {
-	m := SessionDashboardModel{projectPath: "/my/project"}
-
 	sessions := []session.ActiveSession{
 		{Meta: session.SessionMeta{PID: 1, CWD: "/my/project"}},
 		{Meta: session.SessionMeta{PID: 2, CWD: "/other/project"}},
 		{Meta: session.SessionMeta{PID: 3, CWD: "/my/project"}},
 	}
 
-	filtered := m.filterSessionsForProject(sessions)
+	filtered := session.FilterByProject(sessions, "/my/project")
 	if len(filtered) != 2 {
 		t.Errorf("expected 2 filtered sessions, got %d", len(filtered))
 	}
 }
 
 func TestFilterSessionsForProject_NoFilter(t *testing.T) {
-	m := SessionDashboardModel{projectPath: ""}
 	sessions := []session.ActiveSession{
 		{Meta: session.SessionMeta{PID: 1, CWD: "/a"}},
 		{Meta: session.SessionMeta{PID: 2, CWD: "/b"}},
 	}
-	filtered := m.filterSessionsForProject(sessions)
-	if len(filtered) != 2 {
-		t.Errorf("expected all sessions when no filter, got %d", len(filtered))
+	// When projectPath is empty, FilterByProject returns nil,
+	// so callers should skip the call (preserving original behavior).
+	filtered := session.FilterByProject(sessions, "")
+	if filtered != nil {
+		t.Errorf("expected nil when no filter, got %d sessions", len(filtered))
 	}
 }
 
@@ -1015,7 +913,7 @@ func TestSessionDashboardModel_PaneAppearsWithin3Seconds(t *testing.T) {
 
 	// Create session file — this is when the session "appears"
 	start := time.Now()
-	makeSessionFile(t, sessDir, 100, sessionID, projectPath)
+	makeTestSessionFile(t, sessDir, 100, sessionID, projectPath)
 
 	// Start scanner
 	resultCh := scanner.Start()
@@ -1067,7 +965,7 @@ func TestSessionDashboardModel_MultipleSessionsAppear(t *testing.T) {
 	for i, pid := range pids {
 		sid := fmt.Sprintf("sess-%d", i)
 		makeJSONLFile(t, projectDir, sid)
-		makeSessionFile(t, sessDir, pid, sid, projectPath)
+		makeTestSessionFile(t, sessDir, pid, sid, projectPath)
 	}
 
 	start := time.Now()

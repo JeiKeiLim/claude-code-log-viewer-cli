@@ -112,22 +112,13 @@ func TestNewPIDChecker_CurrentProcessAlive(t *testing.T) {
 // by custom types (used extensively in tests throughout the session package).
 func TestPIDCheckerInterface(t *testing.T) {
 	var _ PIDChecker = &SyscallPIDChecker{}
-	var _ PIDChecker = &mockPIDCheckerForPIDTest{}
-}
-
-// mockPIDCheckerForPIDTest is a simple mock to verify the interface.
-type mockPIDCheckerForPIDTest struct {
-	alive bool
-}
-
-func (m *mockPIDCheckerForPIDTest) IsAlive(_ int) bool {
-	return m.alive
+	var _ PIDChecker = newMockPIDChecker()
 }
 
 // TestMockPIDChecker_Interface validates mock implementation satisfies interface.
 func TestMockPIDChecker_Interface(t *testing.T) {
-	aliveChecker := &mockPIDCheckerForPIDTest{alive: true}
-	deadChecker := &mockPIDCheckerForPIDTest{alive: false}
+	aliveChecker := newMockPIDChecker(1234)
+	deadChecker := newMockPIDChecker()
 
 	if !aliveChecker.IsAlive(1234) {
 		t.Error("alive mock should return true")

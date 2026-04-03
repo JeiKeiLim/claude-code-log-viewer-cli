@@ -17,7 +17,7 @@ import (
 
 // newTestDirWatcher creates a SessionDirectoryWatcher for the given temp dir
 // with a mock PID checker and a large event buffer to avoid dropped events.
-func newTestDirWatcher(t *testing.T, dir string, checker *scannerMockPIDChecker) *SessionDirectoryWatcher {
+func newTestDirWatcher(t *testing.T, dir string, checker *mockPIDChecker) *SessionDirectoryWatcher {
 	t.Helper()
 	w, err := NewSessionDirectoryWatcher(dir,
 		WithDirWatcherPIDChecker(checker),
@@ -96,7 +96,7 @@ func TestNewSessionDirectoryWatcher_DefaultDir(t *testing.T) {
 
 func TestNewSessionDirectoryWatcher_CustomDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker()
+	checker := newMockPIDChecker()
 	w := newTestDirWatcher(t, tmpDir, checker)
 	defer w.Close()
 
@@ -108,7 +108,7 @@ func TestNewSessionDirectoryWatcher_CustomDir(t *testing.T) {
 func TestNewSessionDirectoryWatcher_EventBufferOption(t *testing.T) {
 	tmpDir := t.TempDir()
 	w, err := NewSessionDirectoryWatcher(tmpDir,
-		WithDirWatcherPIDChecker(newScannerMockChecker()),
+		WithDirWatcherPIDChecker(newMockPIDChecker()),
 		WithDirWatcherEventBuffer(32),
 	)
 	if err != nil {
@@ -127,7 +127,7 @@ func TestNewSessionDirectoryWatcher_EventBufferOption(t *testing.T) {
 func TestNewSessionDirectoryWatcher_ZeroBufferIgnored(t *testing.T) {
 	tmpDir := t.TempDir()
 	w, err := NewSessionDirectoryWatcher(tmpDir,
-		WithDirWatcherPIDChecker(newScannerMockChecker()),
+		WithDirWatcherPIDChecker(newMockPIDChecker()),
 		WithDirWatcherEventBuffer(0), // Should use default (16)
 	)
 	if err != nil {
@@ -149,7 +149,7 @@ func TestSessionDirectoryWatcher_StartCreatesDirectory(t *testing.T) {
 	// Use a sub-directory that doesn't exist yet.
 	sessionsDir := filepath.Join(tmpDir, "claude", "sessions")
 
-	checker := newScannerMockChecker()
+	checker := newMockPIDChecker()
 	w, err := NewSessionDirectoryWatcher(sessionsDir,
 		WithDirWatcherPIDChecker(checker),
 	)
@@ -169,7 +169,7 @@ func TestSessionDirectoryWatcher_StartCreatesDirectory(t *testing.T) {
 
 func TestSessionDirectoryWatcher_StartAfterClose(t *testing.T) {
 	tmpDir := t.TempDir()
-	w := newTestDirWatcher(t, tmpDir, newScannerMockChecker())
+	w := newTestDirWatcher(t, tmpDir, newMockPIDChecker())
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -183,7 +183,7 @@ func TestSessionDirectoryWatcher_StartAfterClose(t *testing.T) {
 
 func TestSessionDirectoryWatcher_CloseIdempotent(t *testing.T) {
 	tmpDir := t.TempDir()
-	w := newTestDirWatcher(t, tmpDir, newScannerMockChecker())
+	w := newTestDirWatcher(t, tmpDir, newMockPIDChecker())
 	startWatcher(t, w)
 
 	// Calling Close multiple times should not panic or return an error.
@@ -197,7 +197,7 @@ func TestSessionDirectoryWatcher_CloseIdempotent(t *testing.T) {
 
 func TestSessionDirectoryWatcher_CloseWithoutStart(t *testing.T) {
 	tmpDir := t.TempDir()
-	w := newTestDirWatcher(t, tmpDir, newScannerMockChecker())
+	w := newTestDirWatcher(t, tmpDir, newMockPIDChecker())
 
 	// Close without Start should not panic.
 	if err := w.Close(); err != nil {
@@ -207,7 +207,7 @@ func TestSessionDirectoryWatcher_CloseWithoutStart(t *testing.T) {
 
 func TestSessionDirectoryWatcher_IsClosed(t *testing.T) {
 	tmpDir := t.TempDir()
-	w := newTestDirWatcher(t, tmpDir, newScannerMockChecker())
+	w := newTestDirWatcher(t, tmpDir, newMockPIDChecker())
 
 	if w.IsClosed() {
 		t.Error("expected IsClosed() == false before Close()")
@@ -223,7 +223,7 @@ func TestSessionDirectoryWatcher_IsClosed(t *testing.T) {
 
 func TestSessionDirectoryWatcher_EventsChannel(t *testing.T) {
 	tmpDir := t.TempDir()
-	w := newTestDirWatcher(t, tmpDir, newScannerMockChecker())
+	w := newTestDirWatcher(t, tmpDir, newMockPIDChecker())
 	defer w.Close()
 
 	ch := w.Events()
@@ -238,7 +238,7 @@ func TestSessionDirectoryWatcher_EventsChannel(t *testing.T) {
 
 func TestSessionDirectoryWatcher_DetectsNewSession(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(100)
+	checker := newMockPIDChecker(100)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -266,7 +266,7 @@ func TestSessionDirectoryWatcher_DetectsNewSession(t *testing.T) {
 
 func TestSessionDirectoryWatcher_DetectsSessionWithJSONLDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(200)
+	checker := newMockPIDChecker(200)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -288,7 +288,7 @@ func TestSessionDirectoryWatcher_DetectsSessionWithJSONLDir(t *testing.T) {
 
 func TestSessionDirectoryWatcher_DetectsSessionNoCWD(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(300)
+	checker := newMockPIDChecker(300)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -309,7 +309,7 @@ func TestSessionDirectoryWatcher_DetectsSessionNoCWD(t *testing.T) {
 
 func TestSessionDirectoryWatcher_DetectsMultipleSessions(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(101, 102, 103)
+	checker := newMockPIDChecker(101, 102, 103)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -344,7 +344,7 @@ func TestSessionDirectoryWatcher_DetectsMultipleSessions(t *testing.T) {
 
 func TestSessionDirectoryWatcher_DetectsWithin1Second(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(999)
+	checker := newMockPIDChecker(999)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -378,7 +378,7 @@ func TestSessionDirectoryWatcher_DetectsWithin1Second(t *testing.T) {
 func TestSessionDirectoryWatcher_DetectsMultipleWithin1Second(t *testing.T) {
 	tmpDir := t.TempDir()
 	pids := []int{1001, 1002, 1003}
-	checker := newScannerMockChecker(pids...)
+	checker := newMockPIDChecker(pids...)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -421,7 +421,7 @@ func TestSessionDirectoryWatcher_DetectsMultipleWithin1Second(t *testing.T) {
 func TestSessionDirectoryWatcher_IgnoresDeadPID(t *testing.T) {
 	tmpDir := t.TempDir()
 	// PID 404 is NOT in the alive list.
-	checker := newScannerMockChecker()
+	checker := newMockPIDChecker()
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -440,7 +440,7 @@ func TestSessionDirectoryWatcher_IgnoresDeadPID(t *testing.T) {
 func TestSessionDirectoryWatcher_IgnoresPIDMismatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	// Filename is 500.json but content has PID 999.
-	checker := newScannerMockChecker(500)
+	checker := newMockPIDChecker(500)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -457,7 +457,7 @@ func TestSessionDirectoryWatcher_IgnoresPIDMismatch(t *testing.T) {
 
 func TestSessionDirectoryWatcher_UseFilenameWhenContentPIDIsZero(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(600)
+	checker := newMockPIDChecker(600)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -480,7 +480,7 @@ func TestSessionDirectoryWatcher_UseFilenameWhenContentPIDIsZero(t *testing.T) {
 
 func TestSessionDirectoryWatcher_IgnoresNonJSONFiles(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker()
+	checker := newMockPIDChecker()
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -497,7 +497,7 @@ func TestSessionDirectoryWatcher_IgnoresNonJSONFiles(t *testing.T) {
 
 func TestSessionDirectoryWatcher_IgnoresCorruptJSON(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(700)
+	checker := newMockPIDChecker(700)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -515,7 +515,7 @@ func TestSessionDirectoryWatcher_IgnoresCorruptJSON(t *testing.T) {
 
 func TestSessionDirectoryWatcher_IgnoresEmptyJSON(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(701)
+	checker := newMockPIDChecker(701)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -537,7 +537,7 @@ func TestSessionDirectoryWatcher_IgnoresEmptyJSON(t *testing.T) {
 
 func TestSessionDirectoryWatcher_EmitsClosedOnRemoval(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(800)
+	checker := newMockPIDChecker(800)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -569,7 +569,7 @@ func TestSessionDirectoryWatcher_EmitsClosedOnRemoval(t *testing.T) {
 func TestSessionDirectoryWatcher_NoClosedEventForUnseenRemoval(t *testing.T) {
 	tmpDir := t.TempDir()
 	// PID 900 is dead, so no SessionOpened was emitted.
-	checker := newScannerMockChecker() // Nothing alive
+	checker := newMockPIDChecker() // Nothing alive
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -595,7 +595,7 @@ func TestSessionDirectoryWatcher_NoClosedEventForUnseenRemoval(t *testing.T) {
 
 func TestSessionDirectoryWatcher_NoDuplicateOpenedEvents(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(1100)
+	checker := newMockPIDChecker(1100)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -632,7 +632,7 @@ func TestSessionDirectoryWatcher_NoGoroutineLeak_StartStop(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		tmpDir := t.TempDir()
-		w := newTestDirWatcher(t, tmpDir, newScannerMockChecker())
+		w := newTestDirWatcher(t, tmpDir, newMockPIDChecker())
 
 		if err := w.Start(); err != nil {
 			t.Fatalf("iteration %d: Start: %v", i, err)
@@ -658,7 +658,7 @@ func TestSessionDirectoryWatcher_NoGoroutineLeak_WithEvents(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		tmpDir := t.TempDir()
 		pid := 2000 + i
-		checker := newScannerMockChecker(pid)
+		checker := newMockPIDChecker(pid)
 		w := newTestDirWatcher(t, tmpDir, checker)
 
 		if err := w.Start(); err != nil {
@@ -696,7 +696,7 @@ func TestSessionDirectoryWatcher_ConcurrentSessionCreation(t *testing.T) {
 		pids[i] = 3000 + i
 	}
 
-	checker := newScannerMockChecker(pids...)
+	checker := newMockPIDChecker(pids...)
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
 
@@ -737,7 +737,7 @@ func TestSessionDirectoryWatcher_ConcurrentCloseAndEvent(t *testing.T) {
 	// Test that closing while events are being processed doesn't panic or deadlock.
 	tmpDir := t.TempDir()
 	pid := 4000
-	checker := newScannerMockChecker(pid)
+	checker := newMockPIDChecker(pid)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	if err := w.Start(); err != nil {
@@ -785,7 +785,7 @@ func TestSessionDirectoryWatcher_ConcurrentCloseAndEvent(t *testing.T) {
 func TestSessionDirectoryWatcher_FullLifecycle(t *testing.T) {
 	tmpDir := t.TempDir()
 	pid := 5000
-	checker := newScannerMockChecker(pid)
+	checker := newMockPIDChecker(pid)
 
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
@@ -835,7 +835,7 @@ func TestSessionDirectoryWatcher_FullLifecycle(t *testing.T) {
 func TestSessionDirectoryWatcher_ChannelFullDropAndRetry(t *testing.T) {
 	// Use a buffer of size 1 to trigger the channel-full drop path.
 	tmpDir := t.TempDir()
-	checker := newScannerMockChecker(6001, 6002)
+	checker := newMockPIDChecker(6001, 6002)
 
 	w, err := NewSessionDirectoryWatcher(tmpDir,
 		WithDirWatcherPIDChecker(checker),
@@ -899,7 +899,7 @@ func TestSessionDirectoryWatcher_StartMkdirFails(t *testing.T) {
 	// Try to watch a sub-directory inside the read-only dir.
 	sessionsDir := filepath.Join(roDir, "sessions")
 	w, err := NewSessionDirectoryWatcher(sessionsDir,
-		WithDirWatcherPIDChecker(newScannerMockChecker()),
+		WithDirWatcherPIDChecker(newMockPIDChecker()),
 	)
 	if err != nil {
 		t.Fatalf("NewSessionDirectoryWatcher: %v", err)
@@ -916,7 +916,7 @@ func TestSessionDirectoryWatcher_StartMkdirFails(t *testing.T) {
 func TestWithDirWatcherPIDChecker(t *testing.T) {
 	tmpDir := t.TempDir()
 	// Only PID 9999 is alive.
-	custom := newScannerMockChecker(9999)
+	custom := newMockPIDChecker(9999)
 
 	w, err := NewSessionDirectoryWatcher(tmpDir, WithDirWatcherPIDChecker(custom))
 	if err != nil {

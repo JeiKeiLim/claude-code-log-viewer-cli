@@ -4,6 +4,7 @@ package tui
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -220,6 +221,23 @@ func (m *SessionDashboardModel) CurrentPagePanes() []SessionPaneModel {
 		end = total
 	}
 	return m.panes[start:end]
+}
+
+// adjustAfterPaneRemoval clamps the current page, adjusts focus within the
+// visible page, and recalculates the grid layout after one or more panes have
+// been removed. This is shared by handleScanResult and handleSessionClosed.
+func (m *SessionDashboardModel) adjustAfterPaneRemoval() {
+	m.clampCurrentPage()
+
+	visibleCount := m.currentPagePaneCount()
+	if visibleCount == 0 {
+		m.focusIndex = 0
+	} else if m.focusIndex >= visibleCount {
+		m.focusIndex = visibleCount - 1
+	}
+
+	m.markGridDirty()
+	m.recalcPaneSizes()
 }
 
 // clampCurrentPage ensures currentPage is within valid bounds.
@@ -451,6 +469,15 @@ func (m SessionDashboardModel) startDirWatcherCmd() tea.Cmd {
 }
 
 // Update implements tea.Model.
+// forwardToViewer sends msg to the given embedded ViewerModel pointer,
+// updates it in place, and returns the resulting tea.Cmd.
+func forwardToViewer(viewer **ViewerModel, msg tea.Msg) tea.Cmd {
+	newViewer, cmd := (*viewer).Update(msg)
+	v := newViewer.(ViewerModel)
+	*viewer = &v
+	return cmd
+}
+
 func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -480,16 +507,10 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// overlay loading animations animate correctly in single-session and
 		// zero-session modes (matching the normal app.go viewer path).
 		if m.viewMode == DashboardViewSingleSession && m.singleSessionViewer != nil {
-			newViewer, cmd := m.singleSessionViewer.Update(msg)
-			v := newViewer.(ViewerModel)
-			m.singleSessionViewer = &v
-			return m, cmd
+			return m, forwardToViewer(&m.singleSessionViewer, msg)
 		}
 		if m.viewMode == DashboardViewZeroSessions && m.latestViewer != nil {
-			newViewer, cmd := m.latestViewer.Update(msg)
-			v := newViewer.(ViewerModel)
-			m.latestViewer = &v
-			return m, cmd
+			return m, forwardToViewer(&m.latestViewer, msg)
 		}
 		return m, nil
 
@@ -501,10 +522,7 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.closeAll()
 				return m, func() tea.Msg { return GoBackFromSessionDashboardMsg{} }
 			}
-			newViewer, cmd := m.latestViewer.Update(msg)
-			v := newViewer.(ViewerModel)
-			m.latestViewer = &v
-			return m, cmd
+			return m, forwardToViewer(&m.latestViewer, msg)
 		}
 
 		// In single-session mode, forward all keys to the embedded viewer
@@ -514,10 +532,7 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.closeAll()
 				return m, func() tea.Msg { return GoBackFromSessionDashboardMsg{} }
 			}
-			newViewer, cmd := m.singleSessionViewer.Update(msg)
-			v := newViewer.(ViewerModel)
-			m.singleSessionViewer = &v
-			return m, cmd
+			return m, forwardToViewer(&m.singleSessionViewer, msg)
 		}
 
 		switch msg.String() {
@@ -525,41 +540,13 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.closeAll()
 			return m, func() tea.Msg { return GoBackFromSessionDashboardMsg{} }
 		case "up", "k":
-			oldFocus := m.focusIndex
-			m.focusIndex = m.moveFocus("up")
-			if oldFocus != m.focusIndex {
-				pageStart := m.currentPage * MaxSessionPanes
-				m.markPaneDirty(pageStart + oldFocus)
-				m.markPaneDirty(pageStart + m.focusIndex)
-			}
-			return m, nil
+			return m.handleFocusMove("up")
 		case "down", "j":
-			oldFocus := m.focusIndex
-			m.focusIndex = m.moveFocus("down")
-			if oldFocus != m.focusIndex {
-				pageStart := m.currentPage * MaxSessionPanes
-				m.markPaneDirty(pageStart + oldFocus)
-				m.markPaneDirty(pageStart + m.focusIndex)
-			}
-			return m, nil
+			return m.handleFocusMove("down")
 		case "left", "h":
-			oldFocus := m.focusIndex
-			m.focusIndex = m.moveFocus("left")
-			if oldFocus != m.focusIndex {
-				pageStart := m.currentPage * MaxSessionPanes
-				m.markPaneDirty(pageStart + oldFocus)
-				m.markPaneDirty(pageStart + m.focusIndex)
-			}
-			return m, nil
+			return m.handleFocusMove("left")
 		case "right", "l":
-			oldFocus := m.focusIndex
-			m.focusIndex = m.moveFocus("right")
-			if oldFocus != m.focusIndex {
-				pageStart := m.currentPage * MaxSessionPanes
-				m.markPaneDirty(pageStart + oldFocus)
-				m.markPaneDirty(pageStart + m.focusIndex)
-			}
-			return m, nil
+			return m.handleFocusMove("right")
 		case "enter":
 			globalIdx := m.currentPage*MaxSessionPanes + m.focusIndex
 			if globalIdx >= 0 && globalIdx < len(m.panes) {
@@ -668,16 +655,10 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// routed back to it so lazy loading, the overlay spinner, and G-key navigation
 	// all function identically to the standalone viewer path.
 	if m.viewMode == DashboardViewSingleSession && m.singleSessionViewer != nil {
-		newViewer, cmd := m.singleSessionViewer.Update(msg)
-		v := newViewer.(ViewerModel)
-		m.singleSessionViewer = &v
-		return m, cmd
+		return m, forwardToViewer(&m.singleSessionViewer, msg)
 	}
 	if m.viewMode == DashboardViewZeroSessions && m.latestViewer != nil {
-		newViewer, cmd := m.latestViewer.Update(msg)
-		v := newViewer.(ViewerModel)
-		m.latestViewer = &v
-		return m, cmd
+		return m, forwardToViewer(&m.latestViewer, msg)
 	}
 
 	return m, nil
@@ -692,7 +673,10 @@ func (m SessionDashboardModel) handleScanResult(result session.ScanResult) (tea.
 	}
 
 	// Filter sessions for our project
-	projectSessions := m.filterSessionsForProject(result.Sessions)
+	projectSessions := result.Sessions
+	if m.projectPath != "" {
+		projectSessions = session.FilterByProject(result.Sessions, m.projectPath)
+	}
 
 	// Deduplicate sessions sharing the same sessionId, keeping only the
 	// latest PID. This prevents ghost panes when a Claude Code process
@@ -752,18 +736,7 @@ func (m SessionDashboardModel) handleScanResult(result session.ScanResult) (tea.
 	}
 
 	if removedAny {
-		// Auto-retreat: if current page is now empty, go back to last valid page
-		m.clampCurrentPage()
-
-		// Adjust focus within current page
-		visibleCount := m.currentPagePaneCount()
-		if visibleCount == 0 {
-			m.focusIndex = 0
-		} else if m.focusIndex >= visibleCount {
-			m.focusIndex = visibleCount - 1
-		}
-		m.markGridDirty()
-		m.recalcPaneSizes()
+		m.adjustAfterPaneRemoval()
 	}
 
 	// Find new sessions (not yet displayed as panes).
@@ -847,11 +820,13 @@ func (m SessionDashboardModel) handleDirWatcherEvent(event session.SessionEvent)
 // (e.g., from dir watcher events) that should not trigger dead-session removal.
 func (m SessionDashboardModel) addSessionPane(sess session.ActiveSession) (tea.Model, tea.Cmd) {
 	// Filter for our project
-	projectSessions := m.filterSessionsForProject([]session.ActiveSession{sess})
-	if len(projectSessions) == 0 {
-		return m, nil
+	if m.projectPath != "" {
+		projectSessions := session.FilterByProject([]session.ActiveSession{sess}, m.projectPath)
+		if len(projectSessions) == 0 {
+			return m, nil
+		}
+		sess = projectSessions[0]
 	}
-	sess = projectSessions[0]
 
 	// Check if already displayed (by PID)
 	for _, pane := range m.panes {
@@ -925,20 +900,7 @@ func (m SessionDashboardModel) handleSessionClosed(event session.SessionEvent) (
 			// Remove pane
 			m.panes = append(m.panes[:i], m.panes[i+1:]...)
 
-			// Auto-retreat: if current page is now empty, go back to last valid page
-			m.clampCurrentPage()
-
-			// Adjust focus within current page
-			visibleCount := m.currentPagePaneCount()
-			if visibleCount == 0 {
-				m.focusIndex = 0
-			} else if m.focusIndex >= visibleCount {
-				m.focusIndex = visibleCount - 1
-			}
-
-			// Recalculate dimensions — grid layout changed
-			m.markGridDirty()
-			m.recalcPaneSizes()
+			m.adjustAfterPaneRemoval()
 			break
 		}
 	}
@@ -1026,10 +988,7 @@ func (m SessionDashboardModel) handleWatcherEvent(msg sessionPaneWatcherEventMsg
 		// In single-session mode, forward new entries to the embedded viewer
 		// so it stays in sync with the backing pane's live data.
 		if m.viewMode == DashboardViewSingleSession && m.singleSessionViewer != nil && idx == m.singleSessionPaneIdx {
-			newViewer, cmd := m.singleSessionViewer.Update(event)
-			v := newViewer.(ViewerModel)
-			m.singleSessionViewer = &v
-			return m, cmd
+			return m, forwardToViewer(&m.singleSessionViewer, event)
 		}
 	case watcher.FileResetMsg:
 		// Reload — pane will be marked dirty when content loads
@@ -1037,21 +996,6 @@ func (m SessionDashboardModel) handleWatcherEvent(msg sessionPaneWatcherEventMsg
 	}
 
 	return m, nil
-}
-
-// filterSessionsForProject returns sessions whose CWD matches our project path.
-func (m SessionDashboardModel) filterSessionsForProject(sessions []session.ActiveSession) []session.ActiveSession {
-	if m.projectPath == "" {
-		return sessions // No filter — show all
-	}
-
-	var filtered []session.ActiveSession
-	for _, s := range sessions {
-		if s.Meta.CWD == m.projectPath {
-			filtered = append(filtered, s)
-		}
-	}
-	return filtered
 }
 
 // resolveJSONLPath returns the JSONL file path for a session.
@@ -1374,7 +1318,7 @@ func (m SessionDashboardModel) View() string {
 	var parts []string
 	parts = append(parts, grid)
 	if totalPages > 1 {
-		pageIndicator := Styles.Muted.Render("Page " + itoa(m.currentPage+1) + "/" + itoa(totalPages))
+		pageIndicator := Styles.Muted.Render("Page " + strconv.Itoa(m.currentPage+1) + "/" + strconv.Itoa(totalPages))
 		parts = append(parts, pageIndicator)
 	}
 	parts = append(parts, helpText)
@@ -1417,6 +1361,19 @@ func (m *SessionDashboardModel) recalcPaneSizes() {
 			m.panes[globalIdx].height = pl.Height
 		}
 	}
+}
+
+// handleFocusMove updates focusIndex for the given direction ("up","down","left","right"),
+// marks the old and new focused panes dirty, and returns (model, nil).
+func (m SessionDashboardModel) handleFocusMove(direction string) (SessionDashboardModel, tea.Cmd) {
+	oldFocus := m.focusIndex
+	m.focusIndex = m.moveFocus(direction)
+	if oldFocus != m.focusIndex {
+		pageStart := m.currentPage * MaxSessionPanes
+		m.markPaneDirty(pageStart + oldFocus)
+		m.markPaneDirty(pageStart + m.focusIndex)
+	}
+	return m, nil
 }
 
 // moveFocus calculates new focus index for given direction.
@@ -1655,30 +1612,9 @@ func paneDisplayName(sess session.ActiveSession) string {
 	if kind == "" {
 		kind = "session"
 	}
-	name := strings.Join([]string{kind, "[", itoa(pid), "]"}, "")
+	name := strings.Join([]string{kind, "[", strconv.Itoa(pid), "]"}, "")
 	if sess.State == session.SessionIdle {
 		name += " ⏸ IDLE"
 	}
 	return name
-}
-
-// itoa converts int to string without importing strconv.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	negative := false
-	if n < 0 {
-		negative = true
-		n = -n
-	}
-	var digits []byte
-	for n > 0 {
-		digits = append([]byte{byte('0' + n%10)}, digits...)
-		n /= 10
-	}
-	if negative {
-		digits = append([]byte{'-'}, digits...)
-	}
-	return string(digits)
 }

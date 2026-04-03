@@ -13,30 +13,6 @@ import (
 
 // ─────────────────────────────── test helpers ───────────────────────────────
 
-// registryMockPIDChecker is a thread-safe PIDChecker for registry tests.
-// It is distinct from scannerMockPIDChecker and monitorMockPIDChecker to
-// avoid redeclaration errors across the package-level test files.
-type registryMockPIDChecker struct {
-	mu    sync.RWMutex
-	alive map[int]bool
-}
-
-func newRegistryMockPIDChecker() *registryMockPIDChecker {
-	return &registryMockPIDChecker{alive: make(map[int]bool)}
-}
-
-func (m *registryMockPIDChecker) SetAlive(pid int, alive bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.alive[pid] = alive
-}
-
-func (m *registryMockPIDChecker) IsAlive(pid int) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.alive[pid]
-}
-
 // regFormatFilename converts a PID to "{pid}.json" filename.
 func regFormatFilename(pid int) string {
 	return strconv.Itoa(pid) + ".json"
@@ -191,7 +167,7 @@ func TestNewRegistry_WithEventBuffer_Zero_IsIgnored(t *testing.T) {
 }
 
 func TestNewRegistry_WithPIDChecker(t *testing.T) {
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	r := NewRegistry("",
 		WithRegistryNoDirWatcher(),
 		WithRegistryPIDChecker(checker),
@@ -247,7 +223,7 @@ func TestNewRegistry_WithMonitorInterval_Clamped(t *testing.T) {
 
 func TestRegistry_StartStop(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	r := NewRegistry(tmpDir,
 		WithRegistryNoDirWatcher(),
 		WithRegistryPIDChecker(checker),
@@ -291,7 +267,7 @@ func TestRegistry_StopMultipleTimes_Idempotent(t *testing.T) {
 
 func TestRegistry_ContextCancellation_StopsGoroutines(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	r := NewRegistry(tmpDir,
 		WithRegistryNoDirWatcher(),
 		WithRegistryPIDChecker(checker),
@@ -322,7 +298,7 @@ func TestRegistry_ContextCancellation_StopsGoroutines(t *testing.T) {
 
 func TestRegistry_DetectsSessionFromScanner(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 12345
 	checker.SetAlive(pid, true)
 
@@ -353,7 +329,7 @@ func TestRegistry_DetectsSessionFromScanner(t *testing.T) {
 
 func TestRegistry_DetectsMultipleSessions(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 
 	pids := []int{1001, 1002, 1003}
 	for i, pid := range pids {
@@ -381,7 +357,7 @@ func TestRegistry_DetectsMultipleSessions(t *testing.T) {
 
 func TestRegistry_DetectsSessionClosureViaScanner(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 54321
 	checker.SetAlive(pid, true)
 	regWriteSessionFile(t, tmpDir, pid, "dying-session")
@@ -419,7 +395,7 @@ func TestRegistry_DetectsSessionClosureViaScanner(t *testing.T) {
 
 func TestRegistry_DetectsSessionClosureViaMonitor(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 99001
 	checker.SetAlive(pid, true)
 	regWriteSessionFile(t, tmpDir, pid, "monitor-session")
@@ -453,7 +429,7 @@ func TestRegistry_DetectsSessionClosureViaMonitor(t *testing.T) {
 
 func TestRegistry_DeduplicatesSessionsFromMultipleSources(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 77001
 	checker.SetAlive(pid, true)
 
@@ -506,7 +482,7 @@ func TestRegistry_DeduplicatesSessionsFromMultipleSources(t *testing.T) {
 
 func TestRegistry_SessionsSnapshot(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 
 	pids := []int{2001, 2002}
 	for _, pid := range pids {
@@ -558,7 +534,7 @@ func TestRegistry_SessionCount_Zero(t *testing.T) {
 
 func TestRegistry_LookupSession_Found(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 3001
 	checker.SetAlive(pid, true)
 	regWriteSessionFile(t, tmpDir, pid, "lookup-session")
@@ -624,7 +600,7 @@ func TestRegistry_EventChannel_NotClosed_AfterStop(t *testing.T) {
 
 func TestRegistry_ClosedEventCarriesFullMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 88001
 	checker.SetAlive(pid, true)
 	regWriteSessionFile(t, tmpDir, pid, "full-meta-session")
@@ -786,7 +762,7 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 
 func TestRegistry_NoGoroutineLeak(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 
 	for i := 0; i < 5; i++ {
 		r := NewRegistry(tmpDir,
@@ -806,7 +782,7 @@ func TestRegistry_NoGoroutineLeak(t *testing.T) {
 
 func TestRegistry_DetectionWithin2Seconds(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 66001
 	checker.SetAlive(pid, true)
 
@@ -853,7 +829,7 @@ func TestRegistry_DefaultScanInterval_MeetsRequirement(t *testing.T) {
 
 func TestRegistry_DirWatcher_EmitsOpenedEvent(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 44001
 	checker.SetAlive(pid, true)
 
@@ -890,7 +866,7 @@ func TestRegistry_DirWatcher_EmitsOpenedEvent(t *testing.T) {
 
 func TestRegistry_EmptySessionsDir_NoSessions(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 
 	r := NewRegistry(tmpDir,
 		WithRegistryNoDirWatcher(),
@@ -915,7 +891,7 @@ func TestRegistry_EmptySessionsDir_NoSessions(t *testing.T) {
 
 func TestRegistry_NilDirWatcher_RunLoopStillWorks(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 55001
 	checker.SetAlive(pid, true)
 	regWriteSessionFile(t, tmpDir, pid, "nodirwatcher-session")
@@ -945,7 +921,7 @@ func TestRegistry_NilDirWatcher_RunLoopStillWorks(t *testing.T) {
 
 func TestRegistry_BatchOpenOnFirstScan(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 
 	// Pre-populate 3 sessions
 	pids := []int{30001, 30002, 30003}
@@ -972,7 +948,7 @@ func TestRegistry_BatchOpenOnFirstScan(t *testing.T) {
 
 func TestRegistry_SubsequentScanDetectsNewSession(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 
 	pid1 := 40001
 	checker.SetAlive(pid1, true)
@@ -1008,7 +984,7 @@ func TestRegistry_SubsequentScanDetectsNewSession(t *testing.T) {
 
 func TestRegistry_MonitorUntracked_AfterSessionClosed(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 70001
 	checker.SetAlive(pid, true)
 	regWriteSessionFile(t, tmpDir, pid, "untrack-session")
@@ -1050,7 +1026,7 @@ func TestRegistry_MonitorUntracked_AfterSessionClosed(t *testing.T) {
 // ≤5 seconds of PID exit, measured end-to-end through the Registry pipeline.
 func TestRegistry_SessionCloseLatency_EndToEnd(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 80101
 	checker.SetAlive(pid, true)
 	regWriteSessionFile(t, tmpDir, pid, "e2e-close-latency")
@@ -1092,7 +1068,7 @@ func TestRegistry_SessionCloseLatency_EndToEnd(t *testing.T) {
 // continues processing dir-watcher / monitor events without panicking.
 func TestRegistry_ScannerChannelClosed_RunContinues(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 
 	r := NewRegistry(tmpDir,
 		WithRegistryNoDirWatcher(),
@@ -1124,7 +1100,7 @@ func TestRegistry_ScannerChannelClosed_RunContinues(t *testing.T) {
 // dir-watcher is closed, run() continues gracefully without panicking.
 func TestRegistry_DirWatcherClosedChannel_RunContinues(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 
 	dw, err := NewSessionDirectoryWatcher(tmpDir, WithDirWatcherPIDChecker(checker))
 	if err != nil {
@@ -1162,7 +1138,7 @@ func TestRegistry_DirWatcherClosedChannel_RunContinues(t *testing.T) {
 // exit via the Monitor's PID liveness polling.
 func TestRegistry_ClosureDetectionSLA(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 80001
 	checker.SetAlive(pid, true)
 	regWriteSessionFile(t, tmpDir, pid, "sla-session")
@@ -1202,7 +1178,7 @@ func TestRegistry_ClosureDetectionSLA(t *testing.T) {
 // a SessionClosed event arrives from the dir watcher (file removal triggers it).
 func TestRegistry_DirWatcher_SessionClosedEvent(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 81001
 	checker.SetAlive(pid, true)
 
@@ -1315,7 +1291,7 @@ func TestRegistry_Run_HandlesScanChannelClose(t *testing.T) {
 // This is distinct from the monitor-based closure path.
 func TestRegistry_Run_DirWatcher_SessionClosed_Branch(t *testing.T) {
 	tmpDir := t.TempDir()
-	checker := newRegistryMockPIDChecker()
+	checker := newMockPIDChecker()
 	pid := 91001
 	checker.SetAlive(pid, true)
 
