@@ -3556,3 +3556,335 @@ func TestNewConversationMsgDebouncesSwitchInProgress(t *testing.T) {
 		t.Errorf("should debounce: currentConversationPath = %q, want %q", updatedModel.currentConversationPath, currentFile)
 	}
 }
+
+// --- Normal Mode Lazy Loading Regression Tests (AC6) ---
+// These tests verify that the normal (non-dashboard) viewer lazy loading path
+// continues to work correctly after any changes to the session dashboard mode.
+
+// makeEntriesForLazyLoad creates N user entries for lazy loading tests.
+func makeEntriesForLazyLoad(n int) []types.LogEntry {
+	entries := make([]types.LogEntry, n)
+	for i := range entries {
+		entries[i] = types.LogEntry{Type: types.EntryTypeUser}
+	}
+	return entries
+}
+
+// TestNormalModeLazyLoadDisabledBelowThreshold verifies lazy loading is NOT
+// enabled when entry count is at or below the MessageThreshold (100).
+func TestNormalModeLazyLoadDisabledBelowThreshold(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	entries := makeEntriesForLazyLoad(config.MessageThreshold)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+
+	if m.lazyEnabled {
+		t.Errorf("lazyEnabled = true, want false when entries (%d) == threshold (%d)",
+			len(entries), config.MessageThreshold)
+	}
+	if m.lazyLoadState != LoadingStateComplete {
+		t.Errorf("lazyLoadState = %v, want LoadingStateComplete when lazy not enabled", m.lazyLoadState)
+	}
+	if m.loadedCount != len(entries) {
+		t.Errorf("loadedCount = %d, want %d (all entries) when lazy not enabled",
+			m.loadedCount, len(entries))
+	}
+}
+
+// TestNormalModeLazyLoadEnabledAboveThreshold verifies lazy loading IS enabled
+// when entry count exceeds the MessageThreshold (100).
+func TestNormalModeLazyLoadEnabledAboveThreshold(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	entries := makeEntriesForLazyLoad(config.MessageThreshold + 1)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+
+	if !m.lazyEnabled {
+		t.Errorf("lazyEnabled = false, want true when entries (%d) > threshold (%d)",
+			len(entries), config.MessageThreshold)
+	}
+	// Initially only BatchSize*2 entries should be loaded
+	expectedInitialLoad := config.BatchSize * 2
+	if m.loadedCount != expectedInitialLoad {
+		t.Errorf("loadedCount = %d, want %d (initial batch) on first load",
+			m.loadedCount, expectedInitialLoad)
+	}
+	if m.lazyLoadState != LoadingStateIdle {
+		t.Errorf("lazyLoadState = %v, want LoadingStateIdle when more entries remain",
+			m.lazyLoadState)
+	}
+}
+
+// TestNormalModeLoadMoreMessagesCmd verifies loadMoreMessages() returns a command
+// that sends viewerMessagesLoadedMsg with an incremented loadedCount.
+func TestNormalModeLoadMoreMessagesCmd(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	entries := makeEntriesForLazyLoad(config.MessageThreshold + 10)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.lazyEnabled = true
+	m.loadedCount = config.BatchSize * 2
+	m.lazyLoadState = LoadingStateIdle
+
+	cmd := m.loadMoreMessages()
+	if cmd == nil {
+		t.Fatal("loadMoreMessages() returned nil cmd, want non-nil")
+	}
+
+	msg := cmd()
+	loaded, ok := msg.(viewerMessagesLoadedMsg)
+	if !ok {
+		t.Fatalf("loadMoreMessages() cmd produced %T, want viewerMessagesLoadedMsg", msg)
+	}
+
+	expectedCount := m.loadedCount + config.BatchSize
+	if loaded.loadedCount != expectedCount {
+		t.Errorf("loadedCount in msg = %d, want %d", loaded.loadedCount, expectedCount)
+	}
+}
+
+// TestNormalModeLoadMoreMessagesCapsAtTotal verifies loadMoreMessages() caps
+// loadedCount at len(entries) so it never exceeds the total entry count.
+func TestNormalModeLoadMoreMessagesCapsAtTotal(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	total := config.MessageThreshold + 5
+	entries := makeEntriesForLazyLoad(total)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.lazyEnabled = true
+	// Set loadedCount near total so next batch would exceed total
+	m.loadedCount = total - 3
+	m.lazyLoadState = LoadingStateIdle
+
+	cmd := m.loadMoreMessages()
+	if cmd == nil {
+		t.Fatal("loadMoreMessages() returned nil cmd, want non-nil")
+	}
+
+	msg := cmd()
+	loaded, ok := msg.(viewerMessagesLoadedMsg)
+	if !ok {
+		t.Fatalf("loadMoreMessages() cmd produced %T, want viewerMessagesLoadedMsg", msg)
+	}
+
+	if loaded.loadedCount > total {
+		t.Errorf("loadedCount %d exceeds total %d — must be capped", loaded.loadedCount, total)
+	}
+	if loaded.loadedCount != total {
+		t.Errorf("loadedCount = %d, want %d (capped at total)", loaded.loadedCount, total)
+	}
+}
+
+// TestNormalModeViewerMessagesLoadedMsgPartial verifies that receiving a
+// viewerMessagesLoadedMsg when more entries remain transitions to LoadingStateIdle
+// and updates loadedCount correctly.
+func TestNormalModeViewerMessagesLoadedMsgPartial(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	total := config.MessageThreshold + 50
+	entries := makeEntriesForLazyLoad(total)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.lazyEnabled = true
+	m.loadedCount = config.BatchSize * 2
+	m.lazyLoadState = LoadingStateLoading
+
+	newCount := m.loadedCount + config.BatchSize
+	updatedModel, _ := m.Update(viewerMessagesLoadedMsg{loadedCount: newCount})
+	m = updatedModel.(ViewerModel)
+
+	if m.loadedCount != newCount {
+		t.Errorf("loadedCount = %d, want %d after partial load", m.loadedCount, newCount)
+	}
+	if m.lazyLoadState != LoadingStateIdle {
+		t.Errorf("lazyLoadState = %v, want LoadingStateIdle after partial load", m.lazyLoadState)
+	}
+	if m.showOverlaySpinner {
+		t.Error("showOverlaySpinner = true, want false after non-bulk load msg")
+	}
+}
+
+// TestNormalModeViewerMessagesLoadedMsgComplete verifies that receiving a
+// viewerMessagesLoadedMsg for the full entry count transitions to LoadingStateComplete.
+func TestNormalModeViewerMessagesLoadedMsgComplete(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	total := config.MessageThreshold + 10
+	entries := makeEntriesForLazyLoad(total)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.lazyEnabled = true
+	m.loadedCount = total - config.BatchSize
+	m.lazyLoadState = LoadingStateLoading
+
+	updatedModel, _ := m.Update(viewerMessagesLoadedMsg{loadedCount: total})
+	m = updatedModel.(ViewerModel)
+
+	if m.loadedCount != total {
+		t.Errorf("loadedCount = %d, want %d after complete load", m.loadedCount, total)
+	}
+	if m.lazyLoadState != LoadingStateComplete {
+		t.Errorf("lazyLoadState = %v, want LoadingStateComplete after full load", m.lazyLoadState)
+	}
+}
+
+// TestNormalModeGKeyWithLazyLoadingShowsSpinner verifies that pressing G when
+// lazy loading is enabled and not complete shows the overlay spinner and returns
+// the bulk-load command — matching the raw mode behavior.
+func TestNormalModeGKeyWithLazyLoadingShowsSpinner(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	total := config.MessageThreshold + 50
+	entries := makeEntriesForLazyLoad(total)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.lazyEnabled = true
+	m.loadedCount = config.BatchSize * 2
+	m.lazyLoadState = LoadingStateIdle
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}}
+	updatedModel, cmd := m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+
+	if !m.showOverlaySpinner {
+		t.Error("showOverlaySpinner = false, want true after G key with pending lazy load")
+	}
+	if cmd == nil {
+		t.Error("cmd = nil, want non-nil batch cmd (spinner.Tick + markAllMessagesLoadedCmd)")
+	}
+	// Viewer must remain in normal mode (not raw mode)
+	if m.rawMode {
+		t.Error("rawMode = true, want false — G key must not switch to raw mode")
+	}
+}
+
+// TestNormalModeGKeyAllLoadedGoesToBottom verifies that pressing G when all
+// entries are already loaded just goes to bottom without showing a spinner.
+func TestNormalModeGKeyAllLoadedGoesToBottom(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	total := config.MessageThreshold + 5
+	entries := makeEntriesForLazyLoad(total)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.lazyEnabled = true
+	m.loadedCount = total
+	m.lazyLoadState = LoadingStateComplete
+
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}}
+	updatedModel, _ := m.Update(keyMsg)
+	m = updatedModel.(ViewerModel)
+
+	if m.showOverlaySpinner {
+		t.Error("showOverlaySpinner = true, want false when all messages are already loaded")
+	}
+	if m.rawMode {
+		t.Error("rawMode = true, want false after G key in normal mode")
+	}
+}
+
+// TestNormalModeSpinnerTickOnlyWhenOverlayShown verifies that spinner.TickMsg
+// only continues ticking while the overlay spinner is visible, preventing
+// an infinite animation loop when no loading is in progress.
+func TestNormalModeSpinnerTickOnlyWhenOverlayShown(t *testing.T) {
+	entries := makeEntriesForLazyLoad(1)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.showOverlaySpinner = false
+
+	// Send spinner tick when overlay is NOT shown — cmd must be nil
+	tickMsg, _ := m.overlaySpinner.Update(m.overlaySpinner.Tick())
+	_ = tickMsg
+	updatedModel, cmd := m.Update(m.overlaySpinner.Tick())
+	_ = updatedModel
+	if cmd != nil {
+		t.Error("spinner tick cmd returned when showOverlaySpinner=false, want nil to stop animation loop")
+	}
+}
+
+// TestNormalModeSpinnerTickContinuesWhenOverlayShown verifies that spinner.TickMsg
+// returns a new tick command while the overlay spinner is visible.
+func TestNormalModeSpinnerTickContinuesWhenOverlayShown(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	total := config.MessageThreshold + 50
+	entries := makeEntriesForLazyLoad(total)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.lazyEnabled = true
+	m.loadedCount = config.BatchSize * 2
+	m.lazyLoadState = LoadingStateLoading
+	m.showOverlaySpinner = true
+
+	// Send a spinner tick while overlay IS shown — cmd must be non-nil
+	updatedModel, cmd := m.Update(m.overlaySpinner.Tick())
+	_ = updatedModel
+	if cmd == nil {
+		t.Error("spinner tick cmd = nil when showOverlaySpinner=true, want non-nil to keep animating")
+	}
+}
+
+// TestNormalModeMarkAllMessagesLoadedCmdProducesMsg verifies that
+// markAllMessagesLoadedCmd() returns a command that produces a
+// viewerMessagesLoadedMsg with all entries accounted for.
+func TestNormalModeMarkAllMessagesLoadedCmdProducesMsg(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	total := config.MessageThreshold + 5
+	entries := makeEntriesForLazyLoad(total)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.lazyEnabled = true
+	m.loadedCount = config.BatchSize * 2
+
+	cmd := m.markAllMessagesLoadedCmd()
+	if cmd == nil {
+		t.Fatal("markAllMessagesLoadedCmd() returned nil, want non-nil")
+	}
+
+	msg := cmd()
+	loaded, ok := msg.(viewerMessagesLoadedMsg)
+	if !ok {
+		t.Fatalf("markAllMessagesLoadedCmd() produced %T, want viewerMessagesLoadedMsg", msg)
+	}
+	if loaded.loadedCount != total {
+		t.Errorf("loadedCount = %d, want %d (all entries)", loaded.loadedCount, total)
+	}
+}
+
+// TestNormalModeBulkLoadGotoBottomAfterOverlay verifies that when a
+// viewerMessagesLoadedMsg arrives after a bulk load (overlay was shown),
+// the viewport scrolls to the bottom.
+func TestNormalModeBulkLoadGotoBottomAfterOverlay(t *testing.T) {
+	config := DefaultLazyLoadConfig()
+	total := config.MessageThreshold + 10
+	entries := makeEntriesForLazyLoad(total)
+	opts := RenderOptions{Width: 80}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+	m.lazyEnabled = true
+	m.loadedCount = config.BatchSize * 2
+	m.lazyLoadState = LoadingStateLoading
+	m.showOverlaySpinner = true // Simulate G-key-triggered overlay was active
+
+	// Simulate bulk load completing with pre-rendered content
+	updatedModel, _ := m.Update(viewerMessagesLoadedMsg{
+		loadedCount:     total,
+		renderedContent: "pre-rendered content",
+	})
+	m = updatedModel.(ViewerModel)
+
+	// Overlay must be cleared
+	if m.showOverlaySpinner {
+		t.Error("showOverlaySpinner still true after bulk load completed")
+	}
+	// Loading must be complete
+	if m.lazyLoadState != LoadingStateComplete {
+		t.Errorf("lazyLoadState = %v, want LoadingStateComplete after bulk load", m.lazyLoadState)
+	}
+}

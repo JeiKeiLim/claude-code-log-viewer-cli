@@ -10,6 +10,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -474,6 +475,24 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case spinner.TickMsg:
+		// Forward spinner tick messages to the active embedded viewer so that
+		// overlay loading animations animate correctly in single-session and
+		// zero-session modes (matching the normal app.go viewer path).
+		if m.viewMode == DashboardViewSingleSession && m.singleSessionViewer != nil {
+			newViewer, cmd := m.singleSessionViewer.Update(msg)
+			v := newViewer.(ViewerModel)
+			m.singleSessionViewer = &v
+			return m, cmd
+		}
+		if m.viewMode == DashboardViewZeroSessions && m.latestViewer != nil {
+			newViewer, cmd := m.latestViewer.Update(msg)
+			v := newViewer.(ViewerModel)
+			m.latestViewer = &v
+			return m, cmd
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		// In zero-session mode, forward all keys to the embedded viewer
 		// except esc/q which should exit the dashboard.
@@ -641,6 +660,24 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, m.sessionSubscriptionTickCmd()
+	}
+
+	// Forward any unhandled messages to the embedded viewer (e.g. viewerMessagesLoadedMsg,
+	// rawLinesLoadedMsg, spinner.TickMsg for overlay animation, gotoTopMsg, etc.).
+	// These messages originate from cmds returned by the embedded viewer and must be
+	// routed back to it so lazy loading, the overlay spinner, and G-key navigation
+	// all function identically to the standalone viewer path.
+	if m.viewMode == DashboardViewSingleSession && m.singleSessionViewer != nil {
+		newViewer, cmd := m.singleSessionViewer.Update(msg)
+		v := newViewer.(ViewerModel)
+		m.singleSessionViewer = &v
+		return m, cmd
+	}
+	if m.viewMode == DashboardViewZeroSessions && m.latestViewer != nil {
+		newViewer, cmd := m.latestViewer.Update(msg)
+		v := newViewer.(ViewerModel)
+		m.latestViewer = &v
+		return m, cmd
 	}
 
 	return m, nil

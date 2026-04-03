@@ -253,6 +253,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newModel, cmd := m.viewerModel.Update(msg)
 			m.viewerModel = newModel.(ViewerModel)
 			return m, cmd
+		case viewSessionDashboard:
+			newModel, cmd := m.sessionDashboardModel.Update(msg)
+			m.sessionDashboardModel = newModel.(SessionDashboardModel)
+			return m, cmd
 		}
 		return m, nil
 
