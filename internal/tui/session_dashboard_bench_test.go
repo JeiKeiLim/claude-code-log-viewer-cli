@@ -869,16 +869,16 @@ func TestSessionDashboard_60fps_FrameGovernorSkipBehavior(t *testing.T) {
 		t.Error("focused pane should remain dirty under budget pressure")
 	}
 
-	// All unfocused panes should have dirty cleared (skipped)
-	skippedCount := 0
+	// All unfocused panes should remain dirty (render deferred, not discarded)
+	dirtyCount := 0
 	for i := 1; i < 9; i++ {
-		if !updated.panes[i].dirty {
-			skippedCount++
+		if updated.panes[i].dirty {
+			dirtyCount++
 		}
 	}
 
-	if skippedCount != 8 {
-		t.Errorf("expected 8 unfocused panes skipped, got %d", skippedCount)
+	if dirtyCount != 8 {
+		t.Errorf("expected 8 unfocused panes to remain dirty (deferred), got %d", dirtyCount)
 	}
 
 	skipStats := updated.FrameGovernor().Stats()
@@ -888,7 +888,7 @@ func TestSessionDashboard_60fps_FrameGovernorSkipBehavior(t *testing.T) {
 
 	t.Logf("Skip behavior with 9 panes under pressure:")
 	t.Logf("  Focused pane dirty:   %v (expected true)", updated.panes[0].dirty)
-	t.Logf("  Unfocused panes skipped: %d/8", skippedCount)
+	t.Logf("  Unfocused panes still dirty: %d/8", dirtyCount)
 	t.Logf("  Governor skips recorded: %d", skipStats.FramesSkipped)
 }
 

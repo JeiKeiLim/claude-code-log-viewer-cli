@@ -27,6 +27,18 @@ const sessionDashboardHelpText = "arrows/hjkl:nav • [/]:page • Enter:open �
 // MaxSessionPanes is the maximum number of concurrent session panes (3x3 grid).
 const MaxSessionPanes = 9
 
+// scanMissThreshold is the number of consecutive scan misses required before
+// a pane is removed. This grace period prevents removal due to transient
+// file-read races with Claude Code (~6 seconds at 2s scan interval).
+const scanMissThreshold = 3
+
+// maxContentLoadRetries is the maximum number of retries when loading JSONL
+// content fails (e.g., file not yet created when session JSON appears first).
+const maxContentLoadRetries = 5
+
+// contentLoadRetryBaseDelay is the base delay for exponential backoff retries.
+const contentLoadRetryBaseDelay = 500 * time.Millisecond
+
 // SessionDashboardModel represents the multi-session dashboard view.
 // It auto-detects active Claude Code sessions and displays each in a pane.
 type SessionDashboardModel struct {
@@ -101,6 +113,7 @@ type SessionPaneModel struct {
 	loading       bool
 	errMsg        string
 	jsonlPath     string // Full path to the session's JSONL file
+	loadRetries   int    // Number of content load retries attempted
 	fileEventChan chan sessionPaneWatcherEventMsg
 
 	// Dirty-region rendering: per-pane caching to avoid expensive re-renders.
@@ -195,6 +208,7 @@ func NewSessionDashboardModel(projectPath, projectDir string, scannerInst *sessi
 		frameGovernor:        NewFrameRateGovernor(),
 		viewMode:             DashboardViewZeroSessions, // Start in zero-session mode (no panes yet)
 		singleSessionPaneIdx: -1,                        // No single-session pane
+		latestLoading:        projectDir != "",          // Will load latest conversation in Init()
 	}
 
 	for _, opt := range opts {
@@ -357,9 +371,9 @@ func (m SessionDashboardModel) Init() tea.Cmd {
 		cmds = append(cmds, m.startDirWatcherCmd())
 	}
 	// Start with zero-session mode: load the latest conversation immediately
+	// (latestLoading is set in the constructor since Init() is a value receiver)
 	if m.projectDir != "" {
 		cmds = append(cmds, loadLatestConversationCmd(m.projectDir))
-		m.latestLoading = true
 	}
 	return tea.Batch(cmds...)
 }
@@ -622,12 +636,12 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Essential updates (grid changes, focused pane) always proceed.
 		// Non-essential updates (unfocused pane content changes) are deferred.
 		if m.frameGovernor != nil && m.frameGovernor.ShouldSkipNonEssential() {
-			// Under budget pressure: only allow essential dirty panes.
-			// Keep gridDirty and focused pane dirty; clear others.
+			// Under budget pressure: record skips for unfocused dirty panes
+			// but do NOT clear their dirty flags — the content change must
+			// persist until the pane is actually re-rendered in View().
 			globalFocusIdx := m.currentPage*MaxSessionPanes + m.focusIndex
 			for i := range m.panes {
 				if i != globalFocusIdx && m.panes[i].dirty && !m.gridDirty {
-					m.panes[i].dirty = false
 					m.frameGovernor.RecordSkip()
 				}
 			}
@@ -726,7 +740,6 @@ func (m SessionDashboardModel) handleScanResult(result session.ScanResult) (tea.
 	// Remove panes for dead/ended sessions whose PIDs are no longer alive.
 	// Use a grace period (scanMissThreshold consecutive misses) to avoid
 	// removing panes due to transient file-read races with Claude Code.
-	const scanMissThreshold = 3 // ~6 seconds at 2s scan interval
 	removedAny := false
 	if isFullScan {
 		for i := len(m.panes) - 1; i >= 0; i-- {
@@ -941,10 +954,21 @@ func (m SessionDashboardModel) handlePaneContentLoaded(msg sessionPaneContentLoa
 	pane.loading = false
 
 	if msg.err != nil {
+		// JSONL file may not exist yet (session JSON appears before JSONL).
+		// Retry up to maxContentLoadRetries with exponential backoff.
+		if pane.loadRetries < maxContentLoadRetries && pane.jsonlPath != "" {
+			pane.loadRetries++
+			delay := contentLoadRetryBaseDelay * time.Duration(1<<(pane.loadRetries-1))
+			return m, retryLoadSessionPaneContentCmd(msg.sessionID, pane.jsonlPath, delay)
+		}
 		pane.errMsg = msg.err.Error()
 		pane.dirty = true
 		return m, nil
 	}
+
+	// Successful load — clear any previous error and reset retry counter
+	pane.errMsg = ""
+	pane.loadRetries = 0
 
 	pane.entries = msg.entries
 	pane.parseErrors = msg.parseErrors
@@ -1061,6 +1085,25 @@ func loadSessionPaneContentCmd(sessionID, jsonlPath string) tea.Cmd {
 			filePath:    jsonlPath,
 		}
 	}
+}
+
+// retryLoadSessionPaneContentCmd returns a command that retries loading after a delay.
+func retryLoadSessionPaneContentCmd(sessionID, jsonlPath string, delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(_ time.Time) tea.Msg {
+		result, err := parser.ParseJSONLFile(jsonlPath)
+		if err != nil {
+			return sessionPaneContentLoadedMsg{
+				sessionID: sessionID,
+				err:       err,
+			}
+		}
+		return sessionPaneContentLoadedMsg{
+			sessionID:   sessionID,
+			entries:     result.Entries,
+			parseErrors: result.ParseErrors,
+			filePath:    jsonlPath,
+		}
+	})
 }
 
 // startSessionFileWatcherSubscription starts a goroutine to relay file watcher events.
@@ -1366,7 +1409,12 @@ func (m *SessionDashboardModel) recalcPaneSizes() {
 		return
 	}
 	pageStart := m.currentPage * MaxSessionPanes
-	gridHeight := m.height - 1
+	// Match View()'s reservedLines logic: 1 line for single page, 2 for multi-page
+	reservedLines := 1
+	if m.TotalPages() > 1 {
+		reservedLines = 2
+	}
+	gridHeight := m.height - reservedLines
 	if gridHeight < 3 {
 		gridHeight = 3
 	}

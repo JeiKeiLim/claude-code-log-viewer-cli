@@ -460,6 +460,9 @@ func TestSessionDashboardModel_PaneContentLoaded_Error(t *testing.T) {
 	newModel, _ := m.Update(sessionScanResultMsg{result: scanResult})
 	updated := newModel.(SessionDashboardModel)
 
+	// Exhaust retries so the error sticks (otherwise retry logic kicks in)
+	updated.panes[0].loadRetries = maxContentLoadRetries
+
 	contentMsg := sessionPaneContentLoadedMsg{
 		sessionID: sessionID,
 		err:       fmt.Errorf("parse error"),
@@ -483,8 +486,8 @@ func TestSessionDashboardModel_View_NoPanes(t *testing.T) {
 	m.SetSize(80, 24)
 
 	view := m.View()
-	if !strings.Contains(view, "Waiting") {
-		t.Errorf("expected waiting message, got: %q", view)
+	if !strings.Contains(view, "Loading") {
+		t.Errorf("expected loading message, got: %q", view)
 	}
 }
 

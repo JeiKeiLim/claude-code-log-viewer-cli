@@ -956,6 +956,7 @@ func TestZeroSession_LoadingAnimation_ViewShowsOverlay(t *testing.T) {
 	m := NewSessionDashboardModel("/tmp/project", projectDir, sc, monitor)
 	m.SetSize(120, 40)
 	m.viewMode = DashboardViewZeroSessions
+	m.latestLoading = false // Simulate that initial load completed
 
 	entries := make([]types.LogEntry, 102)
 	for i := range entries {

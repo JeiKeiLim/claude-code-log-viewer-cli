@@ -2,7 +2,10 @@
 // for Claude Code sessions (Phase 5a).
 package session
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // DiffResult holds the result of comparing two scan results.
 // It identifies which sessions are new (opened) and which have been
@@ -85,6 +88,15 @@ func DiffSessions(previous, current ScanResult) DiffResult {
 			result.Closed = append(result.Closed, s)
 		}
 	}
+
+	// Sort all slices by PID for deterministic ordering across calls.
+	// Map iteration is randomized in Go; without sorting, UI would flicker.
+	sortByPID := func(s []ActiveSession) {
+		sort.Slice(s, func(i, j int) bool { return s[i].Meta.PID < s[j].Meta.PID })
+	}
+	sortByPID(result.Opened)
+	sortByPID(result.Closed)
+	sortByPID(result.Unchanged)
 
 	return result
 }

@@ -123,7 +123,12 @@ func createLatestViewer(entries []types.LogEntry, parseErrors int, filePath stri
 		title = "Latest: " + name
 	}
 
-	return createDashboardViewer(entries, parseErrors, title, filePath, width, height)
+	viewer := createDashboardViewer(entries, parseErrors, title, filePath, width, height)
+	// Start at the bottom so the user sees the latest messages first.
+	if viewer.ready {
+		viewer.viewport.GotoBottom()
+	}
+	return viewer
 }
 
 // detectViewMode determines the appropriate view mode based on active session count.
@@ -256,6 +261,10 @@ func createSingleSessionViewer(entries []types.LogEntry, parseErrors int, filePa
 	// create its own file watcher because the session dashboard's pane watcher
 	// already forwards watcher.NewEntriesMsg events to this viewer.
 	viewer.watchMode = true
+	// Start at the bottom so the user sees the latest content in live mode.
+	if viewer.ready {
+		viewer.viewport.GotoBottom()
+	}
 	return viewer
 }
 

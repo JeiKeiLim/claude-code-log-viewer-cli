@@ -33,9 +33,10 @@ type Registry struct {
 	mu       sync.RWMutex
 	sessions map[int]ActiveSession // keyed by PID
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	running bool // guards against double-Start
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 }
 
 // registryConfig holds configuration for building a Registry.
@@ -167,10 +168,18 @@ func NewRegistry(sessionsDir string, opts ...RegistryOption) *Registry {
 }
 
 // Start begins all background session detection goroutines.
-// It is safe to call Start exactly once per Registry instance.
+// It is safe to call multiple times; subsequent calls are no-ops.
 // The provided context controls the lifetime of the background goroutines:
 // cancelling ctx is equivalent to calling Stop().
 func (r *Registry) Start(ctx context.Context) {
+	r.mu.Lock()
+	if r.running {
+		r.mu.Unlock()
+		return
+	}
+	r.running = true
+	r.mu.Unlock()
+
 	r.ctx, r.cancel = context.WithCancel(ctx)
 
 	// Start the fsnotify directory watcher first (if available) so it is

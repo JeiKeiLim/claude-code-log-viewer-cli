@@ -77,11 +77,11 @@ func newAlwaysAlivePIDChecker() *testPIDChecker {
 }
 
 func (c *testPIDChecker) IsAlive(pid int) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.allAlive {
 		return true
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.alive[pid]
 }
 
@@ -118,10 +118,8 @@ func writeTestSessionJSON(t *testing.T, dir string, pid int, meta session.Sessio
 	return path
 }
 
-// scanMissThreshold matches the constant in session_dashboard.go.
-// Tests that need to trigger pane removal must send this many consecutive
-// scans with the PID absent.
-const testScanMissThreshold = 3
+// testScanMissThreshold is derived from the production constant to stay in sync.
+const testScanMissThreshold = scanMissThreshold
 
 // applyScanResultNTimes sends the same scan result msg N times through
 // the dashboard's Update loop. Used to satisfy the grace-period miss

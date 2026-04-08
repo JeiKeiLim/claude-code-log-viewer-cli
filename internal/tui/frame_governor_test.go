@@ -502,9 +502,9 @@ func TestSessionDashboard_FrameTickSkipsNonEssential(t *testing.T) {
 		t.Error("focused pane (index 0) should remain dirty - essential redraw")
 	}
 
-	// Unfocused pane should be cleared (non-essential, skipped)
-	if updated.panes[1].dirty {
-		t.Error("unfocused pane (index 1) should have dirty cleared - non-essential skipped")
+	// Unfocused pane should remain dirty (skip defers render, doesn't discard)
+	if !updated.panes[1].dirty {
+		t.Error("unfocused pane (index 1) should remain dirty - render deferred, not discarded")
 	}
 
 	// Governor should have recorded the skip

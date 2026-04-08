@@ -324,7 +324,8 @@ func CWDToProjectDir(cwd string) string {
 }
 
 // DeduplicateBySessionID removes duplicate sessions that share the same sessionId,
-// keeping only the one with the highest (latest) PID. When multiple PIDs reference
+// keeping the one with the most recent JSONL modification time (falling back to
+// the highest PID when JSONL times are equal or zero). When multiple PIDs reference
 // the same sessionId (e.g., after a Claude Code process restart), only the most
 // recent incarnation should be shown to avoid ghost panes.
 //
@@ -336,29 +337,40 @@ func DeduplicateBySessionID(sessions []ActiveSession) []ActiveSession {
 		return nil
 	}
 
-	// First pass: determine the highest PID for each sessionId.
-	bestPID := make(map[string]int, len(sessions))
-	for _, s := range sessions {
+	// First pass: determine the best session for each sessionId.
+	// Prefer the session with the most recent JSONL modification time;
+	// fall back to highest PID when mtime is equal or zero (PIDs are not
+	// monotonic on macOS but serve as a stable tiebreaker).
+	bestIdx := make(map[string]int, len(sessions))
+	for i, s := range sessions {
 		id := s.Meta.SessionID
 		if id == "" {
 			id = s.FilePath
 		}
-		if s.Meta.PID > bestPID[id] {
-			bestPID[id] = s.Meta.PID
+		prev, exists := bestIdx[id]
+		if !exists {
+			bestIdx[id] = i
+			continue
+		}
+		prevSession := sessions[prev]
+		// Compare JSONL last-modified times
+		if s.JSONLLastModified.After(prevSession.JSONLLastModified) {
+			bestIdx[id] = i
+		} else if s.JSONLLastModified.Equal(prevSession.JSONLLastModified) && s.Meta.PID > prevSession.Meta.PID {
+			bestIdx[id] = i
 		}
 	}
 
-	// Second pass: iterate in original order, keeping only the session whose
-	// PID equals the best PID for its sessionId. This preserves insertion order
-	// and ensures stable, deterministic output even when no duplicates exist.
-	seen := make(map[string]bool, len(bestPID))
-	out := make([]ActiveSession, 0, len(bestPID))
-	for _, s := range sessions {
+	// Second pass: iterate in original order, keeping only the best session
+	// for each sessionId. This preserves insertion order.
+	seen := make(map[string]bool, len(bestIdx))
+	out := make([]ActiveSession, 0, len(bestIdx))
+	for i, s := range sessions {
 		id := s.Meta.SessionID
 		if id == "" {
 			id = s.FilePath
 		}
-		if !seen[id] && s.Meta.PID == bestPID[id] {
+		if !seen[id] && bestIdx[id] == i {
 			out = append(out, s)
 			seen[id] = true
 		}

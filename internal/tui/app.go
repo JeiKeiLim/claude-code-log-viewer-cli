@@ -78,6 +78,10 @@ type AppModel struct {
 
 	// Rate limit backoff: skip periodic ticks until this time
 	rateLimitUntil time.Time
+
+	// noMultiSession disables the session dashboard; project selection goes
+	// directly to the conversation list (pre-Phase-5a behavior).
+	noMultiSession bool
 }
 
 // newUsageBarStyles creates the usage bar styles from the TUI style exports (Story 7.4).
@@ -92,6 +96,12 @@ func newUsageBarStyles() usage.UsageBarStyles {
 		Dimmed:    stylesExport.Dimmed,
 		Stale:     stylesExport.Stale,
 	}
+}
+
+// SetNoMultiSession disables the session dashboard so that project selection
+// goes directly to the conversation list (pre-Phase-5a behavior).
+func (m *AppModel) SetNoMultiSession(v bool) {
+	m.noMultiSession = v
 }
 
 // NewAppModel creates a new application model with the project browser.
@@ -294,19 +304,27 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dashboardModel = newModel.(DashboardModel)
 			return m, cmd
 		case viewSessionDashboard:
-			// Phase 5a: Forward size to session dashboard
-			m.sessionDashboardModel.SetSize(msg.Width, viewHeight)
-			return m, nil
+			// Phase 5a: Forward size through Update so embedded viewers are resized too
+			var cmd tea.Cmd
+			newModel, cmd := m.sessionDashboardModel.Update(childMsg)
+			m.sessionDashboardModel = newModel.(SessionDashboardModel)
+			return m, cmd
 		}
 
 	case ProjectSelectedMsg:
-		// User selected a single project — open the session dashboard for that project.
+		m.selectedProject = msg.Project
+
+		// When multi-session is disabled, skip the session dashboard and go
+		// directly to the conversation list (pre-Phase-5a behavior).
+		if m.noMultiSession {
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.loadConversations())
+		}
+
+		// Open the session dashboard for that project.
 		// The session dashboard auto-detects active Claude Code sessions (AC 8).
 		// Users can press 'c' in the session dashboard to view the conversation list,
 		// or ESC to return to the project browser.
-		m.selectedProject = msg.Project
-
-		// Create session detection components
 		scannerInst := session.NewSessionScanner("")
 		monitorInst := session.NewMonitor()
 

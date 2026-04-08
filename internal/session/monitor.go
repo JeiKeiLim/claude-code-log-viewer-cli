@@ -29,9 +29,10 @@ type Monitor struct {
 	mu       sync.RWMutex
 	sessions map[int]ActiveSession // keyed by PID
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	running bool // guards against double-Start
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 }
 
 // MonitorOption configures a Monitor.
@@ -83,9 +84,17 @@ func NewMonitor(opts ...MonitorOption) *Monitor {
 	return m
 }
 
-// Start begins the PID polling loop. It is safe to call Start only once.
-// Use Stop() to terminate the polling loop.
+// Start begins the PID polling loop. It is safe to call multiple times;
+// subsequent calls after the first are no-ops.
 func (m *Monitor) Start(ctx context.Context) {
+	m.mu.Lock()
+	if m.running {
+		m.mu.Unlock()
+		return
+	}
+	m.running = true
+	m.mu.Unlock()
+
 	m.ctx, m.cancel = context.WithCancel(ctx)
 	m.wg.Add(1)
 	go m.pollLoop()
