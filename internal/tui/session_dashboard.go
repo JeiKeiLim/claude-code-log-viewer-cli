@@ -84,6 +84,11 @@ type SessionDashboardModel struct {
 	// Frame-rate governor: tracks frame timing and skips non-essential
 	// redraws when rendering exceeds the 16ms frame budget.
 	frameGovernor *FrameRateGovernor
+
+	// Self-healing: timestamp of last subscription tick processed.
+	// If the frame tick detects the subscription tick chain has been silent
+	// for too long, it restarts it.
+	lastSubscriptionTick time.Time
 }
 
 // SessionDashboardModelOption configures a SessionDashboardModel.
@@ -209,6 +214,7 @@ func NewSessionDashboardModel(projectPath, projectDir string, scannerInst *sessi
 		viewMode:             DashboardViewZeroSessions, // Start in zero-session mode (no panes yet)
 		singleSessionPaneIdx: -1,                        // No single-session pane
 		latestLoading:        projectDir != "",          // Will load latest conversation in Init()
+		lastSubscriptionTick: time.Now(),                // Initialize for self-healing check
 	}
 
 	for _, opt := range opts {
@@ -632,6 +638,13 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.subscriptionsActive {
 			return m, nil
 		}
+		// Self-healing: if subscription tick hasn't fired in 2 seconds, restart it.
+		// This recovers from any edge case where the tick chain silently breaks.
+		if m.subscriptionsActive && !m.lastSubscriptionTick.IsZero() &&
+			time.Since(m.lastSubscriptionTick) > 2*time.Second {
+			m.lastSubscriptionTick = time.Now()
+			return m, tea.Batch(frameTickCmd(), m.sessionSubscriptionTickCmd())
+		}
 		// Frame-rate governor: check if we should skip non-essential redraws.
 		// Essential updates (grid changes, focused pane) always proceed.
 		// Non-essential updates (unfocused pane content changes) are deferred.
@@ -652,6 +665,7 @@ func (m SessionDashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.subscriptionsActive {
 			return m, nil
 		}
+		m.lastSubscriptionTick = time.Now()
 
 		// Clear grid dirty flag after View() has consumed it.
 		// View() runs between Update() calls, so by the next tick,
