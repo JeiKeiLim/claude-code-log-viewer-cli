@@ -223,14 +223,29 @@ Examples: `001-claude-log-viewer`, `011-live-updates`
 
 Version is derived from git tags (`git describe --tags`) and injected via `-ldflags`. To bump:
 
-1. Pick semver bump on the latest tag (`git tag --sort=-creatordate | head -1`):
-   - **patch** (`v0.4.5` → `v0.4.6`): bug fixes, internal refactors
-   - **minor** (`v0.4.5` → `v0.5.0`): new user-facing features, backward-compatible
+1. **Review the full commit range first.** A tag covers every commit since the previous tag, not just the latest one. Run:
+   ```bash
+   git tag --sort=-creatordate | head -1     # find latest tag
+   git log <latest-tag>..HEAD --oneline      # list all commits to be included
+   ```
+   Do NOT pick a bump type from the last commit alone — scan the entire range.
+2. Pick the semver bump based on the **highest-impact change in the range**:
+   - **patch** (`v0.4.5` → `v0.4.6`): only bug fixes, internal refactors, docs
+   - **minor** (`v0.4.5` → `v0.5.0`): any new user-facing feature (`feat:`), backward-compatible
    - **major** (`v0.4.5` → `v1.0.0`): breaking CLI/UX changes
-2. Tag the target commit locally: `git tag vX.Y.Z <commit>`
-3. **STOP. Pushing the tag is the user's action**, not Claude's. Do not run `git push --tags` or `git push origin vX.Y.Z`. Tell the user the tag is ready and let them push.
+3. Tag the target commit locally with an annotated tag whose message **summarizes the full range**, grouped by theme (features, fixes, refactors, docs):
+   ```bash
+   git tag -a vX.Y.Z -m "vX.Y.Z: <one-line summary>
 
-Rationale: tag pushes trigger releases/CI workflows visible to others — must be a deliberate user step.
+   Features:
+   - ...
+   Fixes:
+   - ...
+   " <commit>
+   ```
+4. **STOP. Pushing the tag is the user's action**, not Claude's. Do not run `git push --tags` or `git push origin vX.Y.Z`. Tell the user the tag is ready and let them push.
+
+Rationale: tag pushes trigger releases/CI workflows visible to others — must be a deliberate user step. And users read tag messages as release notes — a one-commit summary on a multi-commit release is misleading.
 
 ---
 
