@@ -219,6 +219,19 @@ Examples: `001-claude-log-viewer`, `011-live-updates`
 3. Race detector clean
 4. All tests pass
 
+### Version Bumping
+
+Version is derived from git tags (`git describe --tags`) and injected via `-ldflags`. To bump:
+
+1. Pick semver bump on the latest tag (`git tag --sort=-creatordate | head -1`):
+   - **patch** (`v0.4.5` → `v0.4.6`): bug fixes, internal refactors
+   - **minor** (`v0.4.5` → `v0.5.0`): new user-facing features, backward-compatible
+   - **major** (`v0.4.5` → `v1.0.0`): breaking CLI/UX changes
+2. Tag the target commit locally: `git tag vX.Y.Z <commit>`
+3. **STOP. Pushing the tag is the user's action**, not Claude's. Do not run `git push --tags` or `git push origin vX.Y.Z`. Tell the user the tag is ready and let them push.
+
+Rationale: tag pushes trigger releases/CI workflows visible to others — must be a deliberate user step.
+
 ---
 
 ## Quick Links
@@ -229,4 +242,4 @@ Examples: `001-claude-log-viewer`, `011-live-updates`
 
 ---
 
-*Last Updated: 2026-01-30*
+*Last Updated: 2026-04-30*
