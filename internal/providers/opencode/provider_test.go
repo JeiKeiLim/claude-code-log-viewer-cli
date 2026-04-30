@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -650,7 +651,7 @@ func TestParseSessionFromDBSince(t *testing.T) {
 	}
 
 	// Query messages since now — should only get m2.
-	entries, err := parseSessionFromDBSince(db, "s1", now)
+	entries, maxTime, err := parseSessionFromDBSince(db, "s1", now)
 	if err != nil {
 		t.Fatalf("parseSessionFromDBSince() error: %v", err)
 	}
@@ -660,6 +661,9 @@ func TestParseSessionFromDBSince(t *testing.T) {
 	}
 	if entries[0].Role() != "assistant" {
 		t.Errorf("entry Role() = %q, want %q", entries[0].Role(), "assistant")
+	}
+	if maxTime != now+10 {
+		t.Errorf("maxTime = %d, want %d", maxTime, now+10)
 	}
 }
 
@@ -1110,5 +1114,90 @@ func TestWatcherDoesNotReportOldMessages(t *testing.T) {
 	}
 	if entries[0].Role() != "user" {
 		t.Errorf("entry Role() = %q, want user", entries[0].Role())
+	}
+}
+
+func TestWatcherTracksByDBTimeNotJSONTimestamp(t *testing.T) {
+	// When a message's JSON timestamp field differs from the time_created DB column,
+	// the watcher must track progress using the DB column value, not the JSON timestamp.
+	// If it uses the JSON timestamp, subsequent polls using WHERE time_created > lastTime
+	// will use the wrong value and either miss or re-report messages.
+	db := setupTestDB(t)
+	defer db.Close()
+
+	now := time.Now().Unix()
+
+	if err := insertTestSession(db, "s1", "p1", "Test", "/proj", now, now); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+
+	// Seed one message with matching time_created and no JSON timestamp.
+	if err := insertTestMessage(db, "m1", "s1", `{"role":"user","content":"initial"}`, now); err != nil {
+		t.Fatalf("insert m1: %v", err)
+	}
+
+	w, err := NewOpenCodeWatcher(db, "s1")
+	if err != nil {
+		t.Fatalf("NewOpenCodeWatcher() error: %v", err)
+	}
+	defer w.Close()
+
+	// No new entries initially.
+	entries, err := w.NewEntries()
+	if err != nil {
+		t.Fatalf("NewEntries() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("initial len(entries) = %d, want 0", len(entries))
+	}
+
+	// Insert a message where the JSON timestamp is FAR in the past compared to time_created.
+	// JSON timestamp: 2020-01-01 (epoch ~1577836800), time_created: now+1
+	//
+	// If the watcher incorrectly uses entry.Timestamp().Unix() (= JSON timestamp ~1577836800)
+	// instead of time_created (now+1), the next poll will query
+	//   WHERE time_created > 1577836800
+	// which would re-report m1 (whose time_created is "now").
+	jsonTimestamp := "2020-01-01T00:00:00Z"
+	dbTimeCreated := now + 1
+	data := fmt.Sprintf(`{"role":"assistant","content":"response","timestamp":%q}`, jsonTimestamp)
+	if err := insertTestMessage(db, "m2", "s1", data, dbTimeCreated); err != nil {
+		t.Fatalf("insert m2: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	entries, err = w.NewEntries()
+	if err != nil {
+		t.Fatalf("NewEntries() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+
+	// The entry's Timestamp() should be the JSON timestamp (display purposes).
+	jsonTS := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	if !entries[0].Timestamp().Equal(jsonTS) {
+		t.Errorf("entry Timestamp() = %v, want %v (from JSON field)", entries[0].Timestamp(), jsonTS)
+	}
+
+	// Now insert a third message at now+2. If the watcher tracked the DB time_created
+	// correctly, this should appear. If it used the JSON timestamp (~2020), the poll
+	// would query WHERE time_created > 1577836800 and re-report m1 alongside m3.
+	if err := insertTestMessage(db, "m3", "s1", `{"role":"user","content":"follow-up"}`, now+2); err != nil {
+		t.Fatalf("insert m3: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	entries, err = w.NewEntries()
+	if err != nil {
+		t.Fatalf("NewEntries() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 (only m3, no re-report of m1)", len(entries))
+	}
+	if entries[0].Role() != "user" {
+		t.Errorf("entry Role() = %q, want user (m3)", entries[0].Role())
 	}
 }

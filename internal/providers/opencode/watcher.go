@@ -72,18 +72,14 @@ func (w *OpenCodeWatcher) checkNewMessages() {
 		return
 	}
 
-	entries, err := parseSessionFromDBSince(w.db, w.sessionID, w.lastTime)
+	entries, maxTimeCreated, err := parseSessionFromDBSince(w.db, w.sessionID, w.lastTime)
 	if err != nil {
 		return
 	}
 
 	if len(entries) > 0 {
 		w.pending = append(w.pending, entries...)
-		// Update lastTime to the latest entry's timestamp.
-		last := entries[len(entries)-1]
-		if !last.Timestamp().IsZero() {
-			w.lastTime = last.Timestamp().Unix()
-		}
+		w.lastTime = maxTimeCreated
 	}
 }
 
@@ -119,7 +115,8 @@ func (w *OpenCodeWatcher) Close() error {
 
 // parseSessionFromDBSince queries messages created after the given unix epoch
 // timestamp and converts them into ConversationEntry values.
-func parseSessionFromDBSince(db *sql.DB, sessionID string, sinceTime int64) ([]agent.ConversationEntry, error) {
+// Returns the entries and the maximum time_created column value among them.
+func parseSessionFromDBSince(db *sql.DB, sessionID string, sinceTime int64) ([]agent.ConversationEntry, int64, error) {
 	// Collect all messages first, then close rows before querying parts.
 	type msgRow struct {
 		id          string
@@ -134,7 +131,7 @@ func parseSessionFromDBSince(db *sql.DB, sessionID string, sinceTime int64) ([]a
 		ORDER BY time_created ASC
 	`, sessionID, sinceTime)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query new messages: %w", err)
+		return nil, 0, fmt.Errorf("failed to query new messages: %w", err)
 	}
 
 	var msgRows []msgRow
@@ -142,19 +139,24 @@ func parseSessionFromDBSince(db *sql.DB, sessionID string, sinceTime int64) ([]a
 		var mr msgRow
 		if err := rows.Scan(&mr.id, &mr.dataJSON, &mr.timeCreated); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("failed to scan message row: %w", err)
+			return nil, 0, fmt.Errorf("failed to scan message row: %w", err)
 		}
 		msgRows = append(msgRows, mr)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, fmt.Errorf("error iterating message rows: %w", err)
+		return nil, 0, fmt.Errorf("error iterating message rows: %w", err)
 	}
 	rows.Close()
 
 	var entries []agent.ConversationEntry
+	var maxTimeCreated int64
 
 	for _, mr := range msgRows {
+		if mr.timeCreated > maxTimeCreated {
+			maxTimeCreated = mr.timeCreated
+		}
+
 		var mData messageData
 		if err := json.Unmarshal([]byte(mr.dataJSON), &mData); err != nil {
 			continue
@@ -179,7 +181,7 @@ func parseSessionFromDBSince(db *sql.DB, sessionID string, sinceTime int64) ([]a
 
 		blocks, err := queryPartsForMessage(db, mr.id)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query parts for message %s: %w", mr.id, err)
+			return nil, 0, fmt.Errorf("failed to query parts for message %s: %w", mr.id, err)
 		}
 
 		if len(blocks) == 0 && mData.Content != "" {
@@ -200,5 +202,5 @@ func parseSessionFromDBSince(db *sql.DB, sessionID string, sinceTime int64) ([]a
 		})
 	}
 
-	return entries, nil
+	return entries, maxTimeCreated, nil
 }
