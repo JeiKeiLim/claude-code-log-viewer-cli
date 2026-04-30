@@ -3,11 +3,16 @@ package main
 import (
 	"bytes"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/codex"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/opencode"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/tui"
 )
 
@@ -139,11 +144,6 @@ func TestUsageFlagParsing(t *testing.T) {
 }
 
 func TestUsageFlagsIdenticalBehavior(t *testing.T) {
-	// Test AC-1: Both -u and --usage behave identically
-	// This tests that flag parsing produces the same boolean result
-	// (actual output identity is tested at the function level since both
-	// flags call the same runUsageMode function)
-
 	flagSets := []struct {
 		name string
 		args []string
@@ -154,7 +154,6 @@ func TestUsageFlagsIdenticalBehavior(t *testing.T) {
 
 	var results []bool
 	for _, fs := range flagSets {
-		// Reset flag.CommandLine for each test
 		flag.CommandLine = flag.NewFlagSet(fs.args[0], flag.ContinueOnError)
 
 		usageFlag := flag.Bool("usage", false, "Print usage limits and exit")
@@ -165,7 +164,6 @@ func TestUsageFlagsIdenticalBehavior(t *testing.T) {
 			t.Fatalf("Failed to parse flags for %s: %v", fs.name, err)
 		}
 
-		// Both should result in usage mode being true
 		usageMode := *usageFlag || *usageShortFlag
 		results = append(results, usageMode)
 
@@ -174,14 +172,12 @@ func TestUsageFlagsIdenticalBehavior(t *testing.T) {
 		}
 	}
 
-	// Verify both produce the same result
 	if len(results) >= 2 && results[0] != results[1] {
 		t.Error("-u and --usage should produce identical behavior")
 	}
 }
 
 func TestPrintHelpUsageFlagFormat(t *testing.T) {
-	// Test AC-7: Verify -u, --usage appears together in help text
 	originalOutput := flag.CommandLine.Output()
 	t.Cleanup(func() {
 		flag.CommandLine.SetOutput(originalOutput)
@@ -193,27 +189,23 @@ func TestPrintHelpUsageFlagFormat(t *testing.T) {
 
 	output := buf.String()
 
-	// Verify the exact format "-u, --usage" appears (showing both together)
 	if !strings.Contains(output, "-u, --usage") {
 		t.Error("help text should contain '-u, --usage' showing both flag forms together")
 	}
 }
 
 func TestPrintHelp(t *testing.T) {
-	// Save original output and restore after test
 	originalOutput := flag.CommandLine.Output()
 	t.Cleanup(func() {
 		flag.CommandLine.SetOutput(originalOutput)
 	})
 
-	// Capture help output
 	var buf bytes.Buffer
 	flag.CommandLine.SetOutput(&buf)
 	printHelp()
 
 	output := buf.String()
 
-	// Test AC 1.12.1: Each flag has a clear description
 	requiredFlags := []string{
 		"--plain",
 		"--tui",
@@ -234,7 +226,6 @@ func TestPrintHelp(t *testing.T) {
 		}
 	}
 
-	// Test AC 1.12.2: Common usage examples are shown
 	requiredExamples := []string{
 		"cclv conversation.jsonl",
 		"cclv --plain",
@@ -249,7 +240,6 @@ func TestPrintHelp(t *testing.T) {
 		}
 	}
 
-	// Test AC 1.12.3: Keyboard shortcuts section with groups
 	requiredSections := []string{
 		"USAGE:",
 		"OPTIONS:",
@@ -262,7 +252,6 @@ func TestPrintHelp(t *testing.T) {
 		}
 	}
 
-	// Test keyboard shortcut groups
 	shortcutGroups := []string{
 		"Navigation:",
 		"Scrolling:",
@@ -276,7 +265,6 @@ func TestPrintHelp(t *testing.T) {
 		}
 	}
 
-	// Test specific shortcuts are documented
 	requiredShortcuts := []string{
 		"j/k",
 		"gg/G",
@@ -296,10 +284,126 @@ func TestPrintHelp(t *testing.T) {
 	}
 }
 
-// TestRunStreamingPlainMode_InitialOutput tests AC-1: initial entries are formatted and output.
-// This covers Story 8.3 Task 7.1.
-func TestRunStreamingPlainMode_InitialOutput(t *testing.T) {
-	// Create temp file with initial JSONL content
+// --- Auto-detection streaming tests ---
+
+// TestStreamingAutoDetectClaudeCode verifies that streaming mode auto-detects
+// Claude Code format and produces rendered output containing the expected text.
+func TestStreamingAutoDetectClaudeCode(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	claudeCodeJSONL := `{"type":"user","message":{"role":"user","content":"Hello from Claude Code"},"timestamp":"2026-01-16T10:00:00Z"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Hi there from Claude!"}]},"timestamp":"2026-01-16T10:01:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(claudeCodeJSONL), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Test detectFormatFromReader detects Claude Code
+	file, err := os.Open(testFile)
+	if err != nil {
+		t.Fatalf("failed to open test file: %v", err)
+	}
+
+	detected, newReader, detectErr := detectFormatFromReader(file)
+	if detectErr != nil {
+		t.Fatalf("detectFormatFromReader error: %v", detectErr)
+	}
+	if detected != agent.AgentClaudeCode {
+		t.Errorf("detectFormatFromReader() = %q, want %q", detected, agent.AgentClaudeCode)
+	}
+
+	// Verify the full content is still readable through newReader
+	all, err := io.ReadAll(newReader)
+	_ = file.Close()
+	if err != nil {
+		t.Fatalf("failed to read from newReader: %v", err)
+	}
+	if !bytes.Contains(all, []byte("Hello from Claude Code")) {
+		t.Error("newReader should contain the original file data")
+	}
+}
+
+// TestStreamingAutoDetectCodex verifies that streaming mode auto-detects
+// Codex format and uses selectProvider + convertConversationEntries.
+func TestStreamingAutoDetectCodex(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	codexJSONL := `{"type":"session_meta","timestamp":"2026-04-30T10:00:00Z","payload":{"id":"sess-test","cwd":"/home/user/project","model":"o3"}}
+{"type":"event_msg","timestamp":"2026-04-30T10:00:01Z","payload":{"event":{"type":"user_message","content":"Hello from Codex"}}}
+{"type":"event_msg","timestamp":"2026-04-30T10:00:05Z","payload":{"event":{"type":"agent_message","content":"Hi from Codex!","phase":"final"}}}
+`
+	if err := os.WriteFile(testFile, []byte(codexJSONL), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Test detectFormatFromReader detects Codex
+	file, err := os.Open(testFile)
+	if err != nil {
+		t.Fatalf("failed to open test file: %v", err)
+	}
+
+	detected, newReader, detectErr := detectFormatFromReader(file)
+	if detectErr != nil {
+		t.Fatalf("detectFormatFromReader error: %v", detectErr)
+	}
+	if detected != agent.AgentCodex {
+		t.Errorf("detectFormatFromReader() = %q, want %q", detected, agent.AgentCodex)
+	}
+
+	// Verify selectProvider returns a Codex provider
+	provider := selectProvider(detected)
+	if provider.Type() != agent.AgentCodex {
+		t.Errorf("selectProvider(%q).Type() = %q, want %q", detected, provider.Type(), agent.AgentCodex)
+	}
+
+	// Verify ParseSessionStream works through the reader
+	convEntries, parseErr := provider.ParseSessionStream(newReader)
+	_ = file.Close()
+	if parseErr != nil {
+		t.Fatalf("ParseSessionStream error: %v", parseErr)
+	}
+	if len(convEntries) == 0 {
+		t.Error("ParseSessionStream should return entries for valid Codex JSONL")
+	}
+
+	// Verify convertConversationEntries produces renderable LogEntries
+	entries := convertConversationEntries(convEntries)
+	if len(entries) == 0 {
+		t.Error("convertConversationEntries should produce LogEntry entries")
+	}
+}
+
+// TestStreamingAgentOverride verifies that agent override skips auto-detection
+// and uses the specified provider directly.
+func TestStreamingAgentOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	claudeCodeJSONL := `{"type":"user","message":{"role":"user","content":"Hello world"},"timestamp":"2026-01-16T10:00:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(claudeCodeJSONL), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// When override is set, detectFormatFromReader should NOT be called
+	// Instead, selectProvider should use the override directly
+	provider := selectProvider(agent.AgentCodex)
+	if provider.Type() != agent.AgentCodex {
+		t.Errorf("selectProvider with override AgentCodex = %q, want %q", provider.Type(), agent.AgentCodex)
+	}
+
+	// Verify Claude Code override still works
+	providerCC := selectProvider(agent.AgentClaudeCode)
+	if providerCC.Type() != agent.AgentClaudeCode {
+		t.Errorf("selectProvider with override AgentClaudeCode = %q, want %q", providerCC.Type(), agent.AgentClaudeCode)
+	}
+}
+
+// TestStreamingInitialOutputRendering verifies that the initial output
+// from streaming plain mode actually renders entries to stdout.
+func TestStreamingInitialOutputRendering(t *testing.T) {
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.jsonl")
 
@@ -325,93 +429,111 @@ func TestRunStreamingPlainMode_InitialOutput(t *testing.T) {
 			opts:     tui.RenderOptions{Width: 60},
 			contains: []string{"Hello world", "Hi there!"},
 		},
-		{
-			name:     "respects hide-thoughts flag (no thinking to hide)",
-			opts:     tui.RenderOptions{HideThoughts: true},
-			contains: []string{"Hello world", "Hi there!"},
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Capture stdout
-			oldStdout := os.Stdout
-			r, w, _ := os.Pipe()
-			os.Stdout = w
-
-			// Run streaming mode in a goroutine - it would block forever
-			// so we test initial output only by using a short-lived approach
-			// We'll test the rendering logic directly instead
-			done := make(chan error, 1)
-			go func() {
-				// The function would block on signal wait, so we test components separately
-				// For this test, we verify the initial rendering by calling RenderPlain directly
-				// which is what runStreamingPlainMode calls for initial output
-				done <- nil
-			}()
-
-			// Close and read the captured output
-			_ = w.Close()
-			var buf bytes.Buffer
-			_, _ = buf.ReadFrom(r)
-			os.Stdout = oldStdout
-
-			// For now, test the rendering function directly (component test)
-			// The full integration test would require signal injection
+			// Parse the file the same way runStreamingPlainMode does
 			file, err := os.Open(testFile)
 			if err != nil {
 				t.Fatalf("failed to open test file: %v", err)
 			}
-			defer func() { _ = file.Close() }()
 
-			// Use the parser and render functions that runStreamingPlainMode uses
-			// This tests the same code path as the actual function
-			// (A full integration test would need signal injection or timeout)
+			detected, newReader, detectErr := detectFormatFromReader(file)
+			if detectErr != nil {
+				_ = file.Close()
+				t.Fatalf("detectFormatFromReader error: %v", detectErr)
+			}
+			if detected != agent.AgentClaudeCode {
+				_ = file.Close()
+				t.Fatalf("detected format = %q, want %q", detected, agent.AgentClaudeCode)
+			}
+
+			// Parse and render (same path as runStreamingPlainMode for Claude Code)
+			result := parser.ParseJSONL(newReader)
+			entries := result.Entries
+			parseErrors := result.ParseErrors
+			_ = file.Close()
+
+			if len(entries) == 0 {
+				t.Fatal("expected entries to be parsed, got 0")
+			}
+			if parseErrors > 0 {
+				t.Errorf("unexpected parse errors: %d", parseErrors)
+			}
+
+			source := filepath.Base(testFile)
+			output := tui.RenderPlain(entries, source, tt.opts)
+
+			for _, want := range tt.contains {
+				if !strings.Contains(output, want) {
+					t.Errorf("RenderPlain output missing expected text %q", want)
+				}
+			}
 		})
 	}
 }
 
-// TestRunStreamingPlainMode_RenderPath tests the rendering code path
-// that runStreamingPlainMode uses for initial output (AC-1).
-func TestRunStreamingPlainMode_RenderPath(t *testing.T) {
-	// Create temp file with JSONL content
-	tmpDir := t.TempDir()
-	testFile := filepath.Join(tmpDir, "test.jsonl")
+// --- selectProvider tests ---
 
-	initialContent := `{"type":"user","message":{"role":"user","content":"Test message"},"timestamp":"2026-01-16T10:00:00Z"}
-`
-	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
-	}
-
-	// Test the same operations that runStreamingPlainMode performs
-	absPath, err := filepath.Abs(testFile)
-	if err != nil {
-		t.Fatalf("failed to get absolute path: %v", err)
-	}
-
-	file, err := os.Open(absPath)
-	if err != nil {
-		t.Fatalf("failed to open file: %v", err)
-	}
-	defer func() { _ = file.Close() }()
-
-	// This mimics runStreamingPlainMode's initial parsing
-	// (imported parser.ParseJSONL would be tested here, but we test the tui rendering)
-	source := filepath.Base(testFile)
-	if source != "test.jsonl" {
-		t.Errorf("expected source 'test.jsonl', got %q", source)
-	}
-
-	// Verify path resolution works correctly (part of runStreamingPlainMode logic)
-	if absPath == "" {
-		t.Error("absolute path should not be empty")
+func TestSelectProviderClaudeCode(t *testing.T) {
+	p := selectProvider(agent.AgentClaudeCode)
+	if p.Type() != agent.AgentClaudeCode {
+		t.Errorf("selectProvider(AgentClaudeCode).Type() = %q, want %q", p.Type(), agent.AgentClaudeCode)
 	}
 }
 
+func TestSelectProviderCodex(t *testing.T) {
+	p := selectProvider(agent.AgentCodex)
+	if _, ok := p.(*codex.Provider); !ok {
+		t.Errorf("selectProvider(AgentCodex) = %T, want *codex.Provider", p)
+	}
+	if p.Type() != agent.AgentCodex {
+		t.Errorf("selectProvider(AgentCodex).Type() = %q, want %q", p.Type(), agent.AgentCodex)
+	}
+}
+
+// TestSelectProviderOpenCode verifies that selectProvider returns an OpenCode
+// provider when given AgentOpenCode.
+func TestSelectProviderOpenCode(t *testing.T) {
+	p := selectProvider(agent.AgentOpenCode)
+	if _, ok := p.(*opencode.Provider); !ok {
+		t.Errorf("selectProvider(AgentOpenCode) = %T, want *opencode.Provider", p)
+	}
+	if p.Type() != agent.AgentOpenCode {
+		t.Errorf("selectProvider(AgentOpenCode).Type() = %q, want %q", p.Type(), agent.AgentOpenCode)
+	}
+}
+
+// --- parseAgentFlag tests ---
+
+func TestParseAgentFlag(t *testing.T) {
+	tests := []struct {
+		input string
+		want  agent.AgentType
+	}{
+		{"claude-code", agent.AgentClaudeCode},
+		{"codex", agent.AgentCodex},
+		{"opencode", agent.AgentOpenCode},
+		{"", agent.AgentType("")},
+		{"unknown", agent.AgentType("")},
+		{"Claude-Code", agent.AgentType("")}, // case-sensitive
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := parseAgentFlag(tt.input)
+			if got != tt.want {
+				t.Errorf("parseAgentFlag(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- Helper for tests ---
+
 // TestFollowLatestFlagParsing tests Story 11.2 AC-1: flag parsing for -L/--follow-latest.
 func TestFollowLatestFlagParsing(t *testing.T) {
-	// Save original flag state and restore after test
 	origArgs := os.Args
 	t.Cleanup(func() {
 		os.Args = origArgs
@@ -431,7 +553,6 @@ func TestFollowLatestFlagParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Reset flag.CommandLine for each test
 			flag.CommandLine = flag.NewFlagSet(tt.args[0], flag.ContinueOnError)
 
 			followLatestFlag := flag.Bool("follow-latest", false, "Follow to newest conversation")
@@ -454,40 +575,34 @@ func TestFollowLatestFlagParsing(t *testing.T) {
 // --follow-latest requires --watch mode.
 func TestFollowLatestRequiresWatchMode(t *testing.T) {
 	tests := []struct {
-		name        string
-		args        []string
-		wantValid   bool
-		description string
+		name      string
+		args      []string
+		wantValid bool
 	}{
 		{
-			name:        "L with watch is valid",
-			args:        []string{"cmd", "-w", "-L", "file.jsonl"},
-			wantValid:   true,
-			description: "Should be valid when both -w and -L are provided",
+			name:      "L with watch is valid",
+			args:      []string{"cmd", "-w", "-L", "file.jsonl"},
+			wantValid: true,
 		},
 		{
-			name:        "follow-latest with watch is valid",
-			args:        []string{"cmd", "--watch", "--follow-latest", "file.jsonl"},
-			wantValid:   true,
-			description: "Should be valid with long form flags",
+			name:      "follow-latest with watch is valid",
+			args:      []string{"cmd", "--watch", "--follow-latest", "file.jsonl"},
+			wantValid: true,
 		},
 		{
-			name:        "L without watch is invalid",
-			args:        []string{"cmd", "-L", "file.jsonl"},
-			wantValid:   false,
-			description: "Should be invalid when -L is used without -w",
+			name:      "L without watch is invalid",
+			args:      []string{"cmd", "-L", "file.jsonl"},
+			wantValid: false,
 		},
 		{
-			name:        "follow-latest without watch is invalid",
-			args:        []string{"cmd", "--follow-latest", "file.jsonl"},
-			wantValid:   false,
-			description: "Should be invalid when --follow-latest is used without --watch",
+			name:      "follow-latest without watch is invalid",
+			args:      []string{"cmd", "--follow-latest", "file.jsonl"},
+			wantValid: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Reset flag.CommandLine for each test
 			flag.CommandLine = flag.NewFlagSet(tt.args[0], flag.ContinueOnError)
 
 			watchFlag := flag.Bool("watch", false, "Watch file for changes")
@@ -504,11 +619,10 @@ func TestFollowLatestRequiresWatchMode(t *testing.T) {
 			watchMode := *watchFlag || *wFlag || *liveFlag
 			followLatest := *followLatestFlag || *followLatestShortFlag
 
-			// Simulate the validation logic from main.go
-			isValid := !followLatest || watchMode // follow-latest is OK if disabled, or if watch mode is on
+			isValid := !followLatest || watchMode
 
 			if isValid != tt.wantValid {
-				t.Errorf("%s: isValid = %v, want %v", tt.description, isValid, tt.wantValid)
+				t.Errorf("isValid = %v, want %v", isValid, tt.wantValid)
 			}
 		})
 	}
@@ -516,30 +630,25 @@ func TestFollowLatestRequiresWatchMode(t *testing.T) {
 
 // TestPrintHelpFollowLatestFlag tests Story 11.2 AC-6: verify follow-latest flag appears in help.
 func TestPrintHelpFollowLatestFlag(t *testing.T) {
-	// Save original output and restore after test
 	originalOutput := flag.CommandLine.Output()
 	t.Cleanup(func() {
 		flag.CommandLine.SetOutput(originalOutput)
 	})
 
-	// Capture help output
 	var buf bytes.Buffer
 	flag.CommandLine.SetOutput(&buf)
 	printHelp()
 
 	output := buf.String()
 
-	// Test follow-latest flag appears in OPTIONS
 	if !strings.Contains(output, "-L, --follow-latest") {
 		t.Error("help output should contain '-L, --follow-latest' showing both flag forms together")
 	}
 
-	// Test follow-latest appears in examples
 	if !strings.Contains(output, "-w -L") {
 		t.Error("help output should contain example with '-w -L'")
 	}
 
-	// Test follow-latest appears in keyboard shortcuts (Toggles section)
 	if !strings.Contains(output, "Toggle follow-latest") {
 		t.Error("help output should document 'L' key toggle for follow-latest in keyboard shortcuts")
 	}

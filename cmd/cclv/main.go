@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -20,7 +21,9 @@ import (
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/claudecode"
 	codex "github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/codex"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/opencode"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/tui"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
@@ -204,7 +207,7 @@ func main() {
 			HideTools:    *hideToolsFlag,
 			Width:        validatedWidth,
 		}
-		if err := runStreamingPlainMode(args[0], opts); err != nil {
+		if err := runStreamingPlainMode(args[0], opts, agentOverride); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -257,7 +260,7 @@ func main() {
 }
 
 // runPipelineMode handles viewing logs from stdin or a file argument.
-func runPipelineMode(args []string, mode outputMode, opts tui.RenderOptions) error {
+func runPipelineMode(args []string, mode outputMode, opts tui.RenderOptions, agentOverride agent.AgentType) error {
 	var reader io.Reader
 	var source string
 
@@ -291,25 +294,50 @@ func runPipelineMode(args []string, mode outputMode, opts tui.RenderOptions) err
 		source = "stdin"
 	}
 
-	// Parse the JSONL content
-	result := parser.ParseJSONL(reader)
+	// Detect format if no override
+	detectedFormat := agentOverride
+	if detectedFormat == "" {
+		detected, newReader, detectErr := detectFormatFromReader(reader)
+		if detectErr != nil {
+			return fmt.Errorf("failed to detect format: %w", detectErr)
+		}
+		detectedFormat = detected
+		reader = newReader
+	}
+
+	// Parse entries using appropriate provider
+	var entries []types.LogEntry
+	var parseErrors int
+
+	if detectedFormat == agent.AgentClaudeCode {
+		result := parser.ParseJSONL(reader)
+		entries = result.Entries
+		parseErrors = result.ParseErrors
+	} else {
+		provider := selectProvider(detectedFormat)
+		convEntries, parseErr := provider.ParseSessionStream(reader)
+		if parseErr != nil {
+			return fmt.Errorf("failed to parse session: %w", parseErr)
+		}
+		entries = convertConversationEntries(convEntries)
+	}
 
 	// Only error if ALL lines failed to parse (ParseErrors > 0 with no entries).
 	// Empty conversation list is OK if JSONL was valid (no parse errors).
-	if len(result.Entries) == 0 && result.ParseErrors > 0 {
-		return fmt.Errorf("no valid entries found (%d parse errors)", result.ParseErrors)
+	if len(entries) == 0 && parseErrors > 0 {
+		return fmt.Errorf("no valid entries found (%d parse errors)", parseErrors)
 	}
 
 	// Output based on mode
 	if mode == modePlain {
 		// Plain text output to stdout
-		output := tui.RenderPlain(result.Entries, source, opts)
+		output := tui.RenderPlain(entries, source, opts)
 		fmt.Print(output)
 		return nil
 	}
 
 	// TUI mode - nil token service for pipeline mode (no statistics needed)
-	model := tui.NewViewerModel(result.Entries, result.ParseErrors, source, opts, nil)
+	model := tui.NewViewerModel(entries, parseErrors, source, opts, nil)
 
 	// Use alternate screen buffer for TUI
 	p := tea.NewProgram(model, tea.WithAltScreen())
@@ -407,7 +435,7 @@ const streamingPollInterval = 100 * time.Millisecond
 
 // runStreamingPlainMode outputs formatted entries continuously.
 // It renders existing entries, then watches for new ones.
-func runStreamingPlainMode(filePath string, opts tui.RenderOptions) error {
+func runStreamingPlainMode(filePath string, opts tui.RenderOptions, agentOverride agent.AgentType) error {
 	// 1. Parse and render existing entries
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
@@ -418,12 +446,38 @@ func runStreamingPlainMode(filePath string, opts tui.RenderOptions) error {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
 
-	result := parser.ParseJSONL(file)
+	// Auto-detect format or use override
+	detectedFormat := agentOverride
+	var reader io.Reader = file
+	if detectedFormat == "" {
+		detected, newReader, detectErr := detectFormatFromReader(file)
+		if detectErr != nil {
+			_ = file.Close()
+			return fmt.Errorf("failed to detect format: %w", detectErr)
+		}
+		detectedFormat = detected
+		reader = newReader
+	}
+
+	var entries []types.LogEntry
+	if detectedFormat == agent.AgentClaudeCode {
+		result := parser.ParseJSONL(reader)
+		entries = result.Entries
+	} else {
+		provider := selectProvider(detectedFormat)
+		convEntries, parseErr := provider.ParseSessionStream(reader)
+		if parseErr != nil {
+			_ = file.Close()
+			return fmt.Errorf("failed to parse session: %w", parseErr)
+		}
+		entries = convertConversationEntries(convEntries)
+	}
+
 	endPos, _ := file.Seek(0, io.SeekCurrent)
 	_ = file.Close()
 
 	source := filepath.Base(filePath)
-	output := tui.RenderPlain(result.Entries, source, opts)
+	output := tui.RenderPlain(entries, source, opts)
 	fmt.Print(output)
 	_ = os.Stdout.Sync()
 
@@ -445,19 +499,129 @@ func runStreamingPlainMode(filePath string, opts tui.RenderOptions) error {
 			signal.Stop(sigChan)
 			return nil // Clean exit
 		default:
-			entries, err := w.ReadNewEntries()
+			newEntries, err := w.ReadNewEntries()
 			if err != nil {
 				if errors.Is(err, watcher.ErrFileTruncated) {
-					// File reset - not an error for streaming, continue watching
 					continue
 				}
 				return err
 			}
-			for _, entry := range entries {
+			for _, entry := range newEntries {
 				fmt.Print(tui.RenderEntryPlain(entry, opts))
 				_ = os.Stdout.Sync()
 			}
 			time.Sleep(streamingPollInterval)
 		}
 	}
+}
+
+// parseAgentFlag converts a string agent name to an AgentType.
+// Returns empty string (auto-detect) for empty or unrecognized input.
+func parseAgentFlag(val string) agent.AgentType {
+	switch val {
+	case "claude-code":
+		return agent.AgentClaudeCode
+	case "codex":
+		return agent.AgentCodex
+	case "opencode":
+		return agent.AgentOpenCode
+	default:
+		return ""
+	}
+}
+
+// detectFormatFromReader reads a sample from the reader to detect the agent format.
+// Returns the detected AgentType and a new reader that includes the sampled data.
+func detectFormatFromReader(r io.Reader) (agent.AgentType, io.Reader, error) {
+	// Read up to 4KB for format detection
+	buf := make([]byte, 4096)
+	n, err := io.ReadFull(r, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return agent.AgentClaudeCode, nil, fmt.Errorf("failed to read sample for detection: %w", err)
+	}
+	sample := buf[:n]
+	detected := agent.DetectFormat(sample)
+	// Return a reader that replays the sampled data followed by the rest
+	return detected, io.MultiReader(bytes.NewReader(sample), r), nil
+}
+
+// selectProvider returns the appropriate AgentProvider for the given AgentType.
+func selectProvider(at agent.AgentType) agent.AgentProvider {
+	switch at {
+	case agent.AgentCodex:
+		return codex.NewProvider()
+	case agent.AgentOpenCode:
+		return opencode.NewProvider()
+	default:
+		return &claudecode.ClaudeCodeProvider{}
+	}
+}
+
+// convertConversationEntries converts agent.ConversationEntry slice to types.LogEntry slice.
+func convertConversationEntries(convEntries []agent.ConversationEntry) []types.LogEntry {
+	entries := make([]types.LogEntry, 0, len(convEntries))
+	for _, ce := range convEntries {
+		var entryType types.EntryType
+		switch ce.Type() {
+		case agent.EntryTypeUser:
+			entryType = types.EntryTypeUser
+		case agent.EntryTypeAssistant:
+			entryType = types.EntryTypeAssistant
+		default:
+			entryType = types.EntryType(ce.Type())
+		}
+
+		blocks := ce.ContentBlocks()
+		content := make([]types.MessageContent, 0, len(blocks))
+		var textContent string
+
+		for _, b := range blocks {
+			switch b.ContentType() {
+			case agent.ContentBlockText:
+				content = append(content, types.MessageContent{
+					Type: types.ContentTypeText,
+					Text: b.Text(),
+				})
+			case agent.ContentBlockThinking:
+				content = append(content, types.MessageContent{
+					Type:     types.ContentTypeThinking,
+					Thinking: b.Text(),
+				})
+			case agent.ContentBlockToolUse:
+				content = append(content, types.MessageContent{
+					Type:      types.ContentTypeToolUse,
+					ToolName:  b.ToolName(),
+					ToolInput: b.ToolInput(),
+				})
+			case agent.ContentBlockReasoning:
+				content = append(content, types.MessageContent{
+					Type: types.ContentTypeText,
+					Text: b.Text(),
+				})
+			}
+		}
+
+		if ce.Type() == agent.EntryTypeUser && len(content) == 1 && content[0].Type == types.ContentTypeText {
+			textContent = content[0].Text
+		}
+
+		tokens := ce.TokenUsage()
+
+		entries = append(entries, types.LogEntry{
+			Type:      entryType,
+			Timestamp: ce.Timestamp(),
+			SessionID: ce.SessionID(),
+			Message: types.Message{
+				Role:        ce.Role(),
+				Content:     content,
+				TextContent: textContent,
+			},
+			Usage: types.TokenUsage{
+				InputTokens:              tokens.InputTokens,
+				OutputTokens:             tokens.OutputTokens,
+				CacheCreationInputTokens: tokens.CachedTokens,
+			},
+		})
+	}
+	return entries
 }
