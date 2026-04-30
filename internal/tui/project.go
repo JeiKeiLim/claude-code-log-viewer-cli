@@ -94,6 +94,10 @@ func (i ProjectItem) Render(width int, selected bool) string {
 // FilterValue returns the value used for filtering.
 func (i ProjectItem) FilterValue() string { return i.project.DisplayName }
 
+// BackToAgentSelectorMsg is emitted when the user presses esc/h in the project
+// list and canGoBack is true (navigated from agent selector).
+type BackToAgentSelectorMsg struct{}
+
 // ProjectModel is the Bubbletea model for the project browser.
 type ProjectModel struct {
 	listViewport  ListViewport[ProjectItem]
@@ -107,6 +111,7 @@ type ProjectModel struct {
 	ready         bool         // Set to true after first WindowSizeMsg
 	selected      map[int]bool // Map of project indices to selected state
 	selectionMode bool         // True when any project is selected
+	canGoBack     bool         // When true, esc emits BackToAgentSelectorMsg
 }
 
 // NewProjectModel creates a new project browser model.
@@ -135,6 +140,14 @@ func NewProjectModel(projects []types.Project) ProjectModel {
 // NewProjectModelWithError creates a project model showing an error.
 func NewProjectModelWithError(err error) ProjectModel {
 	return ProjectModel{err: err}
+}
+
+// NewProjectModelWithBack creates a project model that supports back navigation
+// to the agent selector screen via esc/h keys.
+func NewProjectModelWithBack(projects []types.Project) ProjectModel {
+	m := NewProjectModel(projects)
+	m.canGoBack = true
+	return m
 }
 
 // Init implements tea.Model.
@@ -253,12 +266,18 @@ func (m ProjectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "esc":
+		case "esc", "h":
 			// If in selection mode, clear selections and stay in project list
 			if m.selectionMode {
 				m.ClearSelections()
 				m.updateItemsWithSelection()
 				return m, nil
+			}
+			// If canGoBack (navigated from agent selector), go back
+			if m.canGoBack {
+				return m, func() tea.Msg {
+					return BackToAgentSelectorMsg{}
+				}
 			}
 			// Otherwise, do nothing (no quit on esc in project list)
 			return m, nil
