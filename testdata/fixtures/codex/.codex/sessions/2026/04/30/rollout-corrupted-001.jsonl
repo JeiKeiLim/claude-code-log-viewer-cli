@@ -1,4 +1,4 @@
-{"type":"session_meta","session_id":"sess-corrupt-001","cwd":"/home/user/broken","model":"o3","timestamp":"2026-04-30T11:00:00Z"}
+{"type":"session_meta","timestamp":"2026-04-30T11:00:00Z","payload":{"id":"sess-corrupt-001","cwd":"/home/user/broken","model":"o3"}}
 this is not valid json at all
 {"type":"event_msg","timestamp":"2026-04-30T11:00:01Z","payload":{"event":{"type":"user_message","content":"Hello"}}}
 {invalid json here

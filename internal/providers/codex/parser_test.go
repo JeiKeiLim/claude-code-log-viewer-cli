@@ -495,6 +495,63 @@ func TestParseSessionMeta(t *testing.T) {
 	}
 }
 
+// --- Session meta nested payload test (real Codex CLI v0.116.0+ format) ---
+
+func TestParseSessionMetaNestedPayload(t *testing.T) {
+	input := `{"type":"session_meta","timestamp":"2026-04-30T09:00:00Z","payload":{"id":"019a6ba6-9fd8-71d1-bcf7-1e3286abc131","cwd":"/Users/dev/project","cli_version":"0.124.0","model_provider":"openai"}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if result.SessionID != "019a6ba6-9fd8-71d1-bcf7-1e3286abc131" {
+		t.Errorf("SessionID = %q, want %q", result.SessionID, "019a6ba6-9fd8-71d1-bcf7-1e3286abc131")
+	}
+	if result.CWD != "/Users/dev/project" {
+		t.Errorf("CWD = %q, want %q", result.CWD, "/Users/dev/project")
+	}
+	if len(result.Entries) != 0 {
+		t.Errorf("len(Entries) = %d, want 0 (session_meta is not a conversation entry)", len(result.Entries))
+	}
+}
+
+// --- Session meta nested payload with model ---
+
+func TestParseSessionMetaNestedPayloadWithModel(t *testing.T) {
+	input := `{"type":"session_meta","timestamp":"2026-04-30T09:00:00Z","payload":{"id":"sess-nested-001","cwd":"/proj","model":"o3"}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if result.SessionID != "sess-nested-001" {
+		t.Errorf("SessionID = %q, want %q", result.SessionID, "sess-nested-001")
+	}
+	if result.CWD != "/proj" {
+		t.Errorf("CWD = %q, want %q", result.CWD, "/proj")
+	}
+	if result.Model != "o3" {
+		t.Errorf("Model = %q, want %q", result.Model, "o3")
+	}
+}
+
+// --- Session meta flat format still works (backward compat) ---
+
+func TestParseSessionMetaFlatFormat(t *testing.T) {
+	input := `{"type":"session_meta","session_id":"sess-flat","cwd":"/home/user/flat","model":"o3","timestamp":"2026-04-30T09:00:00Z"}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if result.SessionID != "sess-flat" {
+		t.Errorf("SessionID = %q, want %q", result.SessionID, "sess-flat")
+	}
+	if result.CWD != "/home/user/flat" {
+		t.Errorf("CWD = %q, want %q", result.CWD, "/home/user/flat")
+	}
+	if result.Model != "o3" {
+		t.Errorf("Model = %q, want %q", result.Model, "o3")
+	}
+}
+
 // --- Unknown line type test ---
 
 func TestParseUnknownType(t *testing.T) {
@@ -531,7 +588,7 @@ func TestParseMalformedJSON(t *testing.T) {
 
 func TestParseMixedRealisticSession(t *testing.T) {
 	var sb strings.Builder
-	sb.WriteString(`{"type":"session_meta","session_id":"sess-mix-001","cwd":"/proj","model":"o3","timestamp":"2026-04-30T08:00:00Z"}` + "\n")
+	sb.WriteString(`{"type":"session_meta","timestamp":"2026-04-30T08:00:00Z","payload":{"id":"sess-mix-001","cwd":"/proj","model":"o3"}}` + "\n")
 	sb.WriteString(`{"type":"event_msg","timestamp":"2026-04-30T08:00:01Z","payload":{"event":{"type":"user_message","content":"Build the project"}}}` + "\n")
 	sb.WriteString(`{"type":"event_msg","timestamp":"2026-04-30T08:00:02Z","payload":{"event":{"type":"agent_message","content":"I'll build it.","phase":"commentary"}}}` + "\n")
 	sb.WriteString(`{"type":"event_msg","timestamp":"2026-04-30T08:00:03Z","payload":{"event":{"type":"agent_message","content":"Building now.","phase":"final"}}}` + "\n")
@@ -635,10 +692,10 @@ func TestDiscoverProjects(t *testing.T) {
 		t.Fatalf("failed to create sessions dir: %v", err)
 	}
 
-	// Create two rollout files with different cwds.
-	session1 := `{"type":"session_meta","session_id":"s1","cwd":"/home/user/proj-a","model":"o3"}` + "\n"
-	session2 := `{"type":"session_meta","session_id":"s2","cwd":"/home/user/proj-b","model":"o3"}` + "\n"
-	session3 := `{"type":"session_meta","session_id":"s3","cwd":"/home/user/proj-a","model":"o3"}` + "\n"
+	// Create rollout files with nested payload format (real Codex CLI v0.116.0+).
+	session1 := `{"type":"session_meta","payload":{"id":"s1","cwd":"/home/user/proj-a","model":"o3"}}` + "\n"
+	session2 := `{"type":"session_meta","payload":{"id":"s2","cwd":"/home/user/proj-b","model":"o3"}}` + "\n"
+	session3 := `{"type":"session_meta","payload":{"id":"s3","cwd":"/home/user/proj-a","model":"o3"}}` + "\n"
 
 	if err := os.WriteFile(filepath.Join(sessionsDir, "rollout-001.jsonl"), []byte(session1), 0o644); err != nil {
 		t.Fatalf("write session1: %v", err)
@@ -684,7 +741,7 @@ func TestDiscoverSessions(t *testing.T) {
 		t.Fatalf("failed to create sessions dir: %v", err)
 	}
 
-	sessionContent := `{"type":"session_meta","session_id":"sess-disc-1","cwd":"/home/user/testproj","model":"o3","timestamp":"2026-04-30T10:00:00Z"}` + "\n" +
+	sessionContent := `{"type":"session_meta","timestamp":"2026-04-30T10:00:00Z","payload":{"id":"sess-disc-1","cwd":"/home/user/testproj","model":"o3"}}` + "\n" +
 		`{"type":"event_msg","timestamp":"2026-04-30T10:00:01Z","payload":{"event":{"type":"user_message","content":"Hello"}}}` + "\n" +
 		`{"type":"event_msg","timestamp":"2026-04-30T10:00:02Z","payload":{"event":{"type":"agent_message","content":"Hi","phase":"final"}}}` + "\n"
 
@@ -728,7 +785,7 @@ func TestDiscoverSessions(t *testing.T) {
 
 func TestParseSession(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "rollout-test.jsonl")
-	content := `{"type":"session_meta","session_id":"s-parse","cwd":"/proj","model":"o3"}` + "\n" +
+	content := `{"type":"session_meta","payload":{"id":"s-parse","cwd":"/proj","model":"o3"}}` + "\n" +
 		`{"type":"event_msg","timestamp":"2026-04-30T10:00:00Z","payload":{"event":{"type":"user_message","content":"test"}}}` + "\n" +
 		`{"type":"event_msg","timestamp":"2026-04-30T10:00:01Z","payload":{"event":{"type":"agent_message","content":"ok","phase":"final"}}}` + "\n"
 	if err := os.WriteFile(tmpFile, []byte(content), 0o644); err != nil {
@@ -752,7 +809,7 @@ func TestParseSession(t *testing.T) {
 // --- ParseSessionStream test ---
 
 func TestParseSessionStream(t *testing.T) {
-	input := `{"type":"session_meta","session_id":"s-stream","cwd":"/proj","model":"o3"}` + "\n" +
+	input := `{"type":"session_meta","payload":{"id":"s-stream","cwd":"/proj","model":"o3"}}` + "\n" +
 		`{"type":"event_msg","timestamp":"2026-04-30T10:00:00Z","payload":{"event":{"type":"user_message","content":"stream test"}}}` + "\n"
 
 	p := NewProvider()
@@ -772,7 +829,7 @@ func TestParseSessionStream(t *testing.T) {
 // --- ParseBytes test ---
 
 func TestParseBytes(t *testing.T) {
-	input := `{"type":"session_meta","session_id":"s-bytes","cwd":"/proj","model":"o3"}` + "\n" +
+	input := `{"type":"session_meta","payload":{"id":"s-bytes","cwd":"/proj","model":"o3"}}` + "\n" +
 		`{"type":"event_msg","timestamp":"2026-04-30T10:00:00Z","payload":{"event":{"type":"user_message","content":"bytes test"}}}` + "\n"
 
 	p := NewProvider()

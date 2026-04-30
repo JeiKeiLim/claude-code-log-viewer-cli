@@ -51,6 +51,14 @@ type eventDetail struct {
 	Info     json.RawMessage `json:"info"`
 }
 
+// sessionMetaPayload is the nested payload structure for real Codex CLI v0.116.0+
+// session_meta lines: {"type":"session_meta","payload":{"id":"...","cwd":"/path",...}}.
+type sessionMetaPayload struct {
+	ID    string `json:"id"`
+	CWD   string `json:"cwd"`
+	Model string `json:"model"`
+}
+
 // tokenInfo holds token usage information.
 type tokenInfo struct {
 	TotalTokenUsage tokenUsageDetail `json:"total_token_usage"`
@@ -162,7 +170,31 @@ func ParseCodexJSONL(r io.Reader) (*ParseResult, error) {
 }
 
 // handleSessionMeta extracts session metadata from a session_meta line.
+// Supports both nested payload format (Codex CLI v0.116.0+):
+//
+//	{"type":"session_meta","payload":{"id":"...","cwd":"/path","model":"o3"}}
+//
+// and flat format (legacy/test):
+//
+//	{"type":"session_meta","session_id":"...","cwd":"/path","model":"o3"}
 func handleSessionMeta(result *ParseResult, cl *codexLine) {
+	// Try nested payload first (real Codex CLI format).
+	if cl.Payload != nil {
+		var mp sessionMetaPayload
+		if err := json.Unmarshal(cl.Payload, &mp); err == nil {
+			if mp.ID != "" {
+				result.SessionID = mp.ID
+			}
+			if mp.CWD != "" {
+				result.CWD = mp.CWD
+			}
+			if mp.Model != "" {
+				result.Model = mp.Model
+			}
+			return
+		}
+	}
+	// Fallback to flat fields for backward compatibility.
 	if cl.SessionID != "" {
 		result.SessionID = cl.SessionID
 	}

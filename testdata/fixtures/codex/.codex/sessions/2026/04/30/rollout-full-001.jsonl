@@ -1,4 +1,4 @@
-{"type":"session_meta","session_id":"sess-full-001","cwd":"/home/user/fullproject","model":"o3","timestamp":"2026-04-30T09:00:00Z"}
+{"type":"session_meta","timestamp":"2026-04-30T09:00:00Z","payload":{"id":"sess-full-001","cwd":"/home/user/fullproject","model":"o3"}}
 {"type":"event_msg","timestamp":"2026-04-30T09:00:01Z","payload":{"event":{"type":"user_message","content":"Run the test suite and fix any failures"}}}
 {"type":"event_msg","timestamp":"2026-04-30T09:00:02Z","payload":{"event":{"type":"agent_message","content":"Let me analyze the test failures first.","phase":"commentary"}}}
 {"type":"event_msg","timestamp":"2026-04-30T09:00:03Z","payload":{"event":{"type":"agent_message","content":"I found 3 failing tests. Let me fix them.","phase":"final"}}}

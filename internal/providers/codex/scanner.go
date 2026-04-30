@@ -82,6 +82,16 @@ func readSessionCWD(filePath string) (string, error) {
 			return "", nil // not valid JSON, skip
 		}
 		if cl.Type == "session_meta" {
+			// Try nested payload first (real Codex CLI v0.116.0+ format).
+			if cl.Payload != nil {
+				var mp struct {
+					CWD string `json:"cwd"`
+				}
+				if err := json.Unmarshal(cl.Payload, &mp); err == nil && mp.CWD != "" {
+					return mp.CWD, nil
+				}
+			}
+			// Fallback to flat field for backward compatibility.
 			return cl.CWD, nil
 		}
 		// If first non-empty line isn't session_meta, stop looking.
