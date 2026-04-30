@@ -131,8 +131,8 @@ func TestSessionScanner_Scan(t *testing.T) {
 		checker := newMockPIDChecker(100)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "valid", CWD: "/test/skips-nonjson"})
-		os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("hello"), 0644)
-		os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte("{}"), 0644)
+		mustWriteFile(t, filepath.Join(tmpDir, "readme.txt"), []byte("hello"))
+		mustWriteFile(t, filepath.Join(tmpDir, "config.json"), []byte("{}"))
 
 		scanner := NewSessionScanner(tmpDir, WithScannerPIDChecker(checker))
 		result := scanner.Scan()
@@ -147,7 +147,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 		checker := newMockPIDChecker(100, 200)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "valid", CWD: "/test/skips-corrupt"})
-		os.WriteFile(filepath.Join(tmpDir, "200.json"), []byte("{corrupt"), 0644)
+		mustWriteFile(t, filepath.Join(tmpDir, "200.json"), []byte("{corrupt"))
 
 		scanner := NewSessionScanner(tmpDir, WithScannerPIDChecker(checker))
 		result := scanner.Scan()
@@ -193,7 +193,7 @@ func TestSessionScanner_Scan(t *testing.T) {
 		checker := newMockPIDChecker(100)
 
 		writeSessionJSON(t, tmpDir, 100, SessionMeta{PID: 100, SessionID: "valid", CWD: "/test/skips-dirs"})
-		os.MkdirAll(filepath.Join(tmpDir, "200.json"), 0755)
+		mustMkdirAll(t, filepath.Join(tmpDir, "200.json"))
 
 		scanner := NewSessionScanner(tmpDir, WithScannerPIDChecker(checker))
 		result := scanner.Scan()
@@ -1379,7 +1379,7 @@ func TestScan_SkipsSessionsWithoutJSONL(t *testing.T) {
 			StartedAt: 1711900000000,
 		}
 		data, _ := json.Marshal(meta)
-		os.WriteFile(filepath.Join(sessionsDir, "100.json"), data, 0644)
+		mustWriteFile(t, filepath.Join(sessionsDir, "100.json"), data)
 
 		scanner := NewSessionScanner(sessionsDir, WithScannerPIDChecker(checker))
 		result := scanner.Scan()
@@ -1402,7 +1402,7 @@ func TestScan_SkipsSessionsWithoutJSONL(t *testing.T) {
 			StartedAt: 1711900000000,
 		}
 		data, _ := json.Marshal(meta)
-		os.WriteFile(filepath.Join(sessionsDir, "200.json"), data, 0644)
+		mustWriteFile(t, filepath.Join(sessionsDir, "200.json"), data)
 
 		scanner := NewSessionScanner(sessionsDir, WithScannerPIDChecker(checker))
 		result := scanner.Scan()
@@ -1453,12 +1453,12 @@ func TestScan_SkipsSessionsWithoutJSONL(t *testing.T) {
 		// Session with CWD but missing JSONL (excluded) — write manually
 		meta := SessionMeta{PID: 500, SessionID: "no-jsonl", CWD: "/test/missing-jsonl"}
 		data, _ := json.Marshal(meta)
-		os.WriteFile(filepath.Join(sessionsDir, "500.json"), data, 0644)
+		mustWriteFile(t, filepath.Join(sessionsDir, "500.json"), data)
 
 		// Session without CWD (excluded) — write manually
 		meta2 := SessionMeta{PID: 600, SessionID: "no-cwd"}
 		data2, _ := json.Marshal(meta2)
-		os.WriteFile(filepath.Join(sessionsDir, "600.json"), data2, 0644)
+		mustWriteFile(t, filepath.Join(sessionsDir, "600.json"), data2)
 
 		scanner := NewSessionScanner(sessionsDir, WithScannerPIDChecker(checker))
 		result := scanner.Scan()

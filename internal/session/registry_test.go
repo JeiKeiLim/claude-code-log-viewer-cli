@@ -510,8 +510,8 @@ func TestRegistry_SessionsSnapshot(t *testing.T) {
 		t.Fatalf("expected 2 sessions in snapshot, got %d", len(snap))
 	}
 
-	// Verify snapshot is a copy: modifying it does not affect registry
-	snap = snap[:0]
+	// Verify snapshot is a copy: mutating it does not affect registry
+	clear(snap)
 	if r.SessionCount() != 2 {
 		t.Error("modifying snapshot should not affect registry")
 	}

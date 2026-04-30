@@ -374,7 +374,7 @@ func TestParseSessionFile(t *testing.T) {
 	t.Run("error — invalid JSON → ParseErrInvalidJSON", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		path := filepath.Join(tmpDir, "42.json")
-		os.WriteFile(path, []byte("{invalid json"), 0644)
+		mustWriteFile(t, path, []byte("{invalid json"))
 
 		_, err := ParseSessionFile(path, 42)
 		if err == nil {
@@ -392,7 +392,7 @@ func TestParseSessionFile(t *testing.T) {
 	t.Run("error — empty file → ParseErrInvalidJSON", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		path := filepath.Join(tmpDir, "42.json")
-		os.WriteFile(path, []byte(""), 0644)
+		mustWriteFile(t, path, []byte(""))
 
 		_, err := ParseSessionFile(path, 42)
 		if err == nil {
@@ -406,7 +406,7 @@ func TestParseSessionFile(t *testing.T) {
 	t.Run("error — missing sessionId → ParseErrMissingField", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		path := filepath.Join(tmpDir, "42.json")
-		os.WriteFile(path, []byte(`{"pid": 42, "cwd": "/home/user"}`), 0644)
+		mustWriteFile(t, path, []byte(`{"pid": 42, "cwd": "/home/user"}`))
 
 		_, err := ParseSessionFile(path, 42)
 		if err == nil {
@@ -427,7 +427,7 @@ func TestParseSessionFile(t *testing.T) {
 	t.Run("error — empty sessionId string → ParseErrMissingField", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		path := filepath.Join(tmpDir, "42.json")
-		os.WriteFile(path, []byte(`{"pid": 42, "sessionId": ""}`), 0644)
+		mustWriteFile(t, path, []byte(`{"pid": 42, "sessionId": ""}`))
 
 		_, err := ParseSessionFile(path, 42)
 		if err == nil {
@@ -467,7 +467,7 @@ func TestParseSessionFile(t *testing.T) {
 	t.Run("error — null JSON → ParseErrMissingField (sessionId empty)", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		path := filepath.Join(tmpDir, "42.json")
-		os.WriteFile(path, []byte("null"), 0644)
+		mustWriteFile(t, path, []byte("null"))
 
 		_, err := ParseSessionFile(path, 42)
 		if err == nil {
@@ -478,7 +478,7 @@ func TestParseSessionFile(t *testing.T) {
 	t.Run("error — JSON array instead of object → ParseErrInvalidJSON", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		path := filepath.Join(tmpDir, "42.json")
-		os.WriteFile(path, []byte(`["not", "an", "object"]`), 0644)
+		mustWriteFile(t, path, []byte(`["not", "an", "object"]`))
 
 		_, err := ParseSessionFile(path, 42)
 		if err == nil {

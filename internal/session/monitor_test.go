@@ -148,8 +148,8 @@ func TestTrackedSessions_Snapshot(t *testing.T) {
 		t.Errorf("expected 3 sessions, got %d", len(sessions))
 	}
 
-	// Verify it's a snapshot (modifying returned slice doesn't affect monitor)
-	sessions = sessions[:0]
+	// Verify it's a snapshot (mutating returned slice doesn't affect monitor)
+	clear(sessions)
 	if m.TrackedCount() != 3 {
 		t.Error("modifying snapshot should not affect monitor")
 	}

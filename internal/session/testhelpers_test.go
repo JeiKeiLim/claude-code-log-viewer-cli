@@ -1,6 +1,26 @@
 package session
 
-import "sync"
+import (
+	"os"
+	"sync"
+	"testing"
+)
+
+// mustWriteFile writes data to path with mode 0644 and fails the test on error.
+func mustWriteFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// mustMkdirAll creates the directory and fails the test on error.
+func mustMkdirAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+}
 
 // mockPIDChecker is a shared, thread-safe test double for PIDChecker.
 // It replaces the per-file duplicates (scannerMockPIDChecker,

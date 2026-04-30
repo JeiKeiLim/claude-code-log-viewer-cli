@@ -876,11 +876,9 @@ func TestInitialViewModeIsZeroSessions(t *testing.T) {
 
 	m := NewSessionDashboardModel("/tmp/project", projectDir, scanner, monitor)
 
-	// Initially should be in zero-session mode (viewMode default is DashboardViewGrid=0,
-	// but Init() triggers load of latest conversation)
-	if m.ViewMode() != DashboardViewGrid {
-		// The default Go zero value is DashboardViewGrid (=0).
-		// Init() will set it to DashboardViewZeroSessions once scan finds 0 sessions.
-		// This is expected behavior - viewMode starts at default and transitions.
+	// Constructor sets viewMode to DashboardViewZeroSessions (no panes yet).
+	// Init() later loads the latest conversation but does not change viewMode here.
+	if got := m.ViewMode(); got != DashboardViewZeroSessions {
+		t.Errorf("initial viewMode = %v, want DashboardViewZeroSessions", got)
 	}
 }

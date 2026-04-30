@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Pre-push hook: runs the full CI suite (fmt + vet + lint + test + build).
+# This mirrors what GitHub Actions runs, so a green pre-push means CI passes.
+# Bypass with `git push --no-verify` only when the user explicitly chooses to.
+set -euo pipefail
+
+echo "[pre-push] Running make ci (fmt + vet + lint + test + build)..."
+if ! make --no-print-directory ci; then
+    echo
+    echo "[pre-push] FAILED. Fix the issues above, or bypass with 'git push --no-verify'."
+    exit 1
+fi

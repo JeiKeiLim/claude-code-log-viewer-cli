@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Pre-commit hook: runs fast validation (fmt + vet + lint).
+# Mirrors the Lint job in .github/workflows/ci.yml.
+# Bypass with `git commit --no-verify` only when the user explicitly chooses to.
+set -euo pipefail
+
+echo "[pre-commit] Running make check (fmt-check + vet + lint)..."
+if ! make --no-print-directory check; then
+    echo
+    echo "[pre-commit] FAILED. Fix the issues above, or bypass with 'git commit --no-verify'."
+    exit 1
+fi

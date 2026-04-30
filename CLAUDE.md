@@ -47,6 +47,7 @@ make test       # Run with race detection + coverage
 make fmt        # Format code
 make lint       # Run linter (errcheck, etc.)
 make ci         # Full CI validation - MUST PASS before work is complete
+make hooks-install  # One-time: install git hooks from .githooks/
 ```
 
 **CRITICAL:** `make ci` MUST pass before any code changes are considered complete.

@@ -485,9 +485,9 @@ func TestSessionDirectoryWatcher_IgnoresNonJSONFiles(t *testing.T) {
 	w := newTestDirWatcher(t, tmpDir, checker)
 	startWatcher(t, w)
 
-	os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("hello"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "data.log"), []byte("log data"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(`{"key":"val"}`), 0644)
+	mustWriteFile(t, filepath.Join(tmpDir, "readme.txt"), []byte("hello"))
+	mustWriteFile(t, filepath.Join(tmpDir, "data.log"), []byte("log data"))
+	mustWriteFile(t, filepath.Join(tmpDir, "config.json"), []byte(`{"key":"val"}`))
 
 	events := drainAllEvents(w.Events(), 300*time.Millisecond)
 	if len(events) > 0 {
@@ -503,7 +503,7 @@ func TestSessionDirectoryWatcher_IgnoresCorruptJSON(t *testing.T) {
 	startWatcher(t, w)
 
 	// Write a corrupt JSON file with a valid PID filename.
-	os.WriteFile(filepath.Join(tmpDir, "700.json"), []byte("{corrupt!!"), 0644)
+	mustWriteFile(t, filepath.Join(tmpDir, "700.json"), []byte("{corrupt!!"))
 
 	events := drainAllEvents(w.Events(), 300*time.Millisecond)
 	for _, e := range events {
@@ -521,7 +521,7 @@ func TestSessionDirectoryWatcher_IgnoresEmptyJSON(t *testing.T) {
 	startWatcher(t, w)
 
 	// Write an empty file.
-	os.WriteFile(filepath.Join(tmpDir, "701.json"), []byte(""), 0644)
+	mustWriteFile(t, filepath.Join(tmpDir, "701.json"), []byte(""))
 
 	events := drainAllEvents(w.Events(), 300*time.Millisecond)
 	for _, e := range events {
@@ -576,7 +576,7 @@ func TestSessionDirectoryWatcher_NoClosedEventForUnseenRemoval(t *testing.T) {
 
 	path := filepath.Join(tmpDir, "900.json")
 	// Write and immediately remove without the watcher seeing a SessionOpened.
-	os.WriteFile(path, []byte(`{"pid":900,"sessionId":"unseen"}`), 0644)
+	mustWriteFile(t, path, []byte(`{"pid":900,"sessionId":"unseen"}`))
 	// Wait for the Create event to be processed (should be ignored due to dead PID).
 	time.Sleep(200 * time.Millisecond)
 	os.Remove(path)
@@ -605,7 +605,7 @@ func TestSessionDirectoryWatcher_NoDuplicateOpenedEvents(t *testing.T) {
 	// Trigger multiple writes to the same file.
 	for i := 0; i < 5; i++ {
 		data, _ := json.Marshal(SessionMeta{PID: 1100, SessionID: "dedup"})
-		os.WriteFile(path, data, 0644)
+		mustWriteFile(t, path, data)
 		time.Sleep(10 * time.Millisecond)
 	}
 

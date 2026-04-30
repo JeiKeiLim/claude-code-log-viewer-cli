@@ -29,7 +29,7 @@ PLATFORMS=darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 SRC=$(shell find . -name "*.go" -type f)
 
 .PHONY: all build clean test test-stress lint fmt vet tidy install uninstall help
-.PHONY: build-all build-darwin build-linux ci check
+.PHONY: build-all build-darwin build-linux ci check hooks-install
 
 # Default target
 all: clean lint test build
@@ -136,13 +136,20 @@ verify:
 	@echo "Verifying dependencies..."
 	$(GOMOD) verify
 
-# CI target - runs all checks
-ci: deps fmt-check vet test build
+# CI target - runs all checks (mirrors GitHub Actions ci.yml)
+ci: deps fmt-check vet lint test build
 	@echo "CI checks passed!"
 
 # Quick check - fast validation
-check: fmt-check vet
+check: fmt-check vet lint
 	@echo "Quick checks passed!"
+
+# Install repo-versioned git hooks (.githooks/) into the local clone.
+# Hooks run lint/fmt before commit and full ci before push.
+hooks-install:
+	@echo "Installing git hooks from .githooks/..."
+	@git config core.hooksPath .githooks
+	@echo "Hooks installed. Disable with: git config --unset core.hooksPath"
 
 # Install to GOPATH/bin
 install: build
@@ -236,7 +243,7 @@ help:
 	@echo "  make fmt-check    - Check code formatting (for CI)"
 	@echo "  make vet          - Run go vet"
 	@echo "  make lint         - Run linter (golangci-lint or go vet)"
-	@echo "  make check        - Quick validation (fmt-check + vet)"
+	@echo "  make check        - Quick validation (fmt-check + vet + lint)"
 	@echo ""
 	@echo "Dependencies:"
 	@echo "  make deps         - Download dependencies"
@@ -257,6 +264,7 @@ help:
 	@echo "  make size         - Show binary size"
 	@echo "  make version      - Show version info"
 	@echo "  make release      - Create release artifacts"
-	@echo "  make ci           - Run all CI checks"
+	@echo "  make ci           - Run all CI checks (fmt + vet + lint + test + build)"
+	@echo "  make hooks-install - Install git hooks from .githooks/"
 	@echo "  make all          - Clean, lint, test, and build"
 	@echo "  make help         - Show this help"
