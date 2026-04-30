@@ -1,0 +1,7 @@
+{"type":"session_meta","session_id":"sess-corrupt-001","cwd":"/home/user/broken","model":"o3","timestamp":"2026-04-30T11:00:00Z"}
+this is not valid json at all
+{"type":"event_msg","timestamp":"2026-04-30T11:00:01Z","payload":{"event":{"type":"user_message","content":"Hello"}}}
+{invalid json here
+{"type":"event_msg","timestamp":"2026-04-30T11:00:02Z","payload":{"event":{"type":"agent_message","content":"Hi there","phase":"final"}}}
+{"type":"unknown_type","timestamp":"2026-04-30T11:00:03Z"}
+{"type":"event_msg","timestamp":"2026-04-30T11:00:04Z","payload":{"event":{"type":"user_message","content":"Another message"}}}

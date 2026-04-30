@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"Hello from Claude Code"},"timestamp":"2026-04-30T10:00:00.000Z","uuid":"msg-001","sessionId":"sess-cc-001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi! How can I help?"}]},"timestamp":"2026-04-30T10:00:01.000Z","uuid":"msg-002","sessionId":"sess-cc-001","costUSD":0.001}

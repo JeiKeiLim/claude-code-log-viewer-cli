@@ -1,0 +1,12 @@
+{"type":"session_meta","session_id":"sess-full-001","cwd":"/home/user/fullproject","model":"o3","timestamp":"2026-04-30T09:00:00Z"}
+{"type":"event_msg","timestamp":"2026-04-30T09:00:01Z","payload":{"event":{"type":"user_message","content":"Run the test suite and fix any failures"}}}
+{"type":"event_msg","timestamp":"2026-04-30T09:00:02Z","payload":{"event":{"type":"agent_message","content":"Let me analyze the test failures first.","phase":"commentary"}}}
+{"type":"event_msg","timestamp":"2026-04-30T09:00:03Z","payload":{"event":{"type":"agent_message","content":"I found 3 failing tests. Let me fix them.","phase":"final"}}}
+{"type":"event_msg","timestamp":"2026-04-30T09:00:04Z","payload":{"event":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"output_tokens":800,"cached_tokens":200}}}}}
+{"type":"event_msg","timestamp":"2026-04-30T09:00:10Z","payload":{"event":{"type":"exec_command_begin","command":"go test ./..."}}}
+{"type":"event_msg","timestamp":"2026-04-30T09:00:15Z","payload":{"event":{"type":"exec_command_end","exit_code":0,"output":"PASS\nok  github.com/user/project  2.345s"}}}
+{"type":"token_count","timestamp":"2026-04-30T09:00:20Z","info":{"total_token_usage":{"input_tokens":3000,"output_tokens":1200,"cached_tokens":500}}}
+{"type":"exec_command_begin","timestamp":"2026-04-30T09:00:25Z","command":"go build -o bin/app ./cmd/app","call_id":"call-001"}
+{"type":"exec_command_end","timestamp":"2026-04-30T09:00:30Z","exit_code":0,"output":"","call_id":"call-001"}
+{"type":"event_msg","timestamp":"2026-04-30T09:00:35Z","payload":{"event":{"type":"user_message","content":"Great, now commit the changes"}}}
+{"type":"event_msg","timestamp":"2026-04-30T09:00:36Z","payload":{"event":{"type":"agent_message","content":"All tests pass now. Committing.","phase":"final"}}}
