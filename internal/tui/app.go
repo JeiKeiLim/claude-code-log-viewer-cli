@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/session"
@@ -29,6 +30,7 @@ const (
 	viewViewer
 	viewDashboard
 	viewSessionDashboard // Phase 5a: Multi-agent session dashboard
+	viewAgentSelector    // Agent selector entry point
 )
 
 // Usage refresh constants (Story 7.5)
@@ -55,6 +57,7 @@ type AppModel struct {
 	viewerModel           ViewerModel
 	dashboardModel        DashboardModel        // Dashboard view (Story 5.2)
 	sessionDashboardModel SessionDashboardModel // Session dashboard view (Phase 5a)
+	agentSelectorModel    AgentSelectorModel    // Agent selector entry point
 	selectedProject       types.Project
 	selectedConversation  types.Conversation
 	selectedProjects      []types.Project  // For dashboard view (Story 5.1)
@@ -64,6 +67,10 @@ type AppModel struct {
 	spinner               spinner.Model
 	loading               bool
 	tokenService          *token.Service
+
+	// Agent provider integration
+	usingProviders   bool                // True when initialized via NewAppModelWithProviders
+	selectedProvider agent.AgentProvider // Currently selected agent provider (nil for claude-code only mode)
 
 	// Usage monitoring (Story 7.4)
 	usageBar    *usage.UsageBarModel
@@ -121,6 +128,27 @@ func NewAppModel(projects []types.Project) AppModel {
 		tokenService: tokenSvc,
 		usageBar:     usage.NewUsageBarModel(newUsageBarStyles()),
 		usageClient:  usage.NewClient(),
+	}
+}
+
+// NewAppModelWithProviders creates an app model that starts with the agent selector.
+// The user picks a provider, then browses that provider's projects and sessions.
+func NewAppModelWithProviders(providers []agent.AgentProvider) AppModel {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = ListStyles.Loading
+
+	tokenSvc, _ := token.New()
+
+	return AppModel{
+		state:              viewAgentSelector,
+		agentSelectorModel: NewAgentSelectorModel(providers),
+		spinner:            s,
+		loading:            false,
+		tokenService:       tokenSvc,
+		usageBar:           usage.NewUsageBarModel(newUsageBarStyles()),
+		usageClient:        usage.NewClient(),
+		usingProviders:     true,
 	}
 }
 
@@ -236,6 +264,9 @@ func (m AppModel) Init() tea.Cmd {
 	// Request window size to properly initialize the list dimensions
 	// Add usage fetch on startup (Story 7.4 - async, non-blocking)
 	// Add periodic refresh scheduling (Story 7.5)
+	if m.state == viewAgentSelector {
+		return tea.Batch(m.agentSelectorModel.Init(), tea.WindowSize(), m.fetchUsage(), scheduleUsageTick())
+	}
 	if m.state == viewSessionDashboard {
 		// Phase 5a: Session dashboard mode - start session detection pipeline
 		return tea.Batch(m.sessionDashboardModel.Init(), tea.WindowSize(), m.fetchUsage(), scheduleUsageTick())
@@ -311,8 +342,44 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+	case AgentSelectedMsg:
+		// User selected an agent provider — discover projects and show project list.
+		m.selectedProvider = msg.Provider
+		agentProjects, err := msg.Provider.DiscoverProjects()
+		if err != nil || len(agentProjects) == 0 {
+			m.state = viewAgentSelector // Stay on selector
+			return m, nil
+		}
+		// Convert agent.Project → types.Project
+		projects := make([]types.Project, 0, len(agentProjects))
+		for _, ap := range agentProjects {
+			projects = append(projects, types.Project{
+				DecodedPath:       ap.Path,
+				DisplayName:       ap.DisplayName,
+				DirPath:           ap.Directory,
+				ConversationCount: ap.SessionCount,
+			})
+		}
+		viewHeight := m.height - UsageBarHeight
+		m.projectModel = NewProjectModelWithBack(projects)
+		m.projectModel.SetSize(m.width, viewHeight)
+		m.state = viewProjects
+		return m, nil
+
+	case BackToAgentSelectorMsg:
+		// User pressed esc/h in project list — return to agent selector.
+		m.selectedProvider = nil
+		m.state = viewAgentSelector
+		return m, nil
+
 	case ProjectSelectedMsg:
 		m.selectedProject = msg.Project
+
+		// When using agent providers, load sessions directly via the provider.
+		if m.usingProviders && m.selectedProvider != nil {
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.loadProviderSessions())
+		}
 
 		// When multi-session is disabled, skip the session dashboard and go
 		// directly to the conversation list (pre-Phase-5a behavior).
@@ -389,6 +456,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = true
 		m.selectedConversation = msg.Conversation
+		if m.usingProviders && m.selectedProvider != nil {
+			return m, tea.Batch(m.spinner.Tick, m.loadProviderSession())
+		}
 		return m, tea.Batch(m.spinner.Tick, m.loadConversation(msg.Conversation.FilePath))
 
 	case ConversationSelectedWithWatchMsg:
@@ -615,6 +685,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Route updates to current view
 	switch m.state {
+	case viewAgentSelector:
+		var cmd tea.Cmd
+		newModel, cmd := m.agentSelectorModel.Update(msg)
+		m.agentSelectorModel = newModel.(AgentSelectorModel)
+		return m, cmd
+
 	case viewProjects:
 		var cmd tea.Cmd
 		newModel, cmd := m.projectModel.Update(msg)
@@ -660,6 +736,8 @@ func (m AppModel) View() string {
 		contentView = m.loadingView()
 	} else {
 		switch m.state {
+		case viewAgentSelector:
+			contentView = m.agentSelectorModel.View()
 		case viewProjects:
 			contentView = m.projectModel.View()
 		case viewConversations:
@@ -816,6 +894,122 @@ func (m AppModel) loadConversations() tea.Cmd {
 			lazyEnabled:   true,
 			loadedCount:   min(batchSize, len(conversations)),
 		}
+	}
+}
+
+// loadProviderSessions loads sessions for the selected project using the agent provider.
+func (m AppModel) loadProviderSessions() tea.Cmd {
+	return func() tea.Msg {
+		agentProject := agent.Project{
+			Path:      m.selectedProject.DecodedPath,
+			Directory: m.selectedProject.DirPath,
+		}
+		sessions, err := m.selectedProvider.DiscoverSessions(agentProject)
+		if err != nil {
+			return conversationsLoadedMsg{err: err}
+		}
+		// Convert agent.Session → types.Conversation
+		conversations := make([]types.Conversation, 0, len(sessions))
+		for _, s := range sessions {
+			conversations = append(conversations, types.Conversation{
+				FilePath:         s.FilePath,
+				LastModified:     s.LastModified,
+				CreationTime:     s.CreatedAt,
+				MessageCount:     s.MessageCount,
+				FirstUserMessage: s.FirstUserMessage,
+				Model:            s.Model,
+			})
+		}
+		return conversationsLoadedMsg{
+			conversations: conversations,
+			lazyEnabled:   false,
+			loadedCount:   len(conversations),
+		}
+	}
+}
+
+// loadProviderSession loads a single session using the agent provider.
+func (m AppModel) loadProviderSession() tea.Cmd {
+	return func() tea.Msg {
+		session := agent.Session{FilePath: m.selectedConversation.FilePath}
+		convEntries, err := m.selectedProvider.ParseSession(session)
+		if err != nil {
+			return conversationLoadedMsg{err: err}
+		}
+		// Convert ConversationEntry → LogEntry
+		entries := make([]types.LogEntry, 0, len(convEntries))
+		for _, ce := range convEntries {
+			entries = append(entries, convertConversationEntryToLogEntry(ce))
+		}
+		return conversationLoadedMsg{
+			entries:  entries,
+			filePath: m.selectedConversation.FilePath,
+		}
+	}
+}
+
+// convertConversationEntryToLogEntry converts an agent.ConversationEntry to types.LogEntry.
+func convertConversationEntryToLogEntry(ce agent.ConversationEntry) types.LogEntry {
+	var entryType types.EntryType
+	switch ce.Type() {
+	case agent.EntryTypeUser:
+		entryType = types.EntryTypeUser
+	case agent.EntryTypeAssistant:
+		entryType = types.EntryTypeAssistant
+	default:
+		entryType = types.EntryType(ce.Type())
+	}
+
+	blocks := ce.ContentBlocks()
+	content := make([]types.MessageContent, 0, len(blocks))
+	var textContent string
+
+	for _, b := range blocks {
+		switch b.ContentType() {
+		case agent.ContentBlockText:
+			content = append(content, types.MessageContent{
+				Type: types.ContentTypeText,
+				Text: b.Text(),
+			})
+		case agent.ContentBlockThinking:
+			content = append(content, types.MessageContent{
+				Type:     types.ContentTypeThinking,
+				Thinking: b.Text(),
+			})
+		case agent.ContentBlockToolUse:
+			content = append(content, types.MessageContent{
+				Type:      types.ContentTypeToolUse,
+				ToolName:  b.ToolName(),
+				ToolInput: b.ToolInput(),
+			})
+		case agent.ContentBlockReasoning:
+			content = append(content, types.MessageContent{
+				Type: types.ContentTypeText,
+				Text: b.Text(),
+			})
+		}
+	}
+
+	if ce.Type() == agent.EntryTypeUser && len(content) == 1 && content[0].Type == types.ContentTypeText {
+		textContent = content[0].Text
+	}
+
+	tokens := ce.TokenUsage()
+
+	return types.LogEntry{
+		Type:      entryType,
+		Timestamp: ce.Timestamp(),
+		SessionID: ce.SessionID(),
+		Message: types.Message{
+			Role:        ce.Role(),
+			Content:     content,
+			TextContent: textContent,
+		},
+		Usage: types.TokenUsage{
+			InputTokens:              tokens.InputTokens,
+			OutputTokens:             tokens.OutputTokens,
+			CacheCreationInputTokens: tokens.CachedTokens,
+		},
 	}
 }
 
