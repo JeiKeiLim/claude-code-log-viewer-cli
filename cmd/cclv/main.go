@@ -18,9 +18,12 @@ import (
 	"github.com/muesli/termenv"
 	"golang.org/x/term"
 
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
+	codex "github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/codex"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/tui"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/usage"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
@@ -42,6 +45,7 @@ USAGE:
 OPTIONS:
   --plain           Output plain text without TUI (for piping)
   --tui             Force interactive TUI mode even when piped
+  --agent=TYPE      Agent format: claude-code, codex, opencode (default: auto-detect)
   --color=MODE      Color mode: auto (default), always, never
   --hide-thoughts   Hide Claude's thinking blocks
   --hide-tools      Hide tool use/result blocks
@@ -128,6 +132,7 @@ func main() {
 	// Parse command-line flags
 	plainFlag := flag.Bool("plain", false, "Output plain text without TUI")
 	tuiFlag := flag.Bool("tui", false, "Force TUI mode even when stdout is piped")
+	agentFlag := flag.String("agent", "", "Agent format override: claude-code, codex, opencode (default: auto-detect)")
 	colorFlag := flag.String("color", "auto", "Color output: auto, always, never")
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
 	versionShortFlag := flag.Bool("v", false, "Print version information and exit (shorthand)")
@@ -143,6 +148,9 @@ func main() {
 	usageFlag := flag.Bool("usage", false, "Print usage limits and exit")
 	usageShortFlag := flag.Bool("u", false, "Print usage limits and exit (shorthand)")
 	flag.Parse()
+
+	// Validate --agent flag value
+	agentOverride := parseAgentFlag(*agentFlag)
 
 	// Combine watch flags
 	watchMode := *watchFlag || *watchShortFlag || *liveFlag
@@ -242,7 +250,7 @@ func main() {
 	}
 
 	// Pipeline/file mode with determined output mode
-	if err := runPipelineMode(args, mode, opts); err != nil {
+	if err := runPipelineMode(args, mode, opts, agentOverride); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
