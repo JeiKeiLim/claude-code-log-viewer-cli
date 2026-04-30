@@ -97,6 +97,41 @@ func TestNewAgentSelectorModel_HidesUnavailable(t *testing.T) {
 	}
 }
 
+func TestNewAgentSelectorModel_HidesZeroSessions(t *testing.T) {
+	p1 := availableProvider("Claude Code", agent.AgentClaudeCode, "[C]", 2, 1)
+	p2 := availableProvider("Codex", agent.AgentCodex, "[X]", 1, 0) // has projects but zero sessions
+
+	m := NewAgentSelectorModel([]agent.AgentProvider{p1, p2})
+
+	if len(m.VisibleProviders()) != 1 {
+		t.Errorf("expected 1 visible provider (zero-session provider hidden), got %d", len(m.VisibleProviders()))
+	}
+	if m.VisibleProviders()[0].provider.DisplayName() != "Claude Code" {
+		t.Errorf("expected Claude Code visible, got %s", m.VisibleProviders()[0].provider.DisplayName())
+	}
+}
+
+func TestNewAgentSelectorModel_SingleProviderSkipsWhenOthersHaveNoSessions(t *testing.T) {
+	p1 := availableProvider("Claude Code", agent.AgentClaudeCode, "[C]", 1, 3)
+	p2 := availableProvider("Codex", agent.AgentCodex, "[X]", 2, 0) // projects but no sessions
+
+	m := NewAgentSelectorModel([]agent.AgentProvider{p1, p2})
+
+	// Only Claude Code has sessions → single provider shortcut should fire
+	if sp := m.SingleProvider(); sp == nil {
+		t.Error("expected single provider shortcut with one session-bearing provider")
+	}
+	cmd := m.Init()
+	msg := cmd()
+	selected, ok := msg.(AgentSelectedMsg)
+	if !ok {
+		t.Fatalf("expected AgentSelectedMsg, got %T", msg)
+	}
+	if selected.Provider.DisplayName() != "Claude Code" {
+		t.Errorf("expected Claude Code, got %s", selected.Provider.DisplayName())
+	}
+}
+
 func TestNewAgentSelectorModel_HidesDiscoverProjectsError(t *testing.T) {
 	p1 := availableProvider("Claude Code", agent.AgentClaudeCode, "[C]", 1, 1)
 	p2 := &mockProvider{

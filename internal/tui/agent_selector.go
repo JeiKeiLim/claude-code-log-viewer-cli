@@ -103,6 +103,10 @@ func (m *AgentSelectorModel) refreshVisible() {
 				}
 			}
 		}
+		// Hide agents with zero sessions per spec requirement.
+		if info.sessions == 0 {
+			continue
+		}
 		if !latest.IsZero() {
 			info.lastActive = formatRelativeTime(latest)
 		} else {
