@@ -1135,3 +1135,394 @@ func TestParseExecCommandMixedWithAndWithoutCallID(t *testing.T) {
 		t.Fatalf("len(Entries) = %d, want 2", len(result.Entries))
 	}
 }
+
+// --- Real Codex CLI v0.116.0+ format tests ---
+
+func TestParseRealV116Session(t *testing.T) {
+	data, err := os.ReadFile(fixturePath("real-v116-session.jsonl"))
+	if err != nil {
+		t.Fatalf("failed to read fixture: %v", err)
+	}
+
+	result, err := ParseCodexJSONL(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+
+	if result.SessionID != "019a6ba6-9fd8-71d1-bcf7-1e3286abc131" {
+		t.Errorf("SessionID = %q, want %q", result.SessionID, "019a6ba6-9fd8-71d1-bcf7-1e3286abc131")
+	}
+	if result.CWD != "/Users/dev/project" {
+		t.Errorf("CWD = %q, want %q", result.CWD, "/Users/dev/project")
+	}
+	if result.ParseErrors != 0 {
+		t.Errorf("ParseErrors = %d, want 0", result.ParseErrors)
+	}
+
+	// Expected entries (9 total):
+	// 0. response_item user (env context)
+	// 1. response_item user "Fix the login bug"
+	// 2. event_msg flat user_message "Fix the login bug"
+	// 3. event_msg flat agent_message commentary "I'll investigate..."
+	// 4. response_item assistant "I'll investigate the login bug."
+	// 5. response_item function_call/output -> tool_use (exec_command)
+	// 6. event_msg flat agent_message final "The login function..."
+	// 7. response_item assistant "The login function..."
+	// 8. response_item function_call/output -> tool_use (exec_command)
+	if len(result.Entries) != 9 {
+		t.Fatalf("len(Entries) = %d, want 9", len(result.Entries))
+	}
+
+	// Entry 1: response_item user "Fix the login bug"
+	e1 := result.Entries[1]
+	if e1.Type() != agent.EntryTypeUser {
+		t.Errorf("entry[1] Type() = %q, want %q", e1.Type(), agent.EntryTypeUser)
+	}
+	blocks1 := e1.ContentBlocks()
+	if len(blocks1) != 1 || blocks1[0].Text() != "Fix the login bug" {
+		t.Errorf("entry[1] text = %q, want %q", blocks1[0].Text(), "Fix the login bug")
+	}
+
+	// Entry 2: event_msg flat user_message "Fix the login bug"
+	e2 := result.Entries[2]
+	if e2.Type() != agent.EntryTypeUser {
+		t.Errorf("entry[2] Type() = %q, want %q", e2.Type(), agent.EntryTypeUser)
+	}
+	blocks2 := e2.ContentBlocks()
+	if len(blocks2) != 1 || blocks2[0].Text() != "Fix the login bug" {
+		t.Errorf("entry[2] text = %q, want %q", blocks2[0].Text(), "Fix the login bug")
+	}
+
+	// Entry 3: event_msg flat agent_message commentary
+	e3 := result.Entries[3]
+	if e3.Type() != agent.EntryTypeAssistant {
+		t.Errorf("entry[3] Type() = %q, want %q", e3.Type(), agent.EntryTypeAssistant)
+	}
+	blocks3 := e3.ContentBlocks()
+	if blocks3[0].ContentType() != agent.ContentBlockCommentary {
+		t.Errorf("entry[3] ContentType() = %q, want %q", blocks3[0].ContentType(), agent.ContentBlockCommentary)
+	}
+	if blocks3[0].Phase() != "commentary" {
+		t.Errorf("entry[3] Phase() = %q, want %q", blocks3[0].Phase(), "commentary")
+	}
+
+	// Entry 5: tool_use from response_item function_call/output pair
+	e5 := result.Entries[5]
+	if e5.Type() != agent.EntryTypeAssistant {
+		t.Errorf("entry[5] Type() = %q, want %q", e5.Type(), agent.EntryTypeAssistant)
+	}
+	blocks5 := e5.ContentBlocks()
+	if len(blocks5) != 1 {
+		t.Fatalf("entry[5] ContentBlocks() len = %d, want 1", len(blocks5))
+	}
+	if blocks5[0].ContentType() != agent.ContentBlockToolUse {
+		t.Errorf("entry[5] ContentType() = %q, want %q", blocks5[0].ContentType(), agent.ContentBlockToolUse)
+	}
+	if blocks5[0].ToolName() != "exec_command" {
+		t.Errorf("entry[5] ToolName() = %q, want %q", blocks5[0].ToolName(), "exec_command")
+	}
+	if blocks5[0].ToolOutput() == "" {
+		t.Error("entry[5] ToolOutput() is empty, want non-empty output")
+	}
+
+	// Entry 6: event_msg flat agent_message final
+	e6 := result.Entries[6]
+	blocks6 := e6.ContentBlocks()
+	if blocks6[0].Phase() != "final" {
+		t.Errorf("entry[6] Phase() = %q, want %q", blocks6[0].Phase(), "final")
+	}
+	if blocks6[0].Text() != "The login function always returns false. Here is the fix." {
+		t.Errorf("entry[6] text = %q, want %q", blocks6[0].Text(), "The login function always returns false. Here is the fix.")
+	}
+
+	// Entry 8: second tool_use
+	e8 := result.Entries[8]
+	blocks8 := e8.ContentBlocks()
+	if blocks8[0].ContentType() != agent.ContentBlockToolUse {
+		t.Errorf("entry[8] ContentType() = %q, want %q", blocks8[0].ContentType(), agent.ContentBlockToolUse)
+	}
+
+	// Check token accumulation:
+	// First token_count: info=null -> no tokens
+	// Second: input=5000, cached_input=3000, output=200
+	// Third: input=8000, cached_input=6000, output=400
+	// Total: input=13000, cached=9000, output=600
+	if result.Tokens.InputTokens != 13000 {
+		t.Errorf("Tokens.InputTokens = %d, want 13000", result.Tokens.InputTokens)
+	}
+	if result.Tokens.OutputTokens != 600 {
+		t.Errorf("Tokens.OutputTokens = %d, want 600", result.Tokens.OutputTokens)
+	}
+	if result.Tokens.CachedTokens != 9000 {
+		t.Errorf("Tokens.CachedTokens = %d, want 9000", result.Tokens.CachedTokens)
+	}
+}
+
+func TestParseFlatEventMsgUserMessage(t *testing.T) {
+	input := `{"type":"event_msg","timestamp":"2026-04-30T12:00:00Z","payload":{"type":"user_message","message":"Hello from flat format"}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1", len(result.Entries))
+	}
+	e := result.Entries[0]
+	if e.Type() != agent.EntryTypeUser {
+		t.Errorf("Type() = %q, want %q", e.Type(), agent.EntryTypeUser)
+	}
+	if e.Role() != "user" {
+		t.Errorf("Role() = %q, want %q", e.Role(), "user")
+	}
+	blocks := e.ContentBlocks()
+	if len(blocks) != 1 || blocks[0].Text() != "Hello from flat format" {
+		t.Errorf("text = %q, want %q", blocks[0].Text(), "Hello from flat format")
+	}
+}
+
+func TestParseFlatEventMsgAgentMessage(t *testing.T) {
+	input := `{"type":"event_msg","timestamp":"2026-04-30T12:01:00Z","payload":{"type":"agent_message","message":"I'll do that now.","phase":"commentary"}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1", len(result.Entries))
+	}
+	e := result.Entries[0]
+	if e.Type() != agent.EntryTypeAssistant {
+		t.Errorf("Type() = %q, want %q", e.Type(), agent.EntryTypeAssistant)
+	}
+	blocks := e.ContentBlocks()
+	if blocks[0].ContentType() != agent.ContentBlockCommentary {
+		t.Errorf("ContentType() = %q, want %q", blocks[0].ContentType(), agent.ContentBlockCommentary)
+	}
+	if blocks[0].Text() != "I'll do that now." {
+		t.Errorf("text = %q, want %q", blocks[0].Text(), "I'll do that now.")
+	}
+}
+
+func TestParseFlatEventMsgTokenCount(t *testing.T) {
+	input := `{"type":"event_msg","timestamp":"2026-04-30T12:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5000,"cached_input_tokens":3000,"output_tokens":200,"total_tokens":5250}}}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if result.Tokens.InputTokens != 5000 {
+		t.Errorf("Tokens.InputTokens = %d, want 5000", result.Tokens.InputTokens)
+	}
+	if result.Tokens.OutputTokens != 200 {
+		t.Errorf("Tokens.OutputTokens = %d, want 200", result.Tokens.OutputTokens)
+	}
+	if result.Tokens.CachedTokens != 3000 {
+		t.Errorf("Tokens.CachedTokens = %d, want 3000 (from cached_input_tokens)", result.Tokens.CachedTokens)
+	}
+}
+
+func TestParseFlatEventMsgNullInfoTokenCount(t *testing.T) {
+	input := `{"type":"event_msg","timestamp":"2026-04-30T12:00:00Z","payload":{"type":"token_count","info":null}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if result.Tokens.InputTokens != 0 {
+		t.Errorf("Tokens.InputTokens = %d, want 0 (null info)", result.Tokens.InputTokens)
+	}
+	if result.ParseErrors != 0 {
+		t.Errorf("ParseErrors = %d, want 0 (null info is valid)", result.ParseErrors)
+	}
+}
+
+func TestParseResponseItemUserMessage(t *testing.T) {
+	input := `{"type":"response_item","timestamp":"2026-04-30T10:00:02Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Build the project"}]}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1", len(result.Entries))
+	}
+	e := result.Entries[0]
+	if e.Type() != agent.EntryTypeUser {
+		t.Errorf("Type() = %q, want %q", e.Type(), agent.EntryTypeUser)
+	}
+	if e.Role() != "user" {
+		t.Errorf("Role() = %q, want %q", e.Role(), "user")
+	}
+	blocks := e.ContentBlocks()
+	if len(blocks) != 1 || blocks[0].Text() != "Build the project" {
+		t.Errorf("text = %q, want %q", blocks[0].Text(), "Build the project")
+	}
+}
+
+func TestParseResponseItemAssistantMessage(t *testing.T) {
+	input := `{"type":"response_item","timestamp":"2026-04-30T10:00:04Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done!"}]}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1", len(result.Entries))
+	}
+	e := result.Entries[0]
+	if e.Type() != agent.EntryTypeAssistant {
+		t.Errorf("Type() = %q, want %q", e.Type(), agent.EntryTypeAssistant)
+	}
+	blocks := e.ContentBlocks()
+	if blocks[0].Text() != "Done!" {
+		t.Errorf("text = %q, want %q", blocks[0].Text(), "Done!")
+	}
+}
+
+func TestParseResponseItemDeveloperMessageSkipped(t *testing.T) {
+	input := `{"type":"response_item","timestamp":"2026-04-30T10:00:01Z","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"System prompt"}]}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 0 {
+		t.Errorf("len(Entries) = %d, want 0 (developer messages skipped)", len(result.Entries))
+	}
+}
+
+func TestParseResponseItemFunctionCallPair(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString(`{"type":"response_item","timestamp":"2026-04-30T10:00:04Z","payload":{"type":"function_call","name":"exec_command","call_id":"call_abc","arguments":"{\"cmd\":\"ls\"}"}}` + "\n")
+	sb.WriteString(`{"type":"response_item","timestamp":"2026-04-30T10:00:05Z","payload":{"type":"function_call_output","call_id":"call_abc","output":"file.go\nmain.go"}}` + "\n")
+
+	result, err := ParseCodexJSONL(strings.NewReader(sb.String()))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1", len(result.Entries))
+	}
+
+	e := result.Entries[0]
+	blocks := e.ContentBlocks()
+	if len(blocks) != 1 {
+		t.Fatalf("ContentBlocks() len = %d, want 1", len(blocks))
+	}
+	if blocks[0].ContentType() != agent.ContentBlockToolUse {
+		t.Errorf("ContentType() = %q, want %q", blocks[0].ContentType(), agent.ContentBlockToolUse)
+	}
+	if blocks[0].ToolName() != "exec_command" {
+		t.Errorf("ToolName() = %q, want %q", blocks[0].ToolName(), "exec_command")
+	}
+	if blocks[0].ToolOutput() != "file.go\nmain.go" {
+		t.Errorf("ToolOutput() = %q, want %q", blocks[0].ToolOutput(), "file.go\nmain.go")
+	}
+}
+
+func TestParseResponseItemFunctionCallPendingFlush(t *testing.T) {
+	input := `{"type":"response_item","timestamp":"2026-04-30T10:00:04Z","payload":{"type":"function_call","name":"exec_command","call_id":"call_pending","arguments":"{\"cmd\":\"sleep 10\"}"}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1 (pending flushed)", len(result.Entries))
+	}
+	blocks := result.Entries[0].ContentBlocks()
+	if blocks[0].ToolOutput() != "" {
+		t.Errorf("ToolOutput() = %q, want empty (no output received)", blocks[0].ToolOutput())
+	}
+}
+
+func TestParseResponseItemReasoningSkipped(t *testing.T) {
+	input := `{"type":"response_item","timestamp":"2026-04-30T10:00:03Z","payload":{"type":"reasoning","summary":[]}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 0 {
+		t.Errorf("len(Entries) = %d, want 0 (reasoning skipped)", len(result.Entries))
+	}
+}
+
+func TestParseTurnContextIgnored(t *testing.T) {
+	input := `{"timestamp":"2026-04-30T10:00:02Z","type":"turn_context","payload":{"turn_id":"turn-1"}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 0 {
+		t.Errorf("len(Entries) = %d, want 0 (turn_context is unknown type)", len(result.Entries))
+	}
+	if result.ParseErrors != 0 {
+		t.Errorf("ParseErrors = %d, want 0 (unknown types silently skipped)", result.ParseErrors)
+	}
+}
+
+func TestParseMixedFlatAndNestedFormats(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString(`{"type":"event_msg","timestamp":"2026-04-30T10:00:00Z","payload":{"type":"user_message","message":"flat user"}}` + "\n")
+	sb.WriteString(`{"type":"event_msg","timestamp":"2026-04-30T10:00:01Z","payload":{"event":{"type":"user_message","content":"nested user"}}}` + "\n")
+	sb.WriteString(`{"type":"event_msg","timestamp":"2026-04-30T10:00:02Z","payload":{"type":"agent_message","message":"flat agent","phase":"final"}}` + "\n")
+	sb.WriteString(`{"type":"event_msg","timestamp":"2026-04-30T10:00:03Z","payload":{"event":{"type":"agent_message","content":"nested agent","phase":"commentary"}}}` + "\n")
+
+	result, err := ParseCodexJSONL(strings.NewReader(sb.String()))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 4 {
+		t.Fatalf("len(Entries) = %d, want 4", len(result.Entries))
+	}
+
+	if result.Entries[0].ContentBlocks()[0].Text() != "flat user" {
+		t.Errorf("entry[0] text = %q, want %q", result.Entries[0].ContentBlocks()[0].Text(), "flat user")
+	}
+	if result.Entries[1].ContentBlocks()[0].Text() != "nested user" {
+		t.Errorf("entry[1] text = %q, want %q", result.Entries[1].ContentBlocks()[0].Text(), "nested user")
+	}
+	if result.Entries[2].ContentBlocks()[0].Text() != "flat agent" {
+		t.Errorf("entry[2] text = %q, want %q", result.Entries[2].ContentBlocks()[0].Text(), "flat agent")
+	}
+	if result.Entries[2].ContentBlocks()[0].Phase() != "final" {
+		t.Errorf("entry[2] Phase() = %q, want %q", result.Entries[2].ContentBlocks()[0].Phase(), "final")
+	}
+	if result.Entries[3].ContentBlocks()[0].Text() != "nested agent" {
+		t.Errorf("entry[3] text = %q, want %q", result.Entries[3].ContentBlocks()[0].Text(), "nested agent")
+	}
+	if result.Entries[3].ContentBlocks()[0].ContentType() != agent.ContentBlockCommentary {
+		t.Errorf("entry[3] ContentType() = %q, want %q", result.Entries[3].ContentBlocks()[0].ContentType(), agent.ContentBlockCommentary)
+	}
+}
+
+func TestParseCachedInputTokensField(t *testing.T) {
+	input := `{"type":"token_count","timestamp":"2026-04-30T12:00:00Z","info":{"total_token_usage":{"input_tokens":12084,"cached_input_tokens":9472,"output_tokens":320,"total_tokens":12404}}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if result.Tokens.InputTokens != 12084 {
+		t.Errorf("Tokens.InputTokens = %d, want 12084", result.Tokens.InputTokens)
+	}
+	if result.Tokens.CachedTokens != 9472 {
+		t.Errorf("Tokens.CachedTokens = %d, want 9472 (from cached_input_tokens)", result.Tokens.CachedTokens)
+	}
+	if result.Tokens.OutputTokens != 320 {
+		t.Errorf("Tokens.OutputTokens = %d, want 320", result.Tokens.OutputTokens)
+	}
+}
+
+func TestParseResponseItemMultipleContentBlocks(t *testing.T) {
+	input := `{"type":"response_item","timestamp":"2026-04-30T10:00:04Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"First part. "},{"type":"output_text","text":"Second part."}]}}` + "\n"
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1", len(result.Entries))
+	}
+	blocks := result.Entries[0].ContentBlocks()
+	if len(blocks) != 2 {
+		t.Fatalf("len(ContentBlocks) = %d, want 2", len(blocks))
+	}
+	if blocks[0].Text() != "First part. " {
+		t.Errorf("blocks[0].Text() = %q, want %q", blocks[0].Text(), "First part. ")
+	}
+	if blocks[1].Text() != "Second part." {
+		t.Errorf("blocks[1].Text() = %q, want %q", blocks[1].Text(), "Second part.")
+	}
+}
