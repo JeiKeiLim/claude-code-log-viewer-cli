@@ -539,3 +539,203 @@ func TestConvertTokenUsage_Zero(t *testing.T) {
 		t.Error("zero TokenUsage should convert to zero TokenStats")
 	}
 }
+
+// --- DiscoverProjects integration tests ---
+
+func TestDiscoverProjects(t *testing.T) {
+	// Build a temp HOME with .claude/projects/ containing two project dirs,
+	// each with JSONL session files.
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	projectsBase := filepath.Join(tmpDir, ".claude", "projects")
+	projA := filepath.Join(projectsBase, "-tmp-projA")
+	projB := filepath.Join(projectsBase, "-tmp-projB")
+	for _, d := range []string{projA, projB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+		// Place a JSONL session file so ConversationCount > 0
+		if err := os.WriteFile(filepath.Join(d, "session1.jsonl"), []byte("{}\n"), 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+	}
+
+	p := &ClaudeCodeProvider{}
+	projects, err := p.DiscoverProjects()
+	if err != nil {
+		t.Fatalf("DiscoverProjects() error: %v", err)
+	}
+	if len(projects) != 2 {
+		t.Fatalf("DiscoverProjects() returned %d projects, want 2", len(projects))
+	}
+
+	// Verify projects are mapped correctly with agent type and session count
+	for _, proj := range projects {
+		if proj.AgentType != agent.AgentClaudeCode {
+			t.Errorf("AgentType = %q, want %q", proj.AgentType, agent.AgentClaudeCode)
+		}
+		if proj.SessionCount != 1 {
+			t.Errorf("SessionCount = %d, want 1 for %s", proj.SessionCount, proj.DisplayName)
+		}
+	}
+}
+
+func TestDiscoverProjects_NoProjectsDir(t *testing.T) {
+	// HOME with no .claude/projects/ should return an error.
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	p := &ClaudeCodeProvider{}
+	_, err := p.DiscoverProjects()
+	if err == nil {
+		t.Fatal("DiscoverProjects() should return error when projects dir missing")
+	}
+}
+
+// --- DiscoverSessions integration tests ---
+
+func TestDiscoverSessions(t *testing.T) {
+	// Create a temp project directory with JSONL session files.
+	tmpDir := t.TempDir()
+
+	sessionContent := `{"type":"user","uuid":"u1","sessionId":"s1","timestamp":"2026-04-30T10:00:00Z","message":{"role":"user","content":"Hello"}}
+`
+	for _, name := range []string{"aaa.jsonl", "bbb.jsonl"} {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(sessionContent), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	p := &ClaudeCodeProvider{}
+	project := agent.Project{
+		Path:      "/tmp/proj",
+		Directory: tmpDir,
+	}
+	sessions, err := p.DiscoverSessions(project)
+	if err != nil {
+		t.Fatalf("DiscoverSessions() error: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("DiscoverSessions() returned %d sessions, want 2", len(sessions))
+	}
+
+	// Each session should have agent type set and a non-empty ID (filename stem)
+	for _, s := range sessions {
+		if s.AgentType != agent.AgentClaudeCode {
+			t.Errorf("AgentType = %q, want %q", s.AgentType, agent.AgentClaudeCode)
+		}
+		if s.ID == "" {
+			t.Error("Session ID should not be empty (derived from filename)")
+		}
+		if s.FilePath == "" {
+			t.Error("Session FilePath should not be empty")
+		}
+	}
+}
+
+func TestDiscoverSessions_EmptyDirectory(t *testing.T) {
+	// Project directory with no JSONL files returns empty slice.
+	tmpDir := t.TempDir()
+
+	p := &ClaudeCodeProvider{}
+	project := agent.Project{
+		Path:      "/tmp/empty",
+		Directory: tmpDir,
+	}
+	sessions, err := p.DiscoverSessions(project)
+	if err != nil {
+		t.Fatalf("DiscoverSessions() error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Errorf("DiscoverSessions() returned %d sessions, want 0 for empty dir", len(sessions))
+	}
+}
+
+func TestDiscoverSessions_FallbackToPath(t *testing.T) {
+	// When Directory is empty, DiscoverSessions should fall back to Path.
+	tmpDir := t.TempDir()
+
+	// Write a session file
+	if err := os.WriteFile(filepath.Join(tmpDir, "only.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	p := &ClaudeCodeProvider{}
+	project := agent.Project{
+		Path:      tmpDir,
+		Directory: "", // empty — should fall back to Path
+	}
+	sessions, err := p.DiscoverSessions(project)
+	if err != nil {
+		t.Fatalf("DiscoverSessions() error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("DiscoverSessions() returned %d sessions, want 1", len(sessions))
+	}
+	if sessions[0].ID != "only" {
+		t.Errorf("Session ID = %q, want %q", sessions[0].ID, "only")
+	}
+}
+
+// --- Edge case tests for adapter conversion functions ---
+
+func TestConvertConversation_EmptyFilePath(t *testing.T) {
+	// When FilePath is empty, ID should be empty (not crash).
+	input := types.Conversation{
+		FilePath: "",
+	}
+	got := convertConversation(input, "/some/project")
+
+	if got.ID != "" {
+		t.Errorf("ID = %q, want empty string for empty FilePath", got.ID)
+	}
+	if got.FilePath != "" {
+		t.Errorf("FilePath = %q, want empty string", got.FilePath)
+	}
+}
+
+func TestConvertContentBlock_UnknownType(t *testing.T) {
+	// Unknown content block type should fall back to text with the raw Text field.
+	input := types.MessageContent{
+		Type: "image_block", // not text/thinking/tool_use
+		Text: "some fallback text",
+	}
+
+	got := convertContentBlock(input)
+	if got.ContentType() != agent.ContentBlockText {
+		t.Errorf("ContentType() = %q, want %q (fallback to text)", got.ContentType(), agent.ContentBlockText)
+	}
+	if got.Text() != "some fallback text" {
+		t.Errorf("Text() = %q, want %q", got.Text(), "some fallback text")
+	}
+}
+
+func TestConvertLogEntry_UnknownType(t *testing.T) {
+	// Unknown entry type should pass through as agent.EntryType raw value.
+	ts := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	input := types.LogEntry{
+		Type:      "system", // not user or assistant
+		UUID:      "uuid-x",
+		SessionID: "sess-x",
+		Timestamp: ts,
+		Message: types.Message{
+			Role:        "system",
+			TextContent: "system notice",
+		},
+	}
+
+	got := convertLogEntry(input)
+	if got.Type() != agent.EntryType("system") {
+		t.Errorf("Type() = %q, want %q (passthrough)", got.Type(), "system")
+	}
+	if got.Role() != "system" {
+		t.Errorf("Role() = %q, want %q", got.Role(), "system")
+	}
+	if got.AgentType() != agent.AgentClaudeCode {
+		t.Errorf("AgentType() = %q, want %q", got.AgentType(), agent.AgentClaudeCode)
+	}
+	if got.SessionID() != "sess-x" {
+		t.Errorf("SessionID() = %q, want %q", got.SessionID(), "sess-x")
+	}
+}
