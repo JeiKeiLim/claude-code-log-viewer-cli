@@ -492,23 +492,55 @@ func runStreamingPlainMode(filePath string, opts tui.RenderOptions, agentOverrid
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// 4. Event loop using watcher's exported method
+	// 4. Event loop using format-appropriate reading
+	if detectedFormat == agent.AgentClaudeCode {
+		// Claude Code: use ReadNewEntries which parses JSONL directly
+		for {
+			select {
+			case <-sigChan:
+				signal.Stop(sigChan)
+				return nil
+			default:
+				newEntries, err := w.ReadNewEntries()
+				if err != nil {
+					if errors.Is(err, watcher.ErrFileTruncated) {
+						continue
+					}
+					return err
+				}
+				for _, entry := range newEntries {
+					fmt.Print(tui.RenderEntryPlain(entry, opts))
+					_ = os.Stdout.Sync()
+				}
+				time.Sleep(streamingPollInterval)
+			}
+		}
+	}
+
+	// Non-Claude-Code formats: read raw bytes, parse with provider
+	provider := selectProvider(detectedFormat)
 	for {
 		select {
 		case <-sigChan:
 			signal.Stop(sigChan)
-			return nil // Clean exit
+			return nil
 		default:
-			newEntries, err := w.ReadNewEntries()
+			rawBytes, err := w.ReadNewRawBytes()
 			if err != nil {
 				if errors.Is(err, watcher.ErrFileTruncated) {
 					continue
 				}
 				return err
 			}
-			for _, entry := range newEntries {
-				fmt.Print(tui.RenderEntryPlain(entry, opts))
-				_ = os.Stdout.Sync()
+			if len(rawBytes) > 0 {
+				convEntries, parseErr := provider.ParseSessionStream(bytes.NewReader(rawBytes))
+				if parseErr == nil {
+					entries := convertConversationEntries(convEntries)
+					for _, entry := range entries {
+						fmt.Print(tui.RenderEntryPlain(entry, opts))
+					}
+					_ = os.Stdout.Sync()
+				}
 			}
 			time.Sleep(streamingPollInterval)
 		}

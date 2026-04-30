@@ -774,3 +774,129 @@ func TestStressFDCountStability(t *testing.T) {
 			delta, baselineFD, finalFD)
 	}
 }
+
+// --- ReadNewRawBytes tests ---
+
+// TestReadNewRawBytesNoNewData returns nil when no new data is available.
+func TestReadNewRawBytesNoNewData(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+	initial := "line1\n"
+	if err := os.WriteFile(testFile, []byte(initial), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	raw, err := w.ReadNewRawBytes()
+	if err != nil {
+		t.Fatalf("ReadNewRawBytes() error: %v", err)
+	}
+	if raw != nil {
+		t.Errorf("ReadNewRawBytes() = %q, want nil when no new data", string(raw))
+	}
+}
+
+// TestReadNewRawBytesReadsAppendedData reads raw bytes appended after creation.
+func TestReadNewRawBytesReadsAppendedData(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+	initial := "line1\n"
+	if err := os.WriteFile(testFile, []byte(initial), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	appended := "line2\nline3\n"
+	f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open for append: %v", err)
+	}
+	_, _ = f.WriteString(appended)
+	_ = f.Close()
+
+	raw, err := w.ReadNewRawBytes()
+	if err != nil {
+		t.Fatalf("ReadNewRawBytes() error: %v", err)
+	}
+	if string(raw) != appended {
+		t.Errorf("ReadNewRawBytes() = %q, want %q", string(raw), appended)
+	}
+
+	// Second read should return nil (no new data)
+	raw2, err := w.ReadNewRawBytes()
+	if err != nil {
+		t.Fatalf("second ReadNewRawBytes() error: %v", err)
+	}
+	if raw2 != nil {
+		t.Errorf("second ReadNewRawBytes() = %q, want nil", string(raw2))
+	}
+}
+
+// TestReadNewRawBytesTruncation detects file truncation.
+func TestReadNewRawBytesTruncation(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+	if err := os.WriteFile(testFile, []byte("initial content that is long\n"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Truncate file to smaller size
+	if err := os.WriteFile(testFile, []byte("short\n"), 0644); err != nil {
+		t.Fatalf("failed to truncate: %v", err)
+	}
+
+	_, err = w.ReadNewRawBytes()
+	if !errors.Is(err, ErrFileTruncated) {
+		t.Errorf("ReadNewRawBytes() error = %v, want ErrFileTruncated", err)
+	}
+}
+
+// TestLastPosition returns the current file offset.
+func TestLastPosition(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+	initial := "hello world\n"
+	if err := os.WriteFile(testFile, []byte(initial), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	pos := w.LastPosition()
+	if pos != int64(len(initial)) {
+		t.Errorf("LastPosition() = %d, want %d", pos, len(initial))
+	}
+
+	// Append data and read it
+	appended := "new data\n"
+	f, _ := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	_, _ = f.WriteString(appended)
+	_ = f.Close()
+
+	_, _ = w.ReadNewRawBytes()
+	pos = w.LastPosition()
+	expected := int64(len(initial) + len(appended))
+	if pos != expected {
+		t.Errorf("LastPosition() after read = %d, want %d", pos, expected)
+	}
+}

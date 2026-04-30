@@ -14,6 +14,7 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/codex"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/opencode"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/tui"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
 )
 
 func TestValidateWidth(t *testing.T) {
@@ -651,5 +652,96 @@ func TestPrintHelpFollowLatestFlag(t *testing.T) {
 
 	if !strings.Contains(output, "Toggle follow-latest") {
 		t.Error("help output should document 'L' key toggle for follow-latest in keyboard shortcuts")
+	}
+}
+
+// TestStreamingCodexIncrementalRead verifies that the Codex format's incremental
+// streaming loop reads new raw bytes and parses them with the provider,
+// producing renderable LogEntry entries.
+func TestStreamingCodexIncrementalRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	initialContent := `{"type":"session_meta","timestamp":"2026-04-30T10:00:00Z","payload":{"id":"sess-inc","cwd":"/proj","model":"o3"}}
+{"type":"event_msg","timestamp":"2026-04-30T10:00:01Z","payload":{"event":{"type":"user_message","content":"First message"}}}
+`
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Parse initial content to get end position (simulating runStreamingPlainMode)
+	absPath, _ := filepath.Abs(testFile)
+	file, err := os.Open(absPath)
+	if err != nil {
+		t.Fatalf("failed to open: %v", err)
+	}
+
+	detected, newReader, detectErr := detectFormatFromReader(file)
+	if detectErr != nil {
+		_ = file.Close()
+		t.Fatalf("detectFormatFromReader error: %v", detectErr)
+	}
+	if detected != agent.AgentCodex {
+		_ = file.Close()
+		t.Fatalf("detected = %q, want %q", detected, agent.AgentCodex)
+	}
+
+	provider := selectProvider(detected)
+	convEntries, _ := provider.ParseSessionStream(newReader)
+	initialEntries := convertConversationEntries(convEntries)
+	_ = file.Close()
+
+	if len(initialEntries) == 0 {
+		t.Fatal("initial parse should produce entries")
+	}
+
+	// Verify initial entries render
+	rendered := tui.RenderPlain(initialEntries, filepath.Base(testFile), tui.RenderOptions{})
+	if !strings.Contains(rendered, "First message") {
+		t.Error("initial RenderPlain should contain 'First message'")
+	}
+
+	// Now test incremental read with watcher (same path as streaming loop)
+	w, err := watcher.NewWithPosition(absPath, int64(len(initialContent)))
+	if err != nil {
+		t.Fatalf("NewWithPosition failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Append new Codex entries
+	appended := `{"type":"event_msg","timestamp":"2026-04-30T10:00:05Z","payload":{"event":{"type":"agent_message","content":"Incremental reply","phase":"final"}}}
+`
+	f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to append: %v", err)
+	}
+	_, _ = f.WriteString(appended)
+	_ = f.Close()
+
+	// Simulate the non-Claude-Code streaming loop: ReadNewRawBytes + provider parsing
+	rawBytes, err := w.ReadNewRawBytes()
+	if err != nil {
+		t.Fatalf("ReadNewRawBytes error: %v", err)
+	}
+	if len(rawBytes) == 0 {
+		t.Fatal("ReadNewRawBytes should return appended data")
+	}
+	if !bytes.Contains(rawBytes, []byte("Incremental reply")) {
+		t.Errorf("raw bytes should contain 'Incremental reply', got: %q", string(rawBytes))
+	}
+
+	// Parse the raw bytes with the Codex provider
+	convEntries, parseErr := provider.ParseSessionStream(bytes.NewReader(rawBytes))
+	if parseErr != nil {
+		t.Fatalf("ParseSessionStream error on incremental data: %v", parseErr)
+	}
+	if len(convEntries) == 0 {
+		t.Fatal("ParseSessionStream should return entries for appended Codex data")
+	}
+
+	incEntries := convertConversationEntries(convEntries)
+	renderedEntry := tui.RenderEntryPlain(incEntries[0], tui.RenderOptions{})
+	if !strings.Contains(renderedEntry, "Incremental reply") {
+		t.Errorf("RenderEntryPlain should contain 'Incremental reply', got: %q", renderedEntry)
 	}
 }

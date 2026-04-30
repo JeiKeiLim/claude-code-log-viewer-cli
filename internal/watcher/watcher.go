@@ -139,6 +139,51 @@ func (w *Watcher) ReadNewEntries() ([]types.LogEntry, error) {
 	return w.readNewEntries()
 }
 
+// ReadNewRawBytes reads raw new bytes appended to the file without parsing.
+// Exported for streaming plain mode with non-Claude-Code formats that need
+// provider-specific parsing. Returns ErrFileTruncated if file was truncated.
+func (w *Watcher) ReadNewRawBytes() ([]byte, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	file, err := os.Open(w.filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if stat.Size() < w.lastReadPos {
+		w.lastReadPos = 0
+		return nil, ErrFileTruncated
+	}
+	if stat.Size() == w.lastReadPos {
+		return nil, nil
+	}
+
+	if _, err := file.Seek(w.lastReadPos, io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+
+	w.lastReadPos += int64(len(data))
+	return data, nil
+}
+
+// LastPosition returns the current file read position.
+func (w *Watcher) LastPosition() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lastReadPos
+}
+
 // Close releases all resources associated with the watcher.
 // Close is idempotent - it can be called multiple times safely.
 // CRITICAL: On macOS, fsnotify uses kqueue which opens a file descriptor for EACH
