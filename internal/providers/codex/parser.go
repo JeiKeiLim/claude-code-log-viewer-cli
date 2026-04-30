@@ -81,8 +81,10 @@ func ParseCodexJSONL(r io.Reader) (*ParseResult, error) {
 
 	// FIFO queue for event_msg exec_command_begin/end (no call_id available).
 	var eventPending []*pendingCommand
-	// Map for top-level exec_command_begin/end (matched by call_id).
-	pending := make(map[string]*pendingCommand)
+	// Map for top-level exec_command_begin/end with call_id.
+	pendingByCallID := make(map[string]*pendingCommand)
+	// FIFO queue for top-level exec_command_begin/end without call_id.
+	var pendingNoID []*pendingCommand
 	lineNum := 0
 
 	for scanner.Scan() {
@@ -111,10 +113,27 @@ func ParseCodexJSONL(r io.Reader) (*ParseResult, error) {
 			handleTokenCount(result, &cl)
 
 		case "exec_command_begin":
-			handleExecCommandBegin(result, &cl, ts, pending)
+			if cl.CallID != "" {
+				pendingByCallID[cl.CallID] = &pendingCommand{timestamp: ts, command: cl.Command, callID: cl.CallID}
+			} else {
+				pendingNoID = append(pendingNoID, &pendingCommand{timestamp: ts, command: cl.Command})
+			}
 
 		case "exec_command_end":
-			handleExecCommandEnd(result, &cl, ts, pending)
+			if cl.CallID != "" {
+				if pc, ok := pendingByCallID[cl.CallID]; ok {
+					result.Entries = append(result.Entries, makeToolUseEntry(pc.command, cl.CallID, cl.Output, pc.timestamp, result.SessionID))
+					delete(pendingByCallID, cl.CallID)
+				} else {
+					result.Entries = append(result.Entries, makeToolUseEntry(cl.Command, cl.CallID, cl.Output, ts, result.SessionID))
+				}
+			} else if len(pendingNoID) > 0 {
+				pc := pendingNoID[0]
+				pendingNoID = pendingNoID[1:]
+				result.Entries = append(result.Entries, makeToolUseEntry(pc.command, "", cl.Output, pc.timestamp, result.SessionID))
+			} else {
+				result.Entries = append(result.Entries, makeToolUseEntry(cl.Command, "", cl.Output, ts, result.SessionID))
+			}
 
 		default:
 			// Unknown line type — skip silently.
@@ -126,9 +145,13 @@ func ParseCodexJSONL(r io.Reader) (*ParseResult, error) {
 	}
 
 	// Flush any pending top-level commands that never received an end event.
-	for callID, pc := range pending {
+	for callID, pc := range pendingByCallID {
 		result.Entries = append(result.Entries, makeToolUseEntry(pc.command, pc.callID, "", pc.timestamp, result.SessionID))
-		delete(pending, callID)
+		delete(pendingByCallID, callID)
+	}
+	// Flush any pending no-ID commands.
+	for _, pc := range pendingNoID {
+		result.Entries = append(result.Entries, makeToolUseEntry(pc.command, "", "", pc.timestamp, result.SessionID))
 	}
 	// Flush any pending event_msg commands.
 	for _, pc := range eventPending {
@@ -232,35 +255,6 @@ func handleTokenCount(result *ParseResult, cl *codexLine) {
 		OutputTokens: ti.TotalTokenUsage.OutputTokens,
 		CachedTokens: ti.TotalTokenUsage.CachedTokens,
 	})
-}
-
-// handleExecCommandBegin processes top-level exec_command_begin lines.
-func handleExecCommandBegin(result *ParseResult, cl *codexLine, ts time.Time, pending map[string]*pendingCommand) {
-	callID := cl.CallID
-	if callID == "" {
-		callID = cl.Command // fallback if no call_id
-	}
-	pending[callID] = &pendingCommand{
-		timestamp: ts,
-		command:   cl.Command,
-		callID:    callID,
-	}
-}
-
-// handleExecCommandEnd processes top-level exec_command_end lines.
-func handleExecCommandEnd(result *ParseResult, cl *codexLine, ts time.Time, pending map[string]*pendingCommand) {
-	callID := cl.CallID
-	if callID == "" {
-		callID = cl.Command // fallback matching
-	}
-
-	if pc, ok := pending[callID]; ok {
-		result.Entries = append(result.Entries, makeToolUseEntry(pc.command, callID, cl.Output, pc.timestamp, result.SessionID))
-		delete(pending, callID)
-	} else {
-		// End without a matching begin — create entry directly.
-		result.Entries = append(result.Entries, makeToolUseEntry(cl.Command, callID, cl.Output, ts, result.SessionID))
-	}
 }
 
 // makeToolUseEntry creates a ConversationEntry for an exec_command pair.

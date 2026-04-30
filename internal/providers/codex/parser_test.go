@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
 )
@@ -885,5 +886,195 @@ func TestFixtureJSONStructure(t *testing.T) {
 		if !json.Valid([]byte(line)) {
 			t.Errorf("full-session.jsonl line %d is not valid JSON: %s", i+1, line)
 		}
+	}
+}
+
+// --- UTF-8 truncation tests (bug fix: byte-based slicing broke multi-byte chars) ---
+
+func TestTruncateStringMultiByteUTF8(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{
+			name:   "korean_short_enough",
+			input:  "안녕하세요",
+			maxLen: 80,
+			want:   "안녕하세요",
+		},
+		{
+			name:   "korean_truncated",
+			input:  "안녕하세요 세상입니다 이것은 긴 메시지입니다",
+			maxLen: 10,
+			want:   "안녕하세요 세...",
+		},
+		{
+			name:   "korean_exact_boundary",
+			input:  "안녕하세요",
+			maxLen: 5,
+			want:   "안녕하세요",
+		},
+		{
+			name:   "korean_one_rune_over",
+			input:  "안녕하세요",
+			maxLen: 4,
+			want:   "안...",
+		},
+		{
+			name:   "mixed_ascii_cjk",
+			input:  "Hello 안녕하세요 World 세계",
+			maxLen: 10,
+			want:   "Hello 안...",
+		},
+		{
+			name:   "ascii_only",
+			input:  "This is a long ASCII string for testing",
+			maxLen: 20,
+			want:   "This is a long AS...",
+		},
+		{
+			name:   "empty_string",
+			input:  "",
+			maxLen: 10,
+			want:   "",
+		},
+		{
+			name:   "short_string",
+			input:  "abc",
+			maxLen: 10,
+			want:   "abc",
+		},
+		{
+			name:   "emoji_multi_byte",
+			input:  "🎉🎊🎈🎁🎀🎉🎊🎈🎁🎀🎉",
+			maxLen: 5,
+			want:   "🎉🎊...",
+		},
+		{
+			name:   "maxlen_very_small",
+			input:  "안녕하세요",
+			maxLen: 2,
+			want:   "안녕",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateString(tt.input, tt.maxLen)
+			if got != tt.want {
+				t.Errorf("truncateString(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+			}
+			// Verify the result is valid UTF-8 (the core bug being fixed).
+			if !utf8.ValidString(got) {
+				t.Errorf("truncateString produced invalid UTF-8: %q", got)
+			}
+		})
+	}
+}
+
+func TestTruncateStringResultRuneCount(t *testing.T) {
+	// Verify that the truncated result never exceeds maxLen runes.
+	for _, input := range []string{
+		"안녕하세요 세상입니다 이것은 아주 긴 한국어 메시지입니다",
+		"Hello World this is a very long English message for testing",
+		strings.Repeat("🎉", 50),
+	} {
+		for maxLen := 1; maxLen <= 100; maxLen++ {
+			result := truncateString(input, maxLen)
+			runeCount := utf8.RuneCountInString(result)
+			if runeCount > maxLen {
+				t.Errorf("truncateString(%q, %d) = %q has %d runes, exceeds maxLen", input, maxLen, result, runeCount)
+			}
+		}
+	}
+}
+
+// --- Exec command key collision tests (bug fix: command text as fallback key) ---
+
+func TestParseExecCommandNoCallIDNoCollision(t *testing.T) {
+	// Two exec_command_begin with the SAME command and NO call_id must both
+	// produce entries (not collide in the pending map).
+	var sb strings.Builder
+	sb.WriteString(`{"type":"exec_command_begin","timestamp":"2026-04-30T12:00:00Z","command":"go test ./..."}` + "\n")
+	sb.WriteString(`{"type":"exec_command_end","timestamp":"2026-04-30T12:00:01Z","exit_code":0,"output":"PASS","command":"go test ./..."}` + "\n")
+	sb.WriteString(`{"type":"exec_command_begin","timestamp":"2026-04-30T12:00:02Z","command":"go test ./..."}` + "\n")
+	sb.WriteString(`{"type":"exec_command_end","timestamp":"2026-04-30T12:00:03Z","exit_code":0,"output":"ok","command":"go test ./..."}` + "\n")
+
+	result, err := ParseCodexJSONL(strings.NewReader(sb.String()))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 2 {
+		t.Fatalf("len(Entries) = %d, want 2 (both commands must produce entries)", len(result.Entries))
+	}
+
+	// Both entries should have the correct command.
+	for i, e := range result.Entries {
+		blocks := e.ContentBlocks()
+		if len(blocks) != 1 {
+			t.Fatalf("entry[%d] ContentBlocks() len = %d, want 1", i, len(blocks))
+		}
+		if blocks[0].ToolInput()["command"] != "go test ./..." {
+			t.Errorf("entry[%d] command = %v, want %q", i, blocks[0].ToolInput()["command"], "go test ./...")
+		}
+	}
+
+	// First entry gets "PASS" output, second gets "ok".
+	out0 := result.Entries[0].ContentBlocks()[0].ToolOutput()
+	out1 := result.Entries[1].ContentBlocks()[0].ToolOutput()
+	if out0 != "PASS" {
+		t.Errorf("entry[0] output = %q, want %q", out0, "PASS")
+	}
+	if out1 != "ok" {
+		t.Errorf("entry[1] output = %q, want %q", out1, "ok")
+	}
+}
+
+func TestParseExecCommandNoCallIDThreeCommands(t *testing.T) {
+	// Three different commands without call_id — each must produce its own entry.
+	var sb strings.Builder
+	sb.WriteString(`{"type":"exec_command_begin","timestamp":"2026-04-30T12:00:00Z","command":"ls"}` + "\n")
+	sb.WriteString(`{"type":"exec_command_end","timestamp":"2026-04-30T12:00:01Z","exit_code":0,"output":"file1.go","command":"ls"}` + "\n")
+	sb.WriteString(`{"type":"exec_command_begin","timestamp":"2026-04-30T12:00:02Z","command":"ls"}` + "\n")
+	sb.WriteString(`{"type":"exec_command_end","timestamp":"2026-04-30T12:00:03Z","exit_code":0,"output":"file2.go","command":"ls"}` + "\n")
+	sb.WriteString(`{"type":"exec_command_begin","timestamp":"2026-04-30T12:00:04Z","command":"ls"}` + "\n")
+	sb.WriteString(`{"type":"exec_command_end","timestamp":"2026-04-30T12:00:05Z","exit_code":0,"output":"file3.go","command":"ls"}` + "\n")
+
+	result, err := ParseCodexJSONL(strings.NewReader(sb.String()))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 3 {
+		t.Fatalf("len(Entries) = %d, want 3", len(result.Entries))
+	}
+
+	expectedOutputs := []string{"file1.go", "file2.go", "file3.go"}
+	for i, want := range expectedOutputs {
+		blocks := result.Entries[i].ContentBlocks()
+		if len(blocks) != 1 {
+			t.Fatalf("entry[%d] ContentBlocks() len = %d, want 1", i, len(blocks))
+		}
+		got := blocks[0].ToolOutput()
+		if got != want {
+			t.Errorf("entry[%d] output = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestParseExecCommandMixedWithAndWithoutCallID(t *testing.T) {
+	// Mix commands with and without call_id to verify they don't interfere.
+	var sb strings.Builder
+	sb.WriteString(`{"type":"exec_command_begin","timestamp":"2026-04-30T12:00:00Z","command":"make","call_id":"call-1"}` + "\n")
+	sb.WriteString(`{"type":"exec_command_begin","timestamp":"2026-04-30T12:00:01Z","command":"make"}` + "\n")
+	sb.WriteString(`{"type":"exec_command_end","timestamp":"2026-04-30T12:00:02Z","exit_code":0,"output":"built","call_id":"call-1"}` + "\n")
+	sb.WriteString(`{"type":"exec_command_end","timestamp":"2026-04-30T12:00:03Z","exit_code":0,"output":"built again","command":"make"}` + "\n")
+
+	result, err := ParseCodexJSONL(strings.NewReader(sb.String()))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 2 {
+		t.Fatalf("len(Entries) = %d, want 2", len(result.Entries))
 	}
 }

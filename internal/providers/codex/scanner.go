@@ -158,12 +158,17 @@ func buildSession(filePath, cwd string) (agent.Session, error) {
 	}, nil
 }
 
-// truncateString truncates a string to maxLen characters with ellipsis.
+// truncateString truncates a string to maxLen runes with ellipsis.
+// Uses rune-based truncation to avoid breaking multi-byte UTF-8 characters.
 func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	if maxLen <= 3 {
+		return string(runes[:maxLen])
+	}
+	return string(runes[:maxLen-3]) + "..."
 }
 
 // getDefaultBaseDir returns the user's home directory.
