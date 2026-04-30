@@ -745,3 +745,154 @@ func TestStreamingCodexIncrementalRead(t *testing.T) {
 		t.Errorf("RenderEntryPlain should contain 'Incremental reply', got: %q", renderedEntry)
 	}
 }
+
+// TestStreamingOpenCodeIncrementalRead verifies that OpenCode format's provider
+// is correctly selected and that the streaming pipeline handles the OpenCode case.
+// Since OpenCode stores sessions in SQLite, ParseSessionStream errors for file-based
+// data — this test validates provider selection and the error path.
+func TestStreamingOpenCodeIncrementalRead(t *testing.T) {
+	// Verify selectProvider returns an OpenCode provider
+	provider := selectProvider(agent.AgentOpenCode)
+	if provider.Type() != agent.AgentOpenCode {
+		t.Fatalf("selectProvider(AgentOpenCode).Type() = %q, want %q", provider.Type(), agent.AgentOpenCode)
+	}
+
+	// OpenCode ParseSessionStream should error for non-SQLite input
+	_, err := provider.ParseSessionStream(strings.NewReader("{}"))
+	if err == nil {
+		t.Error("ParseSessionStream on non-SQLite data should return an error for OpenCode")
+	}
+	if err != nil && !strings.Contains(err.Error(), "ParseSessionStream not supported") {
+		t.Errorf("ParseSessionStream error = %q, want error containing 'ParseSessionStream not supported'", err.Error())
+	}
+
+	// Verify that incremental raw bytes still work for OpenCode-selected format
+	// (even though ParseSessionStream fails, the watcher layer is format-agnostic)
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+	initialContent := "line1\n"
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := watcher.NewWithPosition(testFile, int64(len(initialContent)))
+	if err != nil {
+		t.Fatalf("NewWithPosition failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	appended := "line2\n"
+	f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open for append: %v", err)
+	}
+	_, _ = f.WriteString(appended)
+	_ = f.Close()
+
+	rawBytes, err := w.ReadNewRawBytes()
+	if err != nil {
+		t.Fatalf("ReadNewRawBytes error: %v", err)
+	}
+	if string(rawBytes) != appended {
+		t.Errorf("ReadNewRawBytes() = %q, want %q", string(rawBytes), appended)
+	}
+}
+
+// TestStreamingBranchSelection verifies that both streaming code paths
+// (Claude Code: ReadNewEntries, and non-Claude Code: ReadNewRawBytes + ParseSessionStream)
+// produce correct results through the watcher layer.
+func TestStreamingBranchSelection(t *testing.T) {
+	t.Run("ClaudeCode_uses_ReadNewEntries", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "test.jsonl")
+		initialContent := `{"type":"user","message":{"role":"user","content":"Hello"},"timestamp":"2026-01-16T10:00:00Z"}
+`
+		if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+
+		// Start watcher at end of initial content (Claude Code streaming path)
+		w, err := watcher.NewWithPosition(testFile, int64(len(initialContent)))
+		if err != nil {
+			t.Fatalf("NewWithPosition failed: %v", err)
+		}
+		defer func() { _ = w.Close() }()
+
+		// Append Claude Code format data
+		appended := `{"type":"assistant","message":{"content":[{"type":"text","text":"World"}]},"timestamp":"2026-01-16T10:01:00Z"}
+`
+		f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			t.Fatalf("failed to append: %v", err)
+		}
+		_, _ = f.WriteString(appended)
+		_ = f.Close()
+
+		// Claude Code path: ReadNewEntries parses JSONL directly
+		entries, err := w.ReadNewEntries()
+		if err != nil {
+			t.Fatalf("ReadNewEntries error: %v", err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("ReadNewEntries should return 1 entry, got %d", len(entries))
+		}
+		// Verify the parsed entry has the correct content
+		text := entries[0].Message.TextContent
+		if len(entries[0].Message.Content) > 0 {
+			text = entries[0].Message.Content[0].Text
+		}
+		if !strings.Contains(text, "World") {
+			t.Errorf("entry content = %q, want to contain 'World'", text)
+		}
+	})
+
+	t.Run("Codex_uses_ReadNewRawBytes_plus_ParseSessionStream", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "test.jsonl")
+		initialContent := `{"type":"session_meta","timestamp":"2026-04-30T10:00:00Z","payload":{"id":"sess-test","cwd":"/proj","model":"o3"}}
+`
+		if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+
+		w, err := watcher.NewWithPosition(testFile, int64(len(initialContent)))
+		if err != nil {
+			t.Fatalf("NewWithPosition failed: %v", err)
+		}
+		defer func() { _ = w.Close() }()
+
+		// Append Codex format data
+		appended := `{"type":"event_msg","timestamp":"2026-04-30T10:00:05Z","payload":{"event":{"type":"agent_message","content":"Branch reply","phase":"final"}}}
+`
+		f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			t.Fatalf("failed to append: %v", err)
+		}
+		_, _ = f.WriteString(appended)
+		_ = f.Close()
+
+		// Codex path: ReadNewRawBytes then provider parsing
+		rawBytes, err := w.ReadNewRawBytes()
+		if err != nil {
+			t.Fatalf("ReadNewRawBytes error: %v", err)
+		}
+		if len(rawBytes) == 0 {
+			t.Fatal("ReadNewRawBytes should return appended data")
+		}
+
+		provider := selectProvider(agent.AgentCodex)
+		convEntries, parseErr := provider.ParseSessionStream(bytes.NewReader(rawBytes))
+		if parseErr != nil {
+			t.Fatalf("ParseSessionStream error: %v", parseErr)
+		}
+		entries := convertConversationEntries(convEntries)
+		if len(entries) == 0 {
+			t.Fatal("convertConversationEntries should produce entries from Codex data")
+		}
+
+		rendered := tui.RenderEntryPlain(entries[0], tui.RenderOptions{})
+		if !strings.Contains(rendered, "Branch reply") {
+			t.Errorf("rendered entry should contain 'Branch reply', got: %q", rendered)
+		}
+	})
+}

@@ -867,6 +867,121 @@ func TestReadNewRawBytesTruncation(t *testing.T) {
 	}
 }
 
+// TestStreamingTruncationRecovery verifies the full truncation recovery cycle:
+// 1. ReadNewRawBytes detects truncation and resets position to 0
+// 2. Subsequent read successfully reads the new (smaller) content
+// This mirrors the recovery path used in runStreamingPlainMode where
+// ErrFileTruncated triggers a continue in the streaming loop.
+func TestStreamingTruncationRecovery(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	// Write initial content and create watcher positioned at end
+	initialContent := `{"type":"user","message":{"role":"user","content":"message 1"},"timestamp":"2026-01-16T10:00:00Z"}
+{"type":"user","message":{"role":"user","content":"message 2"},"timestamp":"2026-01-16T10:01:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Step 1: Truncate file to smaller content
+	newContent := `{"type":"user","message":{"role":"user","content":"fresh start"},"timestamp":"2026-01-16T11:00:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(newContent), 0644); err != nil {
+		t.Fatalf("failed to truncate file: %v", err)
+	}
+
+	// Step 2: ReadNewRawBytes should detect truncation
+	_, err = w.ReadNewRawBytes()
+	if !errors.Is(err, ErrFileTruncated) {
+		t.Fatalf("first ReadNewRawBytes after truncation: error = %v, want ErrFileTruncated", err)
+	}
+
+	// Verify position was reset to 0
+	if pos := w.LastPosition(); pos != 0 {
+		t.Errorf("LastPosition() after truncation = %d, want 0", pos)
+	}
+
+	// Step 3: Subsequent read should succeed and return the new content
+	raw, err := w.ReadNewRawBytes()
+	if err != nil {
+		t.Fatalf("second ReadNewRawBytes after recovery: error = %v", err)
+	}
+	if string(raw) != newContent {
+		t.Errorf("recovered ReadNewRawBytes() = %q, want %q", string(raw), newContent)
+	}
+
+	// Verify position advanced past the new content
+	if pos := w.LastPosition(); pos != int64(len(newContent)) {
+		t.Errorf("LastPosition() after recovery = %d, want %d", pos, len(newContent))
+	}
+
+	// Step 4: Next read returns nil (no new data)
+	raw2, err := w.ReadNewRawBytes()
+	if err != nil {
+		t.Fatalf("third ReadNewRawBytes: error = %v", err)
+	}
+	if raw2 != nil {
+		t.Errorf("third ReadNewRawBytes() = %q, want nil", string(raw2))
+	}
+}
+
+// TestStreamingTruncationRecovery_ReadNewEntries verifies the same truncation
+// recovery cycle through ReadNewEntries (the Claude Code streaming path),
+// confirming that parsed entries are correct after recovery.
+func TestStreamingTruncationRecovery_ReadNewEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	initialContent := `{"type":"user","message":{"role":"user","content":"old message"},"timestamp":"2026-01-16T10:00:00Z"}
+{"type":"user","message":{"role":"user","content":"another old"},"timestamp":"2026-01-16T10:01:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Truncate
+	newContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"new entry"}]},"timestamp":"2026-01-16T11:00:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(newContent), 0644); err != nil {
+		t.Fatalf("failed to truncate file: %v", err)
+	}
+
+	// ReadNewEntries detects truncation
+	_, err = w.ReadNewEntries()
+	if !errors.Is(err, ErrFileTruncated) {
+		t.Fatalf("ReadNewEntries after truncation: error = %v, want ErrFileTruncated", err)
+	}
+
+	// Recovery: read new content
+	entries, err := w.ReadNewEntries()
+	if err != nil {
+		t.Fatalf("ReadNewEntries after recovery: error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("recovered ReadNewEntries() returned %d entries, want 1", len(entries))
+	}
+	if len(entries[0].Message.Content) == 0 || entries[0].Message.Content[0].Text != "new entry" {
+		text := entries[0].Message.TextContent
+		if len(entries[0].Message.Content) > 0 {
+			text = entries[0].Message.Content[0].Text
+		}
+		t.Errorf("recovered entry content = %q, want 'new entry'", text)
+	}
+}
+
 // TestLastPosition returns the current file offset.
 func TestLastPosition(t *testing.T) {
 	tmpDir := t.TempDir()
