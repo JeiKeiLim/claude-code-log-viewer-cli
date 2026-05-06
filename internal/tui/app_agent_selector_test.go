@@ -248,6 +248,67 @@ func TestProjectModelWithoutBack_EscDoesNotGoBack(t *testing.T) {
 	}
 }
 
+func TestProjectSelectedMsg_ClaudeProviderUsesSessionDashboard(t *testing.T) {
+	p := makeTestProvider("Claude", "[C]", 1, 1)
+	p.agentType = agent.AgentClaudeCode
+	model := NewAppModelWithProviders([]agent.AgentProvider{p})
+	model.width = 80
+	model.height = 24
+
+	newModel, _ := model.Update(AgentSelectedMsg{Provider: p})
+	m := newModel.(AppModel)
+
+	newModel, cmd := m.Update(ProjectSelectedMsg{
+		Project: types.Project{
+			DisplayName: "test-project",
+			DirPath:     "/tmp/test-project",
+			DecodedPath: "/tmp/test-project",
+		},
+	})
+	m = newModel.(AppModel)
+
+	if m.state != viewSessionDashboard {
+		t.Fatalf("expected viewSessionDashboard for Claude provider project selection, got %d", m.state)
+	}
+	if m.loading {
+		t.Fatal("expected dashboard route not provider session loading")
+	}
+	if cmd == nil {
+		t.Fatal("expected session dashboard init command")
+	}
+}
+
+func TestProjectSelectedMsg_ClaudeProviderNoMultiSessionUsesProviderSessions(t *testing.T) {
+	p := makeTestProvider("Claude", "[C]", 1, 1)
+	p.agentType = agent.AgentClaudeCode
+	model := NewAppModelWithProviders([]agent.AgentProvider{p})
+	model.SetNoMultiSession(true)
+	model.width = 80
+	model.height = 24
+
+	newModel, _ := model.Update(AgentSelectedMsg{Provider: p})
+	m := newModel.(AppModel)
+
+	newModel, cmd := m.Update(ProjectSelectedMsg{
+		Project: types.Project{
+			DisplayName: "test-project",
+			DirPath:     "/tmp/test-project",
+			DecodedPath: "/tmp/test-project",
+		},
+	})
+	m = newModel.(AppModel)
+
+	if !m.loading {
+		t.Fatal("expected provider session loading when no multi-session is set")
+	}
+	if m.state == viewSessionDashboard {
+		t.Fatal("did not expect session dashboard when no multi-session is set")
+	}
+	if cmd == nil {
+		t.Fatal("expected provider session loading command")
+	}
+}
+
 func TestFullFlow_AgentSelectorToViewer(t *testing.T) {
 	entries := []agent.ConversationEntry{
 		agent.BasicEntry{
@@ -260,7 +321,7 @@ func TestFullFlow_AgentSelectorToViewer(t *testing.T) {
 		},
 	}
 	p := &testProvider{
-		agentType:   agent.AgentClaudeCode,
+		agentType:   agent.AgentCodex,
 		displayName: "Test",
 		badge:       "[T]",
 		available:   true,
@@ -269,7 +330,7 @@ func TestFullFlow_AgentSelectorToViewer(t *testing.T) {
 				Path:         "/tmp/test-project",
 				Directory:    "/tmp/test-project",
 				DisplayName:  "test-project",
-				AgentType:    agent.AgentClaudeCode,
+				AgentType:    agent.AgentCodex,
 				SessionCount: 1,
 			},
 		},
@@ -277,7 +338,7 @@ func TestFullFlow_AgentSelectorToViewer(t *testing.T) {
 			{
 				ID:           "sess-1",
 				FilePath:     "/tmp/test-session.jsonl",
-				AgentType:    agent.AgentClaudeCode,
+				AgentType:    agent.AgentCodex,
 				CreatedAt:    time.Now().Add(-time.Hour),
 				LastModified: time.Now(),
 				MessageCount: 5,

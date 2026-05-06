@@ -43,6 +43,7 @@ type RenderOptions struct {
 	FilePath     string // Full path for file watching
 	FollowLatest bool   // Enable follow-latest mode (Story 11.2)
 	ProjectPath  string // Directory path for project watcher (Story 11.2)
+	WatchParser  watcher.EntryParser
 }
 
 // DefaultRenderOptions returns options that show all content types with auto-detect width.
@@ -273,7 +274,7 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 
 	// Create watcher if watch mode enabled and file path provided
 	if opts.WatchMode && opts.FilePath != "" {
-		w, err := watcher.New(opts.FilePath)
+		w, err := watcher.NewWithParser(opts.FilePath, opts.WatchParser)
 		if err == nil {
 			m.watcher = w
 		}
@@ -569,7 +570,7 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Enable watch mode if file path is available
 			if m.renderOpts.FilePath != "" {
-				w, err := watcher.New(m.renderOpts.FilePath)
+				w, err := watcher.NewWithParser(m.renderOpts.FilePath, m.renderOpts.WatchParser)
 				if err == nil {
 					m.watcher = w
 					m.watchMode = true
@@ -768,16 +769,28 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rawMode = false
 		}
 
+		newEntries := msg.Entries
+		if m.renderOpts.WatchParser != nil {
+			newEntries = filterMirroredLiveEntries(m.entries, newEntries)
+		}
+
+		if len(newEntries) == 0 {
+			if m.watcher != nil {
+				return m, m.watcher.WaitForEvent()
+			}
+			return m, nil
+		}
+
 		// Capture scroll position BEFORE modifying state
 		wasAtBottom := m.isAtBottom()
 
 		// Append new entries from file watcher
-		m.entries = append(m.entries, msg.Entries...)
+		m.entries = append(m.entries, newEntries...)
 		m.loadedCount = len(m.entries)
 
 		// Recalculate conversation tokens for new entries (Story 6.3)
 		if m.tokenService != nil {
-			for _, entry := range msg.Entries {
+			for _, entry := range newEntries {
 				if !entry.Usage.IsEmpty() {
 					m.conversationTokens += entry.Usage.Total()
 				} else if entry.Type != types.EntryTypeFileHistorySnapshot {
@@ -800,7 +813,7 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if wasAtBottom {
 			m.viewport.GotoBottom() // Auto-scroll
 		} else {
-			m.newEntriesCount += len(msg.Entries) // Track for indicator
+			m.newEntriesCount += len(newEntries) // Track for indicator
 		}
 
 		// Chain next wait
@@ -919,7 +932,7 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 
 		// Start new file watcher
-		w, err := watcher.New(msg.FilePath)
+		w, err := watcher.NewWithParser(msg.FilePath, m.renderOpts.WatchParser)
 		if err == nil {
 			m.watcher = w
 		}
@@ -961,6 +974,84 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, cmd
+}
+
+func filterMirroredLiveEntries(existing, incoming []types.LogEntry) []types.LogEntry {
+	if len(incoming) == 0 {
+		return incoming
+	}
+
+	filtered := make([]types.LogEntry, 0, len(incoming))
+	for _, entry := range incoming {
+		var prev *types.LogEntry
+		if len(filtered) > 0 {
+			prev = &filtered[len(filtered)-1]
+		} else if len(existing) > 0 {
+			prev = &existing[len(existing)-1]
+		}
+
+		if prev != nil && isMirroredLiveEntryDuplicate(*prev, entry) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+func isMirroredLiveEntryDuplicate(prev, current types.LogEntry) bool {
+	if prev.Type != current.Type || prev.Message.Role != current.Message.Role {
+		return false
+	}
+	if prev.Type != types.EntryTypeUser && prev.Type != types.EntryTypeAssistant {
+		return false
+	}
+	if hasToolUseContent(prev) || hasToolUseContent(current) {
+		return false
+	}
+	if !logEntryTimestampsClose(prev.Timestamp, current.Timestamp, 2*time.Second) {
+		return false
+	}
+	return logEntryTextSignature(prev) == logEntryTextSignature(current)
+}
+
+func hasToolUseContent(entry types.LogEntry) bool {
+	for _, content := range entry.Message.Content {
+		if content.Type == types.ContentTypeToolUse {
+			return true
+		}
+	}
+	return false
+}
+
+func logEntryTimestampsClose(a, b time.Time, threshold time.Duration) bool {
+	if a.IsZero() || b.IsZero() {
+		return false
+	}
+	delta := a.Sub(b)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= threshold
+}
+
+func logEntryTextSignature(entry types.LogEntry) string {
+	if entry.Message.TextContent != "" {
+		return entry.Message.TextContent
+	}
+	parts := make([]string, 0, len(entry.Message.Content))
+	for _, content := range entry.Message.Content {
+		switch content.Type {
+		case types.ContentTypeText:
+			if content.Text != "" {
+				parts = append(parts, content.Text)
+			}
+		case types.ContentTypeThinking:
+			if content.Thinking != "" {
+				parts = append(parts, content.Thinking)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // loadMoreMessages loads the next batch of messages.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/token"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/usage"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
 )
 
 // viewState represents the current view in the application.
@@ -383,8 +385,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ProjectSelectedMsg:
 		m.selectedProject = msg.Project
 
-		// When using agent providers, load sessions directly via the provider.
+		// Claude Code keeps the existing concurrent-session dashboard even
+		// when reached through the provider selector. Other providers use their
+		// provider-native session list until they have dashboard support.
 		if m.usingProviders && m.selectedProvider != nil {
+			if m.selectedProvider.Type() == agent.AgentClaudeCode && !m.noMultiSession {
+				return m.openSessionDashboard(msg.Project)
+			}
 			m.loading = true
 			return m, tea.Batch(m.spinner.Tick, m.loadProviderSessions())
 		}
@@ -396,29 +403,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.loadConversations())
 		}
 
-		// Open the session dashboard for that project.
-		// The session dashboard auto-detects active Claude Code sessions (AC 8).
-		// Users can press 'c' in the session dashboard to view the conversation list,
-		// or ESC to return to the project browser.
-		scannerInst := session.NewSessionScanner("")
-		monitorInst := session.NewMonitor()
-
-		var dashOpts []SessionDashboardModelOption
-		if dw, err := session.NewSessionDirectoryWatcher(""); err == nil {
-			dashOpts = append(dashOpts, WithDashboardDirWatcher(dw))
-		}
-
-		viewHeight := m.height - UsageBarHeight
-		m.sessionDashboardModel = NewSessionDashboardModel(
-			msg.Project.DecodedPath,
-			msg.Project.DirPath,
-			scannerInst,
-			monitorInst,
-			dashOpts...,
-		)
-		m.sessionDashboardModel.SetSize(m.width, viewHeight)
-		m.state = viewSessionDashboard
-		return m, m.sessionDashboardModel.Init()
+		return m.openSessionDashboard(msg.Project)
 
 	case OpenConversationsFromSessionDashboardMsg:
 		// User pressed 'c' in the session dashboard — load conversation list for the project.
@@ -477,6 +462,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.loading = true
 		m.selectedConversation = msg.Conversation
+		if m.usingProviders && m.selectedProvider != nil {
+			return m, tea.Batch(m.spinner.Tick, m.loadProviderSessionWithWatch())
+		}
 		return m, tea.Batch(m.spinner.Tick, m.loadConversationWithWatch(msg.Conversation.FilePath))
 
 	case conversationLoadedMsg:
@@ -489,7 +477,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Calculate adjusted height for child views (Story 7.4)
 		viewHeight := m.height - UsageBarHeight
 		title := m.buildConversationTitle()
-		opts := RenderOptions{FilePath: msg.filePath}
+		opts := m.viewerRenderOptions(msg.filePath, false)
 		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, opts, m.tokenService)
 		m.viewerModel.SetSize(m.width, viewHeight)
 		m.state = viewViewer
@@ -505,7 +493,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Calculate adjusted height for child views (Story 7.4)
 		viewHeight := m.height - UsageBarHeight
 		title := m.buildConversationTitle()
-		opts := RenderOptions{WatchMode: true, FilePath: msg.filePath}
+		opts := m.viewerRenderOptions(msg.filePath, true)
 		m.viewerModel = NewViewerModelWithBackNavigation(msg.entries, msg.parseErrors, title, opts, m.tokenService)
 		m.viewerModel.SetSize(m.width, viewHeight)
 		m.state = viewViewer
@@ -925,6 +913,32 @@ func (m AppModel) loadConversations() tea.Cmd {
 	}
 }
 
+func (m AppModel) openSessionDashboard(project types.Project) (tea.Model, tea.Cmd) {
+	// Open the session dashboard for that project.
+	// The session dashboard auto-detects active Claude Code sessions (AC 8).
+	// Users can press 'c' in the session dashboard to view the conversation list,
+	// or ESC to return to the project browser.
+	scannerInst := session.NewSessionScanner("")
+	monitorInst := session.NewMonitor()
+
+	var dashOpts []SessionDashboardModelOption
+	if dw, err := session.NewSessionDirectoryWatcher(""); err == nil {
+		dashOpts = append(dashOpts, WithDashboardDirWatcher(dw))
+	}
+
+	viewHeight := m.height - UsageBarHeight
+	m.sessionDashboardModel = NewSessionDashboardModel(
+		project.DecodedPath,
+		project.DirPath,
+		scannerInst,
+		monitorInst,
+		dashOpts...,
+	)
+	m.sessionDashboardModel.SetSize(m.width, viewHeight)
+	m.state = viewSessionDashboard
+	return m, m.sessionDashboardModel.Init()
+}
+
 // loadProviderSessions loads sessions for the selected project using the agent provider.
 func (m AppModel) loadProviderSessions() tea.Cmd {
 	return func() tea.Msg {
@@ -973,6 +987,46 @@ func (m AppModel) loadProviderSession() tea.Cmd {
 			entries:  entries,
 			filePath: m.selectedConversation.FilePath,
 		}
+	}
+}
+
+func (m AppModel) loadProviderSessionWithWatch() tea.Cmd {
+	return func() tea.Msg {
+		session := agent.Session{FilePath: m.selectedConversation.FilePath}
+		convEntries, err := m.selectedProvider.ParseSession(session)
+		if err != nil {
+			return conversationLoadedWithWatchMsg{err: err}
+		}
+		entries := make([]types.LogEntry, 0, len(convEntries))
+		for _, ce := range convEntries {
+			entries = append(entries, convertConversationEntryToLogEntry(ce))
+		}
+		return conversationLoadedWithWatchMsg{
+			entries:  entries,
+			filePath: m.selectedConversation.FilePath,
+		}
+	}
+}
+
+func (m AppModel) viewerRenderOptions(filePath string, watchMode bool) RenderOptions {
+	opts := RenderOptions{FilePath: filePath, WatchMode: watchMode}
+	if m.usingProviders && m.selectedProvider != nil && m.selectedProvider.Type() == agent.AgentCodex {
+		opts.WatchParser = providerWatchParser(m.selectedProvider)
+	}
+	return opts
+}
+
+func providerWatchParser(provider agent.AgentProvider) watcher.EntryParser {
+	return func(r io.Reader) ([]types.LogEntry, error) {
+		convEntries, err := provider.ParseSessionStream(r)
+		if err != nil {
+			return nil, err
+		}
+		entries := make([]types.LogEntry, 0, len(convEntries))
+		for _, ce := range convEntries {
+			entries = append(entries, convertConversationEntryToLogEntry(ce))
+		}
+		return entries, nil
 	}
 }
 

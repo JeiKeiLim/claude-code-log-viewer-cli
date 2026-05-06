@@ -1057,18 +1057,15 @@ func TestParseRealV116Session(t *testing.T) {
 		t.Errorf("ParseErrors = %d, want 0", result.ParseErrors)
 	}
 
-	// Expected entries (9 total):
+	// Expected entries (6 total after de-duplicating mirrored event_msg/response_item messages):
 	// 0. response_item user (env context)
 	// 1. response_item user "Fix the login bug"
-	// 2. event_msg flat user_message "Fix the login bug"
-	// 3. event_msg flat agent_message commentary "I'll investigate..."
-	// 4. response_item assistant "I'll investigate the login bug."
+	// 2. event_msg flat agent_message commentary "I'll investigate..."
+	// 3. response_item function_call/output -> tool_use (exec_command)
+	// 4. event_msg flat agent_message final "The login function..."
 	// 5. response_item function_call/output -> tool_use (exec_command)
-	// 6. event_msg flat agent_message final "The login function..."
-	// 7. response_item assistant "The login function..."
-	// 8. response_item function_call/output -> tool_use (exec_command)
-	if len(result.Entries) != 9 {
-		t.Fatalf("len(Entries) = %d, want 9", len(result.Entries))
+	if len(result.Entries) != 6 {
+		t.Fatalf("len(Entries) = %d, want 6", len(result.Entries))
 	}
 
 	// Entry 1: response_item user "Fix the login bug"
@@ -1081,63 +1078,53 @@ func TestParseRealV116Session(t *testing.T) {
 		t.Errorf("entry[1] text = %q, want %q", blocks1[0].Text(), "Fix the login bug")
 	}
 
-	// Entry 2: event_msg flat user_message "Fix the login bug"
+	// Entry 2: event_msg flat agent_message commentary
 	e2 := result.Entries[2]
-	if e2.Type() != agent.EntryTypeUser {
-		t.Errorf("entry[2] Type() = %q, want %q", e2.Type(), agent.EntryTypeUser)
+	if e2.Type() != agent.EntryTypeAssistant {
+		t.Errorf("entry[2] Type() = %q, want %q", e2.Type(), agent.EntryTypeAssistant)
 	}
 	blocks2 := e2.ContentBlocks()
-	if len(blocks2) != 1 || blocks2[0].Text() != "Fix the login bug" {
-		t.Errorf("entry[2] text = %q, want %q", blocks2[0].Text(), "Fix the login bug")
+	if blocks2[0].ContentType() != agent.ContentBlockCommentary {
+		t.Errorf("entry[2] ContentType() = %q, want %q", blocks2[0].ContentType(), agent.ContentBlockCommentary)
+	}
+	if blocks2[0].Phase() != "commentary" {
+		t.Errorf("entry[2] Phase() = %q, want %q", blocks2[0].Phase(), "commentary")
 	}
 
-	// Entry 3: event_msg flat agent_message commentary
+	// Entry 3: tool_use from response_item function_call/output pair
 	e3 := result.Entries[3]
 	if e3.Type() != agent.EntryTypeAssistant {
 		t.Errorf("entry[3] Type() = %q, want %q", e3.Type(), agent.EntryTypeAssistant)
 	}
 	blocks3 := e3.ContentBlocks()
-	if blocks3[0].ContentType() != agent.ContentBlockCommentary {
-		t.Errorf("entry[3] ContentType() = %q, want %q", blocks3[0].ContentType(), agent.ContentBlockCommentary)
+	if len(blocks3) != 1 {
+		t.Fatalf("entry[3] ContentBlocks() len = %d, want 1", len(blocks3))
 	}
-	if blocks3[0].Phase() != "commentary" {
-		t.Errorf("entry[3] Phase() = %q, want %q", blocks3[0].Phase(), "commentary")
+	if blocks3[0].ContentType() != agent.ContentBlockToolUse {
+		t.Errorf("entry[3] ContentType() = %q, want %q", blocks3[0].ContentType(), agent.ContentBlockToolUse)
+	}
+	if blocks3[0].ToolName() != "exec_command" {
+		t.Errorf("entry[3] ToolName() = %q, want %q", blocks3[0].ToolName(), "exec_command")
+	}
+	if blocks3[0].ToolOutput() == "" {
+		t.Error("entry[3] ToolOutput() is empty, want non-empty output")
 	}
 
-	// Entry 5: tool_use from response_item function_call/output pair
+	// Entry 4: event_msg flat agent_message final
+	e4 := result.Entries[4]
+	blocks4 := e4.ContentBlocks()
+	if blocks4[0].Phase() != "final" {
+		t.Errorf("entry[4] Phase() = %q, want %q", blocks4[0].Phase(), "final")
+	}
+	if blocks4[0].Text() != "The login function always returns false. Here is the fix." {
+		t.Errorf("entry[4] text = %q, want %q", blocks4[0].Text(), "The login function always returns false. Here is the fix.")
+	}
+
+	// Entry 5: second tool_use
 	e5 := result.Entries[5]
-	if e5.Type() != agent.EntryTypeAssistant {
-		t.Errorf("entry[5] Type() = %q, want %q", e5.Type(), agent.EntryTypeAssistant)
-	}
 	blocks5 := e5.ContentBlocks()
-	if len(blocks5) != 1 {
-		t.Fatalf("entry[5] ContentBlocks() len = %d, want 1", len(blocks5))
-	}
 	if blocks5[0].ContentType() != agent.ContentBlockToolUse {
 		t.Errorf("entry[5] ContentType() = %q, want %q", blocks5[0].ContentType(), agent.ContentBlockToolUse)
-	}
-	if blocks5[0].ToolName() != "exec_command" {
-		t.Errorf("entry[5] ToolName() = %q, want %q", blocks5[0].ToolName(), "exec_command")
-	}
-	if blocks5[0].ToolOutput() == "" {
-		t.Error("entry[5] ToolOutput() is empty, want non-empty output")
-	}
-
-	// Entry 6: event_msg flat agent_message final
-	e6 := result.Entries[6]
-	blocks6 := e6.ContentBlocks()
-	if blocks6[0].Phase() != "final" {
-		t.Errorf("entry[6] Phase() = %q, want %q", blocks6[0].Phase(), "final")
-	}
-	if blocks6[0].Text() != "The login function always returns false. Here is the fix." {
-		t.Errorf("entry[6] text = %q, want %q", blocks6[0].Text(), "The login function always returns false. Here is the fix.")
-	}
-
-	// Entry 8: second tool_use
-	e8 := result.Entries[8]
-	blocks8 := e8.ContentBlocks()
-	if blocks8[0].ContentType() != agent.ContentBlockToolUse {
-		t.Errorf("entry[8] ContentType() = %q, want %q", blocks8[0].ContentType(), agent.ContentBlockToolUse)
 	}
 
 	// Check token accumulation:
@@ -1401,6 +1388,32 @@ func TestParseCachedInputTokensField(t *testing.T) {
 	}
 	if result.Tokens.OutputTokens != 320 {
 		t.Errorf("Tokens.OutputTokens = %d, want 320", result.Tokens.OutputTokens)
+	}
+}
+
+func TestParseMirroredResponseItemAndEventMsgDeduped(t *testing.T) {
+	input := strings.Join([]string{
+		`{"type":"response_item","timestamp":"2026-04-30T10:00:02.000Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Build the project"}]}}`,
+		`{"type":"event_msg","timestamp":"2026-04-30T10:00:02.100Z","payload":{"type":"user_message","message":"Build the project"}}`,
+		`{"type":"event_msg","timestamp":"2026-04-30T10:00:04.000Z","payload":{"type":"agent_message","message":"Done.","phase":"final"}}`,
+		`{"type":"response_item","timestamp":"2026-04-30T10:00:04.100Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}`,
+	}, "\n") + "\n"
+
+	result, err := ParseCodexJSONL(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseCodexJSONL() error: %v", err)
+	}
+	if len(result.Entries) != 2 {
+		t.Fatalf("len(Entries) = %d, want 2", len(result.Entries))
+	}
+	if got := result.Entries[0].ContentBlocks()[0].Text(); got != "Build the project" {
+		t.Fatalf("entry[0] text = %q, want %q", got, "Build the project")
+	}
+	if got := result.Entries[1].ContentBlocks()[0].Text(); got != "Done." {
+		t.Fatalf("entry[1] text = %q, want %q", got, "Done.")
+	}
+	if got := result.Entries[1].ContentBlocks()[0].Phase(); got != "final" {
+		t.Fatalf("entry[1] phase = %q, want %q", got, "final")
 	}
 }
 

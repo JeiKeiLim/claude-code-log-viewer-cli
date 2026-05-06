@@ -2,6 +2,7 @@
 package watcher
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -18,18 +19,27 @@ import (
 var ErrFileTruncated = errors.New("file was truncated")
 
 // Watcher monitors a log file for changes and sends new entries to Bubbletea.
+type EntryParser func(io.Reader) ([]types.LogEntry, error)
+
 type Watcher struct {
-	filePath    string
-	fsWatcher   *fsnotify.Watcher
-	lastReadPos int64
-	mu          sync.Mutex // Protects lastReadPos and closed
-	closed      bool
+	filePath     string
+	fsWatcher    *fsnotify.Watcher
+	lastReadPos  int64
+	parseEntries EntryParser
+	mu           sync.Mutex // Protects lastReadPos and closed
+	closed       bool
 }
 
 // NewWithPosition creates a watcher starting from a specific file position.
 // Use position=0 to read from beginning (for streaming mode initial read).
 // Use position=fileSize to skip existing content (for TUI watch mode).
 func NewWithPosition(filePath string, position int64) (*Watcher, error) {
+	return NewWithPositionAndParser(filePath, position, nil)
+}
+
+// NewWithPositionAndParser creates a watcher starting from a specific file
+// position and parsing appended complete JSONL records with the supplied parser.
+func NewWithPositionAndParser(filePath string, position int64, parseEntries EntryParser) (*Watcher, error) {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -39,20 +49,26 @@ func NewWithPosition(filePath string, position int64) (*Watcher, error) {
 		return nil, err
 	}
 	return &Watcher{
-		filePath:    filePath,
-		fsWatcher:   fsw,
-		lastReadPos: position,
+		filePath:     filePath,
+		fsWatcher:    fsw,
+		lastReadPos:  position,
+		parseEntries: parseEntries,
 	}, nil
 }
 
 // New creates a new file watcher for the given file path.
 // The watcher starts at the current end of file (skips existing content).
 func New(filePath string) (*Watcher, error) {
+	return NewWithParser(filePath, nil)
+}
+
+// NewWithParser creates a watcher for the given file path using a custom parser.
+func NewWithParser(filePath string, parseEntries EntryParser) (*Watcher, error) {
 	stat, err := os.Stat(filePath)
 	if err != nil {
 		return nil, err
 	}
-	return NewWithPosition(filePath, stat.Size())
+	return NewWithPositionAndParser(filePath, stat.Size(), parseEntries)
 }
 
 // WaitForEvent returns a tea.Cmd that blocks until a file event occurs.
@@ -91,6 +107,22 @@ func (w *Watcher) WaitForEvent() tea.Cmd {
 
 // readNewEntries reads and parses any new content appended to the file.
 func (w *Watcher) readNewEntries() ([]types.LogEntry, error) {
+	data, err := w.readNewCompleteLines()
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	if w.parseEntries != nil {
+		return w.parseEntries(bytes.NewReader(data))
+	}
+	result := parser.ParseJSONL(bytes.NewReader(data))
+	return result.Entries, nil
+}
+
+func (w *Watcher) readNewCompleteLines() ([]byte, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -120,17 +152,22 @@ func (w *Watcher) readNewEntries() ([]types.LogEntry, error) {
 		return nil, err
 	}
 
-	// Parse new content
-	result := parser.ParseJSONL(file)
-
-	// Update position
-	newPos, err := file.Seek(0, io.SeekCurrent)
+	data, err := io.ReadAll(file)
 	if err != nil {
 		return nil, err
 	}
-	w.lastReadPos = newPos
+	if len(data) == 0 {
+		return nil, nil
+	}
 
-	return result.Entries, nil
+	lastNewline := bytes.LastIndexByte(data, '\n')
+	if lastNewline == -1 {
+		return nil, nil
+	}
+
+	complete := data[:lastNewline+1]
+	w.lastReadPos += int64(len(complete))
+	return complete, nil
 }
 
 // ReadNewEntries reads and parses any new content appended to the file.
@@ -143,38 +180,7 @@ func (w *Watcher) ReadNewEntries() ([]types.LogEntry, error) {
 // Exported for streaming plain mode with non-Claude-Code formats that need
 // provider-specific parsing. Returns ErrFileTruncated if file was truncated.
 func (w *Watcher) ReadNewRawBytes() ([]byte, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	file, err := os.Open(w.filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-
-	stat, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if stat.Size() < w.lastReadPos {
-		w.lastReadPos = 0
-		return nil, ErrFileTruncated
-	}
-	if stat.Size() == w.lastReadPos {
-		return nil, nil
-	}
-
-	if _, err := file.Seek(w.lastReadPos, io.SeekStart); err != nil {
-		return nil, err
-	}
-
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, err
-	}
-
-	w.lastReadPos += int64(len(data))
-	return data, nil
+	return w.readNewCompleteLines()
 }
 
 // LastPosition returns the current file read position.

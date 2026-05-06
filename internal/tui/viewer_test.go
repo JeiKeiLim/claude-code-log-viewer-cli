@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -554,6 +555,68 @@ func TestSmartAutoScrollNewEntriesHandler(t *testing.T) {
 	m.newEntriesCount = 0
 	if m.newEntriesCount != 0 {
 		t.Errorf("newEntriesCount should be 0 after reset, got %d", m.newEntriesCount)
+	}
+}
+
+func TestNewEntriesMsgDedupesCodexMirroredLiveEntry(t *testing.T) {
+	ts := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	entries := []types.LogEntry{{
+		Type:      types.EntryTypeAssistant,
+		Timestamp: ts,
+		Message: types.Message{
+			Role: "assistant",
+			Content: []types.MessageContent{{
+				Type: types.ContentTypeText,
+				Text: "Done.",
+			}},
+		},
+	}}
+	opts := RenderOptions{
+		WatchMode: true,
+		WatchParser: func(_ io.Reader) ([]types.LogEntry, error) {
+			return nil, nil
+		},
+	}
+	m := NewViewerModel(entries, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+
+	updated, _ := m.Update(watcher.NewEntriesMsg{Entries: []types.LogEntry{{
+		Type:      types.EntryTypeAssistant,
+		Timestamp: ts.Add(100 * time.Millisecond),
+		Message: types.Message{
+			Role: "assistant",
+			Content: []types.MessageContent{{
+				Type: types.ContentTypeText,
+				Text: "Done.",
+			}},
+		},
+	}}})
+	got := updated.(ViewerModel)
+
+	if len(got.entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(got.entries))
+	}
+}
+
+func TestNewEntriesMsgKeepsDuplicateWhenNotProviderWatch(t *testing.T) {
+	ts := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	entries := []types.LogEntry{{
+		Type:      types.EntryTypeUser,
+		Timestamp: ts,
+		Message:   types.Message{Role: "user", TextContent: "again"},
+	}}
+	m := NewViewerModel(entries, 0, "Test", RenderOptions{WatchMode: true}, nil)
+	m.SetSize(80, 24)
+
+	updated, _ := m.Update(watcher.NewEntriesMsg{Entries: []types.LogEntry{{
+		Type:      types.EntryTypeUser,
+		Timestamp: ts.Add(100 * time.Millisecond),
+		Message:   types.Message{Role: "user", TextContent: "again"},
+	}}})
+	got := updated.(ViewerModel)
+
+	if len(got.entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(got.entries))
 	}
 }
 

@@ -3,6 +3,7 @@ package watcher
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 )
 
 func TestNew(t *testing.T) {
@@ -129,6 +132,115 @@ func TestReadNewEntries(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("expected 0 entries on second read, got %d", len(entries))
+	}
+}
+
+func TestReadNewEntriesWaitsForCompleteJSONLLine(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	initialContent := `{"type":"user","message":{"role":"user","content":"initial"},"timestamp":"2026-01-16T10:00:00Z"}
+`
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	partial := `{"type":"user","message":{"role":"user","content":"split`
+	f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open file for append: %v", err)
+	}
+	if _, err := f.WriteString(partial); err != nil {
+		t.Fatalf("failed to append partial line: %v", err)
+	}
+	_ = f.Close()
+
+	entries, err := w.readNewEntries()
+	if err != nil {
+		t.Fatalf("unexpected error reading partial line: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no entries for partial line, got %d", len(entries))
+	}
+	if got, want := w.LastPosition(), int64(len(initialContent)); got != want {
+		t.Fatalf("last read position advanced for partial line: got %d, want %d", got, want)
+	}
+
+	f, err = os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to reopen file for append: %v", err)
+	}
+	if _, err := f.WriteString(` message"},"timestamp":"2026-01-16T10:01:00Z"}` + "\n"); err != nil {
+		t.Fatalf("failed to append line completion: %v", err)
+	}
+	_ = f.Close()
+
+	entries, err = w.readNewEntries()
+	if err != nil {
+		t.Fatalf("unexpected error reading completed line: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 completed entry, got %d", len(entries))
+	}
+	if entries[0].Message.TextContent != "split message" {
+		t.Fatalf("entry text = %q, want %q", entries[0].Message.TextContent, "split message")
+	}
+}
+
+func TestReadNewEntriesUsesCustomParser(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+
+	initialContent := `{"kind":"initial"}` + "\n"
+	if err := os.WriteFile(testFile, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	var parsed string
+	w, err := NewWithParser(testFile, func(r io.Reader) ([]types.LogEntry, error) {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return nil, err
+		}
+		parsed = string(data)
+		return []types.LogEntry{{
+			Type: types.EntryTypeUser,
+			Message: types.Message{
+				Role:        "user",
+				TextContent: "custom",
+			},
+		}}, nil
+	})
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	newContent := `{"kind":"custom"}` + "\n"
+	f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open file for append: %v", err)
+	}
+	if _, err := f.WriteString(newContent); err != nil {
+		t.Fatalf("failed to append new content: %v", err)
+	}
+	_ = f.Close()
+
+	entries, err := w.readNewEntries()
+	if err != nil {
+		t.Fatalf("unexpected error reading new entries: %v", err)
+	}
+	if parsed != newContent {
+		t.Fatalf("custom parser saw %q, want %q", parsed, newContent)
+	}
+	if len(entries) != 1 || entries[0].Message.TextContent != "custom" {
+		t.Fatalf("custom parser entries = %#v, want one custom entry", entries)
 	}
 }
 
@@ -839,6 +951,54 @@ func TestReadNewRawBytesReadsAppendedData(t *testing.T) {
 	}
 	if raw2 != nil {
 		t.Errorf("second ReadNewRawBytes() = %q, want nil", string(raw2))
+	}
+}
+
+func TestReadNewRawBytesWaitsForCompleteLine(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.jsonl")
+	initial := "line1\n"
+	if err := os.WriteFile(testFile, []byte(initial), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	w, err := New(testFile)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	f, err := os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open for append: %v", err)
+	}
+	_, _ = f.WriteString("partial")
+	_ = f.Close()
+
+	raw, err := w.ReadNewRawBytes()
+	if err != nil {
+		t.Fatalf("ReadNewRawBytes() error: %v", err)
+	}
+	if raw != nil {
+		t.Fatalf("ReadNewRawBytes() = %q, want nil for partial line", string(raw))
+	}
+	if got, want := w.LastPosition(), int64(len(initial)); got != want {
+		t.Fatalf("last read position advanced for partial raw line: got %d, want %d", got, want)
+	}
+
+	f, err = os.OpenFile(testFile, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to reopen for append: %v", err)
+	}
+	_, _ = f.WriteString(" line\nnext partial")
+	_ = f.Close()
+
+	raw, err = w.ReadNewRawBytes()
+	if err != nil {
+		t.Fatalf("ReadNewRawBytes() after completion error: %v", err)
+	}
+	if string(raw) != "partial line\n" {
+		t.Fatalf("ReadNewRawBytes() = %q, want %q", string(raw), "partial line\n")
 	}
 }
 

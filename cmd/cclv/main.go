@@ -320,6 +320,16 @@ func runPipelineMode(args []string, mode outputMode, opts tui.RenderOptions, age
 		}
 		entries = convertConversationEntries(convEntries)
 	}
+	if detectedFormat == agent.AgentCodex {
+		provider := selectProvider(detectedFormat)
+		opts.WatchParser = func(r io.Reader) ([]types.LogEntry, error) {
+			convEntries, err := provider.ParseSessionStream(r)
+			if err != nil {
+				return nil, err
+			}
+			return convertConversationEntries(convEntries), nil
+		}
+	}
 
 	// Only error if ALL lines failed to parse (ParseErrors > 0 with no entries).
 	// Empty conversation list is OK if JSONL was valid (no parse errors).

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
@@ -225,6 +226,8 @@ func ParseCodexJSONL(r io.Reader) (*ParseResult, error) {
 		result.Entries = append(result.Entries, makeFunctionCallEntry(fc.name, fc.callID, "", fc.timestamp, result.SessionID))
 		delete(pendingFnCalls, callID)
 	}
+
+	result.Entries = dedupeMirroredMessages(result.Entries)
 
 	return result, nil
 }
@@ -523,6 +526,68 @@ func makeFunctionCallEntry(name, callID, output string, ts time.Time, sessionID 
 		EntryAgent:   agent.AgentCodex,
 		EntrySession: sessionID,
 	}
+}
+
+func dedupeMirroredMessages(entries []agent.ConversationEntry) []agent.ConversationEntry {
+	if len(entries) < 2 {
+		return entries
+	}
+
+	deduped := make([]agent.ConversationEntry, 0, len(entries))
+	for _, entry := range entries {
+		if len(deduped) > 0 && isMirroredMessageDuplicate(deduped[len(deduped)-1], entry) {
+			continue
+		}
+		deduped = append(deduped, entry)
+	}
+	return deduped
+}
+
+func isMirroredMessageDuplicate(prev, current agent.ConversationEntry) bool {
+	if prev.Type() != current.Type() || prev.Role() != current.Role() {
+		return false
+	}
+	if prev.Type() != agent.EntryTypeUser && prev.Type() != agent.EntryTypeAssistant {
+		return false
+	}
+	if hasToolBlock(prev) || hasToolBlock(current) {
+		return false
+	}
+	if !timestampsClose(prev.Timestamp(), current.Timestamp(), 2*time.Second) {
+		return false
+	}
+	return messageTextSignature(prev) == messageTextSignature(current)
+}
+
+func hasToolBlock(entry agent.ConversationEntry) bool {
+	for _, block := range entry.ContentBlocks() {
+		if block.ContentType() == agent.ContentBlockToolUse {
+			return true
+		}
+	}
+	return false
+}
+
+func timestampsClose(a, b time.Time, threshold time.Duration) bool {
+	if a.IsZero() || b.IsZero() {
+		return false
+	}
+	delta := a.Sub(b)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= threshold
+}
+
+func messageTextSignature(entry agent.ConversationEntry) string {
+	blocks := entry.ContentBlocks()
+	parts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if text := block.Text(); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // parseTimestamp parses a timestamp string, returning zero time on failure.
