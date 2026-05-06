@@ -15,6 +15,22 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/watcher"
 )
 
+type fakeProviderEntryWatcher struct {
+	entries []types.LogEntry
+	closed  bool
+}
+
+func (w *fakeProviderEntryWatcher) NewEntries() ([]types.LogEntry, error) {
+	entries := w.entries
+	w.entries = nil
+	return entries, nil
+}
+
+func (w *fakeProviderEntryWatcher) Close() error {
+	w.closed = true
+	return nil
+}
+
 func TestDefaultRenderOptions(t *testing.T) {
 	opts := DefaultRenderOptions()
 
@@ -617,6 +633,64 @@ func TestNewEntriesMsgKeepsDuplicateWhenNotProviderWatch(t *testing.T) {
 
 	if len(got.entries) != 2 {
 		t.Fatalf("len(entries) = %d, want 2", len(got.entries))
+	}
+}
+
+func TestWKeyStartsProviderWatcher(t *testing.T) {
+	fakeWatcher := &fakeProviderEntryWatcher{}
+	factoryCalls := 0
+	opts := RenderOptions{
+		ProviderWatch: func() (ProviderEntryWatcher, error) {
+			factoryCalls++
+			return fakeWatcher, nil
+		},
+		FilePath: "opencode-session-id",
+	}
+	m := NewViewerModel([]types.LogEntry{{Type: types.EntryTypeUser}}, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	got := updated.(ViewerModel)
+
+	if factoryCalls != 1 {
+		t.Fatalf("factory calls = %d, want 1", factoryCalls)
+	}
+	if !got.watchMode {
+		t.Fatal("watchMode should be enabled")
+	}
+	if got.providerWatcher == nil {
+		t.Fatal("providerWatcher should be set")
+	}
+	if got.watcher != nil {
+		t.Fatal("file watcher should not be created for provider watch")
+	}
+	if cmd == nil {
+		t.Fatal("expected provider watcher command")
+	}
+}
+
+func TestWKeyStopsProviderWatcher(t *testing.T) {
+	fakeWatcher := &fakeProviderEntryWatcher{}
+	opts := RenderOptions{
+		WatchMode: true,
+		ProviderWatch: func() (ProviderEntryWatcher, error) {
+			return fakeWatcher, nil
+		},
+	}
+	m := NewViewerModel([]types.LogEntry{{Type: types.EntryTypeUser}}, 0, "Test", opts, nil)
+	m.SetSize(80, 24)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	got := updated.(ViewerModel)
+
+	if !fakeWatcher.closed {
+		t.Fatal("provider watcher should be closed")
+	}
+	if got.providerWatcher != nil {
+		t.Fatal("providerWatcher should be cleared")
+	}
+	if got.watchMode {
+		t.Fatal("watchMode should be disabled")
 	}
 }
 

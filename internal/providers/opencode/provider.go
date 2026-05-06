@@ -81,6 +81,26 @@ func (p *Provider) ParseSession(session agent.Session) ([]agent.ConversationEntr
 	return parseSessionFromDB(db, session.FilePath)
 }
 
+// WatchSession watches an OpenCode session for new database messages.
+func (p *Provider) WatchSession(session agent.Session) (agent.SessionWatcher, error) {
+	db, err := openDB(p.dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	sessionID := session.ID
+	if sessionID == "" {
+		sessionID = session.FilePath
+	}
+	w, err := NewOpenCodeWatcher(db, sessionID)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	return &dbClosingWatcher{watcher: w, closeDB: db.Close}, nil
+}
+
 // dbExists checks whether the database file is accessible.
 func dbExists(dbPath string) bool {
 	expanded := expandHome(dbPath)
@@ -90,3 +110,4 @@ func dbExists(dbPath string) bool {
 
 // compile-time check that Provider satisfies AgentProvider.
 var _ agent.AgentProvider = (*Provider)(nil)
+var _ agent.WatchableProvider = (*Provider)(nil)

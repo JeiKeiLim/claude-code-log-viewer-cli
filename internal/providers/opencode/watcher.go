@@ -2,7 +2,6 @@ package opencode
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -15,13 +14,32 @@ import (
 type OpenCodeWatcher struct {
 	db        *sql.DB
 	sessionID string
-	lastTime  int64 // unix epoch of the last-seen message
+	lastTime  int64 // raw DB time_created value of the last-seen complete message
 
 	mu      sync.Mutex
 	closed  bool
 	ticker  *time.Ticker
 	done    chan struct{}
 	pending []agent.ConversationEntry
+	emitted map[string]struct{}
+}
+
+type dbClosingWatcher struct {
+	watcher *OpenCodeWatcher
+	closeDB func() error
+}
+
+func (w *dbClosingWatcher) NewEntries() ([]agent.ConversationEntry, error) {
+	return w.watcher.NewEntries()
+}
+
+func (w *dbClosingWatcher) Close() error {
+	watcherErr := w.watcher.Close()
+	dbErr := w.closeDB()
+	if watcherErr != nil {
+		return watcherErr
+	}
+	return dbErr
 }
 
 // NewOpenCodeWatcher creates a watcher that polls for new messages in the
@@ -43,6 +61,7 @@ func NewOpenCodeWatcher(db *sql.DB, sessionID string) (*OpenCodeWatcher, error) 
 		lastTime:  lastTime,
 		ticker:    time.NewTicker(100 * time.Millisecond),
 		done:      make(chan struct{}),
+		emitted:   make(map[string]struct{}),
 	}
 
 	go w.poll()
@@ -72,13 +91,15 @@ func (w *OpenCodeWatcher) checkNewMessages() {
 		return
 	}
 
-	entries, maxTimeCreated, err := parseSessionFromDBSince(w.db, w.sessionID, w.lastTime)
+	entries, maxTimeCreated, hasPending, err := parseSessionFromDBSinceWithSeen(w.db, w.sessionID, w.lastTime, w.emitted)
 	if err != nil {
 		return
 	}
 
 	if len(entries) > 0 {
 		w.pending = append(w.pending, entries...)
+	}
+	if !hasPending && maxTimeCreated > 0 {
 		w.lastTime = maxTimeCreated
 	}
 }
@@ -113,10 +134,16 @@ func (w *OpenCodeWatcher) Close() error {
 	return nil
 }
 
-// parseSessionFromDBSince queries messages created after the given unix epoch
-// timestamp and converts them into ConversationEntry values.
-// Returns the entries and the maximum time_created column value among them.
 func parseSessionFromDBSince(db *sql.DB, sessionID string, sinceTime int64) ([]agent.ConversationEntry, int64, error) {
+	entries, maxTimeCreated, _, err := parseSessionFromDBSinceWithSeen(db, sessionID, sinceTime, nil)
+	return entries, maxTimeCreated, err
+}
+
+// parseSessionFromDBSinceWithSeen queries messages created after the given raw
+// DB timestamp and converts complete messages into ConversationEntry values.
+// Messages without content are treated as pending so the watcher can retry
+// after OpenCode inserts their part rows.
+func parseSessionFromDBSinceWithSeen(db *sql.DB, sessionID string, sinceTime int64, emitted map[string]struct{}) ([]agent.ConversationEntry, int64, bool, error) {
 	// Collect all messages first, then close rows before querying parts.
 	type msgRow struct {
 		id          string
@@ -131,7 +158,7 @@ func parseSessionFromDBSince(db *sql.DB, sessionID string, sinceTime int64) ([]a
 		ORDER BY time_created ASC
 	`, sessionID, sinceTime)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to query new messages: %w", err)
+		return nil, 0, false, fmt.Errorf("failed to query new messages: %w", err)
 	}
 
 	var msgRows []msgRow
@@ -139,68 +166,53 @@ func parseSessionFromDBSince(db *sql.DB, sessionID string, sinceTime int64) ([]a
 		var mr msgRow
 		if err := rows.Scan(&mr.id, &mr.dataJSON, &mr.timeCreated); err != nil {
 			rows.Close()
-			return nil, 0, fmt.Errorf("failed to scan message row: %w", err)
+			return nil, 0, false, fmt.Errorf("failed to scan message row: %w", err)
 		}
 		msgRows = append(msgRows, mr)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, 0, fmt.Errorf("error iterating message rows: %w", err)
+		return nil, 0, false, fmt.Errorf("error iterating message rows: %w", err)
 	}
 	rows.Close()
 
 	var entries []agent.ConversationEntry
 	var maxTimeCreated int64
+	hasPending := false
 
 	for _, mr := range msgRows {
-		if mr.timeCreated > maxTimeCreated {
-			maxTimeCreated = mr.timeCreated
-		}
-
-		var mData messageData
-		if err := json.Unmarshal([]byte(mr.dataJSON), &mData); err != nil {
-			continue
-		}
-
-		var eType agent.EntryType
-		switch mData.Role {
-		case "user":
-			eType = agent.EntryTypeUser
-		case "assistant":
-			eType = agent.EntryTypeAssistant
-		default:
-			continue
-		}
-
-		ts := time.Unix(mr.timeCreated, 0)
-		if mData.Timestamp != "" {
-			if parsed, err := time.Parse(time.RFC3339, mData.Timestamp); err == nil {
-				ts = parsed
+		if emitted != nil {
+			if _, ok := emitted[mr.id]; ok {
+				if mr.timeCreated > maxTimeCreated {
+					maxTimeCreated = mr.timeCreated
+				}
+				continue
 			}
 		}
 
-		blocks, err := queryPartsForMessage(db, mr.id)
+		entry, ok, pending, err := buildEntryForMessage(db, sessionID, mr.id, mr.dataJSON, mr.timeCreated)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to query parts for message %s: %w", mr.id, err)
+			return nil, 0, false, err
+		}
+		if pending {
+			hasPending = true
+			continue
+		}
+		if !ok {
+			if mr.timeCreated > maxTimeCreated {
+				maxTimeCreated = mr.timeCreated
+			}
+			continue
 		}
 
-		if len(blocks) == 0 && mData.Content != "" {
-			blocks = append(blocks, agent.BasicBlock{
-				BlockType: agent.ContentBlockText,
-				BlockText: mData.Content,
-			})
+		if emitted != nil {
+			emitted[mr.id] = struct{}{}
 		}
-
-		entries = append(entries, agent.BasicEntry{
-			EntryType:      eType,
-			EntryTimestamp: ts,
-			EntryRole:      mData.Role,
-			Blocks:         blocks,
-			EntryTokens:    agent.TokenStats{},
-			EntryAgent:     agent.AgentOpenCode,
-			EntrySession:   sessionID,
-		})
+		if mr.timeCreated > maxTimeCreated {
+			maxTimeCreated = mr.timeCreated
+		}
+		entries = append(entries, entry)
 	}
 
-	return entries, maxTimeCreated, nil
+	return entries, maxTimeCreated, hasPending, nil
 }

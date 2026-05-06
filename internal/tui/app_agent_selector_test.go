@@ -39,6 +39,33 @@ func (p *testProvider) ParseSessionStream(_ io.Reader) ([]agent.ConversationEntr
 	return p.entries, nil
 }
 
+type testSessionWatcher struct {
+	entries []agent.ConversationEntry
+	closed  bool
+}
+
+func (w *testSessionWatcher) NewEntries() ([]agent.ConversationEntry, error) {
+	entries := w.entries
+	w.entries = nil
+	return entries, nil
+}
+
+func (w *testSessionWatcher) Close() error {
+	w.closed = true
+	return nil
+}
+
+type watchableTestProvider struct {
+	*testProvider
+	watcher        *testSessionWatcher
+	watchedSession agent.Session
+}
+
+func (p *watchableTestProvider) WatchSession(session agent.Session) (agent.SessionWatcher, error) {
+	p.watchedSession = session
+	return p.watcher, nil
+}
+
 func makeTestProvider(name string, badge string, projectCount int, sessionCount int) *testProvider {
 	projects := make([]agent.Project, projectCount)
 	for i := range projects {
@@ -431,6 +458,58 @@ func TestConvertConversationEntryToLogEntry(t *testing.T) {
 	}
 	if logEntry.Message.Content[0].Text != "Hello" {
 		t.Errorf("expected 'Hello', got %s", logEntry.Message.Content[0].Text)
+	}
+}
+
+func TestConversationLoadedWithWatchUsesProviderWatcher(t *testing.T) {
+	watcherEntry := agent.BasicEntry{
+		EntryType:      agent.EntryTypeAssistant,
+		EntryTimestamp: time.Now(),
+		EntryRole:      "assistant",
+		Blocks: []agent.ContentBlock{
+			agent.BasicBlock{BlockType: agent.ContentBlockText, BlockText: "live update"},
+		},
+		EntryAgent:   agent.AgentOpenCode,
+		EntrySession: "opencode-session-1",
+	}
+	p := &watchableTestProvider{
+		testProvider: &testProvider{
+			agentType:   agent.AgentOpenCode,
+			displayName: "OpenCode",
+			badge:       "[O]",
+			available:   true,
+		},
+		watcher: &testSessionWatcher{entries: []agent.ConversationEntry{watcherEntry}},
+	}
+	model := NewAppModelWithProviders([]agent.AgentProvider{p})
+	model.width = 80
+	model.height = 24
+	model.selectedProvider = p
+	model.selectedConversation = types.Conversation{FilePath: "opencode-session-1"}
+
+	newModel, cmd := model.Update(conversationLoadedWithWatchMsg{
+		entries:  []types.LogEntry{},
+		filePath: "opencode-session-1",
+	})
+	updated := newModel.(AppModel)
+
+	if updated.state != viewViewer {
+		t.Fatalf("state = %d, want viewViewer", updated.state)
+	}
+	if p.watchedSession.ID != "opencode-session-1" {
+		t.Fatalf("watched session ID = %q, want opencode-session-1", p.watchedSession.ID)
+	}
+	if !updated.viewerModel.watchMode {
+		t.Fatal("viewer watchMode should be enabled")
+	}
+	if updated.viewerModel.providerWatcher == nil {
+		t.Fatal("viewer providerWatcher should be set")
+	}
+	if updated.viewerModel.watcher != nil {
+		t.Fatal("viewer file watcher should not be set for provider watch")
+	}
+	if cmd == nil {
+		t.Fatal("expected viewer init command")
 	}
 }
 

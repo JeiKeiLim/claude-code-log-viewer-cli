@@ -36,15 +36,25 @@ const (
 
 // RenderOptions controls visibility of content types during rendering.
 type RenderOptions struct {
-	HideThoughts bool   // Hide thinking blocks
-	HideTools    bool   // Hide tool use blocks
-	Width        int    // Width override for rendering (0=auto-detect)
-	WatchMode    bool   // Enable file watching mode
-	FilePath     string // Full path for file watching
-	FollowLatest bool   // Enable follow-latest mode (Story 11.2)
-	ProjectPath  string // Directory path for project watcher (Story 11.2)
-	WatchParser  watcher.EntryParser
+	HideThoughts  bool   // Hide thinking blocks
+	HideTools     bool   // Hide tool use blocks
+	Width         int    // Width override for rendering (0=auto-detect)
+	WatchMode     bool   // Enable file watching mode
+	FilePath      string // Full path for file watching
+	FollowLatest  bool   // Enable follow-latest mode (Story 11.2)
+	ProjectPath   string // Directory path for project watcher (Story 11.2)
+	WatchParser   watcher.EntryParser
+	ProviderWatch ProviderWatchFactory
 }
+
+// ProviderEntryWatcher adapts provider-native storage watchers to the viewer.
+type ProviderEntryWatcher interface {
+	NewEntries() ([]types.LogEntry, error)
+	Close() error
+}
+
+// ProviderWatchFactory creates a provider-native watcher for a selected session.
+type ProviderWatchFactory func() (ProviderEntryWatcher, error)
 
 // DefaultRenderOptions returns options that show all content types with auto-detect width.
 func DefaultRenderOptions() RenderOptions {
@@ -108,6 +118,7 @@ type ViewerModel struct {
 	// Watch mode and watcher
 	watchMode       bool
 	watcher         *watcher.Watcher
+	providerWatcher ProviderEntryWatcher
 	newEntriesCount int // Track unseen entries when scrolled up in watch mode
 
 	// Render options for visibility control (includes FilePath for reload on truncation)
@@ -272,8 +283,14 @@ func NewViewerModel(entries []types.LogEntry, parseErrors int, title string, opt
 		m.width = opts.Width
 	}
 
-	// Create watcher if watch mode enabled and file path provided
-	if opts.WatchMode && opts.FilePath != "" {
+	// Create watcher if watch mode enabled. Provider-native watchers are used
+	// for storage backends that are not append-only files.
+	if opts.WatchMode && opts.ProviderWatch != nil {
+		w, err := opts.ProviderWatch()
+		if err == nil {
+			m.providerWatcher = w
+		}
+	} else if opts.WatchMode && opts.FilePath != "" {
 		w, err := watcher.NewWithParser(opts.FilePath, opts.WatchParser)
 		if err == nil {
 			m.watcher = w
@@ -345,6 +362,9 @@ func (m ViewerModel) Init() tea.Cmd {
 	if m.watcher != nil {
 		cmds = append(cmds, m.watcher.WaitForEvent())
 	}
+	if m.providerWatcher != nil {
+		cmds = append(cmds, m.waitForProviderWatcher())
+	}
 	if m.projectWatcher != nil {
 		cmds = append(cmds, m.projectWatcher.WaitForNewConversation())
 	}
@@ -352,6 +372,36 @@ func (m ViewerModel) Init() tea.Cmd {
 		return tea.Batch(cmds...)
 	}
 	return nil
+}
+
+type providerWatcherTickMsg struct{}
+
+func (m ViewerModel) waitForProviderWatcher() tea.Cmd {
+	w := m.providerWatcher
+	if w == nil {
+		return nil
+	}
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
+		entries, err := w.NewEntries()
+		if err != nil {
+			return watcher.WatcherErrorMsg{Err: err}
+		}
+		if len(entries) > 0 {
+			return watcher.NewEntriesMsg{Entries: entries}
+		}
+		return providerWatcherTickMsg{}
+	})
+}
+
+func (m *ViewerModel) closeLiveWatchers() {
+	if m.watcher != nil {
+		_ = m.watcher.Close()
+		m.watcher = nil
+	}
+	if m.providerWatcher != nil {
+		_ = m.providerWatcher.Close()
+		m.providerWatcher = nil
+	}
 }
 
 // Update implements tea.Model.
@@ -365,6 +415,12 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only return tick command if overlay spinner is shown
 		if m.showOverlaySpinner {
 			return m, spinnerCmd
+		}
+		return m, nil
+
+	case providerWatcherTickMsg:
+		if m.providerWatcher != nil {
+			return m, m.waitForProviderWatcher()
 		}
 		return m, nil
 
@@ -457,9 +513,7 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch keyStr {
 		case "q", "ctrl+c":
-			if m.watcher != nil {
-				_ = m.watcher.Close()
-			}
+			m.closeLiveWatchers()
 			// Close project watcher on quit (Story 11.2)
 			if m.projectWatcher != nil {
 				_ = m.projectWatcher.Close()
@@ -515,9 +569,7 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "h", "esc":
 			if m.canGoBack {
 				// Close watchers before navigating back to prevent resource leak
-				if m.watcher != nil {
-					_ = m.watcher.Close()
-				}
+				m.closeLiveWatchers()
 				// Close project watcher on back navigation (Story 11.2)
 				if m.projectWatcher != nil {
 					_ = m.projectWatcher.Close()
@@ -560,13 +612,18 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Toggle watch mode
 			if m.watchMode {
 				// Disable watch mode
-				if m.watcher != nil {
-					_ = m.watcher.Close()
-					m.watcher = nil
-				}
+				m.closeLiveWatchers()
 				m.watchMode = false
 				m.newEntriesCount = 0
 				return m, nil
+			}
+			if m.renderOpts.ProviderWatch != nil {
+				w, err := m.renderOpts.ProviderWatch()
+				if err == nil {
+					m.providerWatcher = w
+					m.watchMode = true
+					return m, m.waitForProviderWatcher()
+				}
 			}
 			// Enable watch mode if file path is available
 			if m.renderOpts.FilePath != "" {
@@ -584,6 +641,9 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Only allow toggle when in watch mode
 			if !m.watchMode {
 				return m, m.showToast("Follow-latest requires watch mode", ToastDuration)
+			}
+			if m.renderOpts.ProviderWatch != nil {
+				return m, m.showToast("Follow-latest unavailable", ToastDuration)
 			}
 
 			if m.followLatest {
@@ -778,6 +838,9 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.watcher != nil {
 				return m, m.watcher.WaitForEvent()
 			}
+			if m.providerWatcher != nil {
+				return m, m.waitForProviderWatcher()
+			}
 			return m, nil
 		}
 
@@ -820,6 +883,9 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.watcher != nil {
 			return m, m.watcher.WaitForEvent()
 		}
+		if m.providerWatcher != nil {
+			return m, m.waitForProviderWatcher()
+		}
 		return m, nil
 
 	case watcher.FileResetMsg:
@@ -853,12 +919,18 @@ func (m ViewerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.watcher != nil {
 			return m, m.watcher.WaitForEvent()
 		}
+		if m.providerWatcher != nil {
+			return m, m.waitForProviderWatcher()
+		}
 		return m, nil
 
 	case watcher.WatcherErrorMsg:
 		// On watcher error, continue waiting (graceful degradation)
 		if m.watcher != nil {
 			return m, m.watcher.WaitForEvent()
+		}
+		if m.providerWatcher != nil {
+			return m, m.waitForProviderWatcher()
 		}
 		return m, nil
 

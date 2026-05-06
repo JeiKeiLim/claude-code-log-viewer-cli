@@ -17,6 +17,10 @@ func TestProviderImplementsAgentProvider(t *testing.T) {
 	var _ agent.AgentProvider = (*Provider)(nil)
 }
 
+func TestProviderImplementsWatchableProvider(t *testing.T) {
+	var _ agent.WatchableProvider = (*Provider)(nil)
+}
+
 func TestOpenCodeWatcherImplementsSessionWatcher(t *testing.T) {
 	var _ agent.SessionWatcher = (*OpenCodeWatcher)(nil)
 }
@@ -586,6 +590,57 @@ func TestWatcherClose(t *testing.T) {
 	}
 }
 
+func TestProviderWatchSessionUsesSessionID(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "opencode.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open temp db: %v", err)
+	}
+	defer db.Close()
+	for _, stmt := range []string{
+		`CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, title TEXT, directory TEXT, time_created INTEGER, time_updated INTEGER)`,
+		`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT, time_created INTEGER)`,
+		`CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, data TEXT)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("create schema: %v", err)
+		}
+	}
+
+	now := time.Now().Unix()
+	if err := insertTestSession(db, "s1", "p1", "Test", "/proj", now, now); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	if err := insertTestMessage(db, "m1", "s1", `{"role":"user","content":"initial"}`, now); err != nil {
+		t.Fatalf("insert initial message: %v", err)
+	}
+
+	p := NewProvider(WithDBPath(dbPath))
+	sw, err := p.WatchSession(agent.Session{ID: "s1"})
+	if err != nil {
+		t.Fatalf("WatchSession() error: %v", err)
+	}
+	defer sw.Close()
+
+	if err := insertTestMessage(db, "m2", "s1", `{"role":"assistant","content":"live"}`, now+1); err != nil {
+		t.Fatalf("insert live message: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	entries, err := sw.NewEntries()
+	if err != nil {
+		t.Fatalf("NewEntries() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Role() != "assistant" {
+		t.Errorf("Role() = %q, want assistant", entries[0].Role())
+	}
+}
+
 func TestExpandHome(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -716,6 +771,57 @@ func TestParseSessionFromDBTimestampParsing(t *testing.T) {
 	expected := time.Date(2026, 4, 30, 15, 30, 0, 0, time.UTC)
 	if !entries[0].Timestamp().Equal(expected) {
 		t.Errorf("Timestamp() = %v, want %v", entries[0].Timestamp(), expected)
+	}
+}
+
+func TestParseSessionFromDBUnixMilliseconds(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	nowMs := now.UnixMilli()
+
+	if err := insertTestSession(db, "s1", "p1", "Test", "/proj", nowMs, nowMs); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	if err := insertTestMessage(db, "m1", "s1", `{"role":"user","content":"millisecond timestamp"}`, nowMs); err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+
+	entries, err := parseSessionFromDB(db, "s1")
+	if err != nil {
+		t.Fatalf("parseSessionFromDB() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if !entries[0].Timestamp().Equal(now) {
+		t.Errorf("Timestamp() = %v, want %v", entries[0].Timestamp(), now)
+	}
+}
+
+func TestQuerySessionsUnixMilliseconds(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	created := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	updated := created.Add(5 * time.Minute)
+	if err := insertTestSession(db, "s1", "p1", "Test", "/proj", created.UnixMilli(), updated.UnixMilli()); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+
+	sessions, err := querySessions(db, "/proj")
+	if err != nil {
+		t.Fatalf("querySessions() error: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
+	}
+	if !sessions[0].CreatedAt.Equal(created) {
+		t.Errorf("CreatedAt = %v, want %v", sessions[0].CreatedAt, created)
+	}
+	if !sessions[0].LastModified.Equal(updated) {
+		t.Errorf("LastModified = %v, want %v", sessions[0].LastModified, updated)
 	}
 }
 
@@ -1115,6 +1221,102 @@ func TestWatcherDoesNotReportOldMessages(t *testing.T) {
 	}
 	if entries[0].Role() != "user" {
 		t.Errorf("entry Role() = %q, want user", entries[0].Role())
+	}
+}
+
+func TestWatcherWaitsForPartsBeforeEmitting(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	now := time.Now().Unix()
+	if err := insertTestSession(db, "s1", "p1", "Test", "/proj", now, now); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	if err := insertTestMessage(db, "m0", "s1", `{"role":"user","content":"initial"}`, now); err != nil {
+		t.Fatalf("insert initial message: %v", err)
+	}
+
+	w, err := NewOpenCodeWatcher(db, "s1")
+	if err != nil {
+		t.Fatalf("NewOpenCodeWatcher() error: %v", err)
+	}
+	defer w.Close()
+
+	if err := insertTestMessage(db, "m1", "s1", `{"role":"assistant","content":""}`, now+1); err != nil {
+		t.Fatalf("insert empty assistant message: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	entries, err := w.NewEntries()
+	if err != nil {
+		t.Fatalf("NewEntries() error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("len(entries) = %d, want 0 before parts are available", len(entries))
+	}
+
+	if err := insertTestPart(db, "p1", "m1", `{"type":"text","text":"now visible"}`); err != nil {
+		t.Fatalf("insert part: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	entries, err = w.NewEntries()
+	if err != nil {
+		t.Fatalf("NewEntries() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 after part arrives", len(entries))
+	}
+	blocks := entries[0].ContentBlocks()
+	if len(blocks) != 1 || blocks[0].Text() != "now visible" {
+		t.Fatalf("blocks = %#v, want text block with content", blocks)
+	}
+}
+
+func TestWatcherDoesNotDuplicateReadyMessagesWhileEarlierMessagePending(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	now := time.Now().Unix()
+	if err := insertTestSession(db, "s1", "p1", "Test", "/proj", now, now); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	if err := insertTestMessage(db, "m0", "s1", `{"role":"user","content":"initial"}`, now); err != nil {
+		t.Fatalf("insert initial message: %v", err)
+	}
+
+	w, err := NewOpenCodeWatcher(db, "s1")
+	if err != nil {
+		t.Fatalf("NewOpenCodeWatcher() error: %v", err)
+	}
+	defer w.Close()
+
+	if err := insertTestMessage(db, "m1", "s1", `{"role":"assistant","content":""}`, now+1); err != nil {
+		t.Fatalf("insert pending message: %v", err)
+	}
+	if err := insertTestMessage(db, "m2", "s1", `{"role":"user","content":"ready"}`, now+2); err != nil {
+		t.Fatalf("insert ready message: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	entries, err := w.NewEntries()
+	if err != nil {
+		t.Fatalf("NewEntries() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 ready message", len(entries))
+	}
+	if entries[0].Role() != "user" {
+		t.Fatalf("Role() = %q, want user", entries[0].Role())
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	entries, err = w.NewEntries()
+	if err != nil {
+		t.Fatalf("NewEntries() second call error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("len(entries) = %d, want 0 duplicate ready messages", len(entries))
 	}
 }
 

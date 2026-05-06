@@ -1010,10 +1010,45 @@ func (m AppModel) loadProviderSessionWithWatch() tea.Cmd {
 
 func (m AppModel) viewerRenderOptions(filePath string, watchMode bool) RenderOptions {
 	opts := RenderOptions{FilePath: filePath, WatchMode: watchMode}
-	if m.usingProviders && m.selectedProvider != nil && m.selectedProvider.Type() == agent.AgentCodex {
-		opts.WatchParser = providerWatchParser(m.selectedProvider)
+	if m.usingProviders && m.selectedProvider != nil {
+		if m.selectedProvider.Type() == agent.AgentCodex {
+			opts.WatchParser = providerWatchParser(m.selectedProvider)
+		}
+		if watchable, ok := m.selectedProvider.(agent.WatchableProvider); ok {
+			opts.ProviderWatch = providerWatchFactory(watchable, filePath)
+		}
 	}
 	return opts
+}
+
+func providerWatchFactory(provider agent.WatchableProvider, sessionID string) ProviderWatchFactory {
+	return func() (ProviderEntryWatcher, error) {
+		w, err := provider.WatchSession(agent.Session{ID: sessionID, FilePath: sessionID})
+		if err != nil {
+			return nil, err
+		}
+		return providerEntryWatcher{watcher: w}, nil
+	}
+}
+
+type providerEntryWatcher struct {
+	watcher agent.SessionWatcher
+}
+
+func (w providerEntryWatcher) NewEntries() ([]types.LogEntry, error) {
+	convEntries, err := w.watcher.NewEntries()
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]types.LogEntry, 0, len(convEntries))
+	for _, ce := range convEntries {
+		entries = append(entries, convertConversationEntryToLogEntry(ce))
+	}
+	return entries, nil
+}
+
+func (w providerEntryWatcher) Close() error {
+	return w.watcher.Close()
 }
 
 func providerWatchParser(provider agent.AgentProvider) watcher.EntryParser {

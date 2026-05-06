@@ -41,6 +41,67 @@ type stateData struct {
 	Output string `json:"output"`
 }
 
+func opencodeUnixTime(raw int64) time.Time {
+	// OpenCode stores time columns as epoch milliseconds in current releases.
+	// Older tests/fixtures may use seconds, so detect the unit conservatively.
+	if raw > 100_000_000_000 {
+		return time.UnixMilli(raw)
+	}
+	return time.Unix(raw, 0)
+}
+
+func messageTimestamp(rawTimeCreated int64, mData messageData) time.Time {
+	ts := opencodeUnixTime(rawTimeCreated)
+	if mData.Timestamp != "" {
+		if parsed, err := time.Parse(time.RFC3339, mData.Timestamp); err == nil {
+			ts = parsed
+		}
+	}
+	return ts
+}
+
+func buildEntryForMessage(db *sql.DB, sessionID, messageID, dataJSON string, timeCreated int64) (agent.ConversationEntry, bool, bool, error) {
+	var mData messageData
+	if err := json.Unmarshal([]byte(dataJSON), &mData); err != nil {
+		return nil, false, false, nil
+	}
+
+	var eType agent.EntryType
+	switch mData.Role {
+	case "user":
+		eType = agent.EntryTypeUser
+	case "assistant":
+		eType = agent.EntryTypeAssistant
+	default:
+		return nil, false, false, nil
+	}
+
+	blocks, err := queryPartsForMessage(db, messageID)
+	if err != nil {
+		return nil, false, false, fmt.Errorf("failed to query parts for message %s: %w", messageID, err)
+	}
+
+	if len(blocks) == 0 && mData.Content != "" {
+		blocks = append(blocks, agent.BasicBlock{
+			BlockType: agent.ContentBlockText,
+			BlockText: mData.Content,
+		})
+	}
+	if len(blocks) == 0 {
+		return nil, false, true, nil
+	}
+
+	return agent.BasicEntry{
+		EntryType:      eType,
+		EntryTimestamp: messageTimestamp(timeCreated, mData),
+		EntryRole:      mData.Role,
+		Blocks:         blocks,
+		EntryTokens:    agent.TokenStats{},
+		EntryAgent:     agent.AgentOpenCode,
+		EntrySession:   sessionID,
+	}, true, false, nil
+}
+
 // UnmarshalJSON handles the dual-format state field (string or object).
 func (p *partData) UnmarshalJSON(data []byte) error {
 	type alias partData
@@ -126,55 +187,13 @@ func parseSessionFromDB(db *sql.DB, sessionID string) ([]agent.ConversationEntry
 	var entries []agent.ConversationEntry
 
 	for _, mr := range msgRows {
-		var mData messageData
-		if err := json.Unmarshal([]byte(mr.dataJSON), &mData); err != nil {
-			// Skip malformed message data, continue processing others.
-			continue
-		}
-
-		// Determine entry type from role.
-		var eType agent.EntryType
-		switch mData.Role {
-		case "user":
-			eType = agent.EntryTypeUser
-		case "assistant":
-			eType = agent.EntryTypeAssistant
-		default:
-			continue
-		}
-
-		// Parse the timestamp from the data, fall back to time_created.
-		ts := time.Unix(mr.timeCreated, 0)
-		if mData.Timestamp != "" {
-			if parsed, err := time.Parse(time.RFC3339, mData.Timestamp); err == nil {
-				ts = parsed
-			}
-		}
-
-		// Query parts for this message.
-		blocks, err := queryPartsForMessage(db, mr.id)
+		entry, ok, _, err := buildEntryForMessage(db, sessionID, mr.id, mr.dataJSON, mr.timeCreated)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query parts for message %s: %w", mr.id, err)
+			return nil, err
 		}
-
-		// If no parts were found but the message has content, create a text block.
-		if len(blocks) == 0 && mData.Content != "" {
-			blocks = append(blocks, agent.BasicBlock{
-				BlockType: agent.ContentBlockText,
-				BlockText: mData.Content,
-			})
+		if !ok {
+			continue
 		}
-
-		entry := agent.BasicEntry{
-			EntryType:      eType,
-			EntryTimestamp: ts,
-			EntryRole:      mData.Role,
-			Blocks:         blocks,
-			EntryTokens:    agent.TokenStats{},
-			EntryAgent:     agent.AgentOpenCode,
-			EntrySession:   sessionID,
-		}
-
 		entries = append(entries, entry)
 	}
 

@@ -24,6 +24,12 @@ type AgentProvider interface {
 	ParseSessionStream(r io.Reader) ([]ConversationEntry, error)
 }
 
+// WatchableProvider is an optional provider capability for live mode backends
+// that do not map cleanly to append-only files.
+type WatchableProvider interface {
+	WatchSession(session Session) (SessionWatcher, error)
+}
+
 // SessionWatcher watches a session for new entries (live mode).
 type SessionWatcher interface {
 	// NewEntries returns any entries appended since the last call.

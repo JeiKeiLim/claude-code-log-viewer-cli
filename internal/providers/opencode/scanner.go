@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
 )
@@ -112,8 +111,8 @@ func querySessions(db *sql.DB, projectDir string) ([]agent.Session, error) {
 			ProjectPath:      projectDir,
 			FilePath:         id, // Store session ID since there's no file path for SQLite
 			AgentType:        agent.AgentOpenCode,
-			CreatedAt:        time.Unix(created, 0),
-			LastModified:     time.Unix(updated, 0),
+			CreatedAt:        opencodeUnixTime(created),
+			LastModified:     opencodeUnixTime(updated),
 			FirstUserMessage: title,
 		}
 
