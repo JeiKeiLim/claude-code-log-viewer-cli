@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -14,11 +13,13 @@ import (
 // AgentSelectedMsg is emitted when the user selects an agent provider.
 type AgentSelectedMsg struct {
 	Provider agent.AgentProvider
+	Projects []agent.Project
 }
 
 // agentInfo holds pre-computed display data for a visible provider row.
 type agentInfo struct {
 	provider   agent.AgentProvider
+	projectSet []agent.Project
 	projects   int
 	sessions   int
 	lastActive string
@@ -31,6 +32,7 @@ type AgentSelectorModel struct {
 	cursor    int
 	width     int
 	height    int
+	loading   bool
 
 	// style caches
 	titleStyle  lipgloss.Style
@@ -45,6 +47,20 @@ type AgentSelectorModel struct {
 // If only one provider is available (has projects), it immediately
 // emits an AgentSelectedMsg via the returned Init command (single-agent shortcut).
 func NewAgentSelectorModel(providers []agent.AgentProvider) AgentSelectorModel {
+	m := newAgentSelectorModel(providers)
+	m.refreshVisible()
+	return m
+}
+
+// NewAgentSelectorModelLoading creates the selector without scanning providers.
+// The app uses this so expensive discovery can run after the first TUI frame.
+func NewAgentSelectorModelLoading(providers []agent.AgentProvider) AgentSelectorModel {
+	m := newAgentSelectorModel(providers)
+	m.loading = true
+	return m
+}
+
+func newAgentSelectorModel(providers []agent.AgentProvider) AgentSelectorModel {
 	m := AgentSelectorModel{
 		providers: providers,
 		titleStyle: lipgloss.NewStyle().
@@ -69,7 +85,6 @@ func NewAgentSelectorModel(providers []agent.AgentProvider) AgentSelectorModel {
 		helpStyle: lipgloss.NewStyle().
 			Foreground(dimColor),
 	}
-	m.refreshVisible()
 	return m
 }
 
@@ -86,31 +101,22 @@ func (m *AgentSelectorModel) refreshVisible() {
 			continue
 		}
 		info := agentInfo{
-			provider: p,
-			projects: len(projects),
+			provider:   p,
+			projectSet: append([]agent.Project(nil), projects...),
+			projects:   len(projects),
+			lastActive: "-",
 		}
-		// Count total sessions and find latest activity across all projects.
-		var latest time.Time
+
+		// Use project-level session counts only. Session discovery can parse a
+		// large number of logs for some providers, so keep it lazy until a
+		// project is opened.
 		for _, proj := range projects {
-			sessions, err := p.DiscoverSessions(proj)
-			if err != nil {
-				continue
-			}
-			info.sessions += len(sessions)
-			for _, s := range sessions {
-				if s.LastModified.After(latest) {
-					latest = s.LastModified
-				}
-			}
+			info.sessions += proj.SessionCount
 		}
+
 		// Hide agents with zero sessions per spec requirement.
 		if info.sessions == 0 {
 			continue
-		}
-		if !latest.IsZero() {
-			info.lastActive = formatRelativeTime(latest)
-		} else {
-			info.lastActive = "-"
 		}
 		m.visible = append(m.visible, info)
 	}
@@ -139,10 +145,13 @@ func (m AgentSelectorModel) SingleProvider() agent.AgentProvider {
 
 // Init implements tea.Model.
 func (m AgentSelectorModel) Init() tea.Cmd {
+	if m.loading {
+		return nil
+	}
 	if len(m.visible) == 1 {
-		p := m.visible[0].provider
+		info := m.visible[0]
 		return func() tea.Msg {
-			return AgentSelectedMsg{Provider: p}
+			return AgentSelectedMsg{Provider: info.provider, Projects: info.projectSet}
 		}
 	}
 	return tea.WindowSize()
@@ -172,9 +181,9 @@ func (m AgentSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			if m.cursor < len(m.visible) {
-				p := m.visible[m.cursor].provider
+				info := m.visible[m.cursor]
 				return m, func() tea.Msg {
-					return AgentSelectedMsg{Provider: p}
+					return AgentSelectedMsg{Provider: info.provider, Projects: info.projectSet}
 				}
 			}
 			return m, nil
@@ -185,6 +194,11 @@ func (m AgentSelectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View implements tea.Model.
 func (m AgentSelectorModel) View() string {
+	if m.loading {
+		return m.borderStyle.Render(m.titleStyle.Render("Loading agents") + "\n\n" +
+			m.helpStyle.Render("Scanning agent data directories..."))
+	}
+
 	if len(m.visible) == 0 {
 		return m.borderStyle.Render(m.titleStyle.Render("No agents found") + "\n\n" +
 			m.helpStyle.Render("No agent data directories detected. Press q to quit."))
@@ -255,23 +269,4 @@ func statusText(info agentInfo) string {
 		return "ready"
 	}
 	return "no sessions"
-}
-
-// formatRelativeTime returns a human-friendly relative time string.
-func formatRelativeTime(t time.Time) string {
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	case d < 48*time.Hour:
-		return "yesterday"
-	case d < 30*24*time.Hour:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	default:
-		return t.Format("Jan 02")
-	}
 }

@@ -142,7 +142,7 @@ func NewAppModelWithProviders(providers []agent.AgentProvider) AppModel {
 
 	return AppModel{
 		state:              viewAgentSelector,
-		agentSelectorModel: NewAgentSelectorModel(providers),
+		agentSelectorModel: NewAgentSelectorModelLoading(providers),
 		spinner:            s,
 		loading:            false,
 		tokenService:       tokenSvc,
@@ -265,7 +265,7 @@ func (m AppModel) Init() tea.Cmd {
 	// Add usage fetch on startup (Story 7.4 - async, non-blocking)
 	// Add periodic refresh scheduling (Story 7.5)
 	if m.state == viewAgentSelector {
-		return tea.Batch(m.agentSelectorModel.Init(), tea.WindowSize(), m.fetchUsage(), scheduleUsageTick())
+		return tea.Batch(m.loadAgentProviders(), tea.WindowSize(), m.fetchUsage(), scheduleUsageTick())
 	}
 	if m.state == viewSessionDashboard {
 		// Phase 5a: Session dashboard mode - start session detection pipeline
@@ -345,8 +345,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AgentSelectedMsg:
 		// User selected an agent provider — discover projects and show project list.
 		m.selectedProvider = msg.Provider
-		agentProjects, err := msg.Provider.DiscoverProjects()
-		if err != nil || len(agentProjects) == 0 {
+		agentProjects := msg.Projects
+		if len(agentProjects) == 0 {
+			discovered, err := msg.Provider.DiscoverProjects()
+			if err != nil {
+				m.state = viewAgentSelector // Stay on selector
+				return m, nil
+			}
+			agentProjects = discovered
+		}
+		if len(agentProjects) == 0 {
 			m.state = viewAgentSelector // Stay on selector
 			return m, nil
 		}
@@ -683,6 +691,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Fall through to route to child views
 	}
 
+	switch msg := msg.(type) {
+	case agentProvidersLoadedMsg:
+		m.agentSelectorModel = msg.selector
+		if m.state != viewAgentSelector {
+			return m, nil
+		}
+		return m, m.agentSelectorModel.Init()
+	}
+
 	// Route updates to current view
 	switch m.state {
 	case viewAgentSelector:
@@ -797,6 +814,10 @@ type conversationLoadedWithWatchMsg struct {
 	filePath    string
 }
 
+type agentProvidersLoadedMsg struct {
+	selector AgentSelectorModel
+}
+
 // usageFetchedMsg carries the result of a usage API fetch (Story 7.4).
 type usageFetchedMsg struct {
 	limits *usage.UsageLimits
@@ -858,6 +879,13 @@ func (m AppModel) fetchUsage() tea.Cmd {
 
 		limits, stale, err := m.usageClient.FetchUsage(ctx, token)
 		return usageFetchedMsg{limits: limits, stale: stale, err: err}
+	}
+}
+
+func (m AppModel) loadAgentProviders() tea.Cmd {
+	providers := append([]agent.AgentProvider(nil), m.agentSelectorModel.providers...)
+	return func() tea.Msg {
+		return agentProvidersLoadedMsg{selector: NewAgentSelectorModel(providers)}
 	}
 }
 

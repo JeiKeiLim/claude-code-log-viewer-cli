@@ -24,7 +24,6 @@ import (
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/claudecode"
 	codex "github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/codex"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/opencode"
-	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/scanner"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/tui"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/types"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/usage"
@@ -226,7 +225,7 @@ func main() {
 		mode = modeTUI
 	} else if stdinTTY && len(args) == 0 {
 		// Interactive mode: launch project browser
-		if err := runInteractiveMode(*noMultiSessionFlag); err != nil {
+		if err := runInteractiveMode(*noMultiSessionFlag, agentOverride); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -393,32 +392,9 @@ func runUsageMode(colorMode string) error {
 	return nil
 }
 
-// runInteractiveMode launches the interactive project browser.
-func runInteractiveMode(noMultiSession bool) error {
-	// Scan for projects
-	projects, err := scanner.ScanProjects("")
-	if err != nil {
-		// Show error in the TUI
-		model := tui.NewAppModelWithError(err)
-		p := tea.NewProgram(model, tea.WithAltScreen())
-		if _, err := p.Run(); err != nil {
-			return fmt.Errorf("failed to run app: %w", err)
-		}
-		return nil
-	}
-
-	if len(projects) == 0 {
-		// Show empty state in the TUI
-		model := tui.NewAppModelWithError(fmt.Errorf("no projects found in ~/.claude/projects/"))
-		p := tea.NewProgram(model, tea.WithAltScreen())
-		if _, err := p.Run(); err != nil {
-			return fmt.Errorf("failed to run app: %w", err)
-		}
-		return nil
-	}
-
-	// Create and run the app with projects
-	model := tui.NewAppModel(projects)
+// runInteractiveMode launches the interactive provider/project browser.
+func runInteractiveMode(noMultiSession bool, agentOverride agent.AgentType) error {
+	model := tui.NewAppModelWithProviders(interactiveProviders(agentOverride))
 	if noMultiSession {
 		model.SetNoMultiSession(true)
 	}
@@ -428,6 +404,19 @@ func runInteractiveMode(noMultiSession bool) error {
 	}
 
 	return nil
+}
+
+// interactiveProviders returns the providers exposed in interactive mode.
+// An explicit --agent value bypasses the selector's cross-agent list.
+func interactiveProviders(agentOverride agent.AgentType) []agent.AgentProvider {
+	if agentOverride != "" {
+		return []agent.AgentProvider{selectProvider(agentOverride)}
+	}
+	return []agent.AgentProvider{
+		&claudecode.ClaudeCodeProvider{},
+		codex.NewProvider(),
+		opencode.NewProvider(),
+	}
 }
 
 // Polling interval for streaming mode

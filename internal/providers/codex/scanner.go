@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
 )
@@ -42,12 +43,12 @@ func discoverCodexSessions(baseDir string) (map[string][]string, error) {
 			return nil
 		}
 
-		cwd, err := readSessionCWD(path)
-		if err != nil || cwd == "" {
+		meta, err := readSessionMeta(path)
+		if err != nil || meta.cwd == "" {
 			return nil // skip files without valid session_meta
 		}
 
-		byCWD[cwd] = append(byCWD[cwd], path)
+		byCWD[meta.cwd] = append(byCWD[meta.cwd], path)
 		return nil
 	})
 	if err != nil {
@@ -62,12 +63,17 @@ func discoverCodexSessions(baseDir string) (map[string][]string, error) {
 	return byCWD, nil
 }
 
-// readSessionCWD reads the first line of a rollout file to extract the cwd
-// from the session_meta line.
-func readSessionCWD(filePath string) (string, error) {
+type sessionMeta struct {
+	cwd       string
+	model     string
+	timestamp time.Time
+}
+
+// readSessionMeta reads the first session_meta line from a rollout file.
+func readSessionMeta(filePath string) (sessionMeta, error) {
 	f, err := os.Open(filePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to open %s: %w", filePath, err)
+		return sessionMeta{}, fmt.Errorf("failed to open %s: %w", filePath, err)
 	}
 	defer f.Close()
 
@@ -79,106 +85,69 @@ func readSessionCWD(filePath string) (string, error) {
 		}
 		var cl codexLine
 		if err := json.Unmarshal([]byte(line), &cl); err != nil {
-			return "", nil // not valid JSON, skip
+			return sessionMeta{}, nil // not valid JSON, skip
 		}
 		if cl.Type == "session_meta" {
+			meta := sessionMeta{
+				cwd:   cl.CWD,
+				model: cl.Model,
+			}
+			if cl.Timestamp != "" {
+				if ts, err := time.Parse(time.RFC3339, cl.Timestamp); err == nil {
+					meta.timestamp = ts
+				}
+			}
 			// Try nested payload first (real Codex CLI v0.116.0+ format).
 			if cl.Payload != nil {
-				var mp struct {
-					CWD string `json:"cwd"`
-				}
-				if err := json.Unmarshal(cl.Payload, &mp); err == nil && mp.CWD != "" {
-					return mp.CWD, nil
+				var mp sessionMetaPayload
+				if err := json.Unmarshal(cl.Payload, &mp); err == nil {
+					if mp.CWD != "" {
+						meta.cwd = mp.CWD
+					}
+					if mp.Model != "" {
+						meta.model = mp.Model
+					}
 				}
 			}
 			// Fallback to flat field for backward compatibility.
-			return cl.CWD, nil
+			return meta, nil
 		}
 		// If first non-empty line isn't session_meta, stop looking.
-		return "", nil
+		return sessionMeta{}, nil
 	}
-	return "", nil
+	return sessionMeta{}, nil
 }
 
-// buildSession creates a Session from a rollout file path by parsing metadata.
-func buildSession(filePath, cwd string) (agent.Session, error) {
-	f, err := os.Open(filePath)
+// buildSessionSummary creates a Session from cheap file and session_meta data.
+// Full message parsing is deferred until the session is opened.
+func buildSessionSummary(filePath, cwd string) (agent.Session, error) {
+	meta, err := readSessionMeta(filePath)
 	if err != nil {
-		return agent.Session{}, fmt.Errorf("failed to open session file: %w", err)
-	}
-	defer f.Close()
-
-	result, err := ParseCodexJSONL(f)
-	if err != nil {
-		return agent.Session{}, fmt.Errorf("failed to parse session: %w", err)
+		return agent.Session{}, err
 	}
 
-	// Use file modification time for timestamps.
 	fi, err := os.Stat(filePath)
 	if err != nil {
 		return agent.Session{}, fmt.Errorf("failed to stat session file: %w", err)
 	}
 
-	modTime := fi.ModTime()
-	// Use the first entry's timestamp as creation time if available.
-	createdAt := modTime
-	if len(result.Entries) > 0 {
-		if ts := result.Entries[0].Timestamp(); !ts.IsZero() {
-			createdAt = ts
-		}
-	}
-
-	// Count user messages and turns.
-	msgCount := 0
-	turnCount := 0
-	firstUserMsg := ""
-	for _, e := range result.Entries {
-		if e.Type() == agent.EntryTypeUser {
-			msgCount++
-			if firstUserMsg == "" {
-				for _, b := range e.ContentBlocks() {
-					if b.Text() != "" {
-						firstUserMsg = truncateString(b.Text(), 80)
-						break
-					}
-				}
-			}
-		}
-		if e.Type() == agent.EntryTypeAssistant {
-			msgCount++
-			turnCount++
-		}
-	}
-
 	sessionID := strings.TrimSuffix(filepath.Base(filePath), ".jsonl")
 	sessionID = strings.TrimPrefix(sessionID, "rollout-")
 
-	return agent.Session{
-		ID:               sessionID,
-		ProjectPath:      cwd,
-		FilePath:         filePath,
-		AgentType:        agent.AgentCodex,
-		CreatedAt:        createdAt,
-		LastModified:     modTime,
-		MessageCount:     msgCount,
-		FirstUserMessage: firstUserMsg,
-		Model:            result.Model,
-		Tokens:           result.Tokens,
-		TurnCount:        turnCount,
-	}, nil
-}
+	createdAt := meta.timestamp
+	if createdAt.IsZero() {
+		createdAt = fi.ModTime()
+	}
 
-// truncateString truncates a string to maxLen runes with ellipsis.
-// Uses rune-based truncation to avoid breaking multi-byte UTF-8 characters.
-func truncateString(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	if maxLen <= 3 {
-		return string(runes[:maxLen])
-	}
-	return string(runes[:maxLen-3]) + "..."
+	return agent.Session{
+		ID:           sessionID,
+		ProjectPath:  cwd,
+		FilePath:     filePath,
+		AgentType:    agent.AgentCodex,
+		CreatedAt:    createdAt,
+		LastModified: fi.ModTime(),
+		Model:        meta.model,
+	}, nil
 }
 
 // getDefaultBaseDir returns the user's home directory.

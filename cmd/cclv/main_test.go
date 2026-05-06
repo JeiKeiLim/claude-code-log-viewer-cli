@@ -11,6 +11,7 @@ import (
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/parser"
+	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/claudecode"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/codex"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/providers/opencode"
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/tui"
@@ -526,6 +527,47 @@ func TestParseAgentFlag(t *testing.T) {
 			got := parseAgentFlag(tt.input)
 			if got != tt.want {
 				t.Errorf("parseAgentFlag(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInteractiveProvidersDefaultIncludesAllAgents(t *testing.T) {
+	providers := interactiveProviders("")
+
+	if len(providers) != 3 {
+		t.Fatalf("interactiveProviders(\"\") returned %d providers, want 3", len(providers))
+	}
+	if _, ok := providers[0].(*claudecode.ClaudeCodeProvider); !ok {
+		t.Fatalf("provider[0] = %T, want *claudecode.ClaudeCodeProvider", providers[0])
+	}
+	if _, ok := providers[1].(*codex.Provider); !ok {
+		t.Fatalf("provider[1] = %T, want *codex.Provider", providers[1])
+	}
+	if _, ok := providers[2].(*opencode.Provider); !ok {
+		t.Fatalf("provider[2] = %T, want *opencode.Provider", providers[2])
+	}
+}
+
+func TestInteractiveProvidersAgentOverride(t *testing.T) {
+	tests := []struct {
+		name string
+		at   agent.AgentType
+		want agent.AgentType
+	}{
+		{"claude-code", agent.AgentClaudeCode, agent.AgentClaudeCode},
+		{"codex", agent.AgentCodex, agent.AgentCodex},
+		{"opencode", agent.AgentOpenCode, agent.AgentOpenCode},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			providers := interactiveProviders(tt.at)
+			if len(providers) != 1 {
+				t.Fatalf("interactiveProviders(%q) returned %d providers, want 1", tt.at, len(providers))
+			}
+			if got := providers[0].Type(); got != tt.want {
+				t.Fatalf("interactiveProviders(%q)[0].Type() = %q, want %q", tt.at, got, tt.want)
 			}
 		})
 	}

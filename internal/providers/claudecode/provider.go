@@ -70,7 +70,7 @@ func (p *ClaudeCodeProvider) DiscoverSessions(project agent.Project) ([]agent.Se
 		dirPath = project.Path
 	}
 
-	conversations, err := scanner.ScanConversations(dirPath)
+	conversations, err := scanner.ScanConversationsLazy(dirPath)
 	if err != nil {
 		return nil, fmt.Errorf("claude-code: failed to discover sessions in %s: %w", dirPath, err)
 	}

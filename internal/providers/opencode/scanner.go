@@ -108,12 +108,13 @@ func querySessions(db *sql.DB, projectDir string) ([]agent.Session, error) {
 		}
 
 		sess := agent.Session{
-			ID:           id,
-			ProjectPath:  projectDir,
-			FilePath:     id, // Store session ID since there's no file path for SQLite
-			AgentType:    agent.AgentOpenCode,
-			CreatedAt:    time.Unix(created, 0),
-			LastModified: time.Unix(updated, 0),
+			ID:               id,
+			ProjectPath:      projectDir,
+			FilePath:         id, // Store session ID since there's no file path for SQLite
+			AgentType:        agent.AgentOpenCode,
+			CreatedAt:        time.Unix(created, 0),
+			LastModified:     time.Unix(updated, 0),
+			FirstUserMessage: title,
 		}
 
 		sessions = append(sessions, sess)

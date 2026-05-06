@@ -12,14 +12,15 @@ import (
 
 // mockProvider implements agent.AgentProvider for testing.
 type mockProvider struct {
-	agentType   agent.AgentType
-	displayName string
-	badge       string
-	available   bool
-	projects    []agent.Project
-	projectsErr error
-	sessions    []agent.Session
-	sessionsErr error
+	agentType    agent.AgentType
+	displayName  string
+	badge        string
+	available    bool
+	projects     []agent.Project
+	projectsErr  error
+	sessions     []agent.Session
+	sessionsErr  error
+	sessionCalls int
 }
 
 func (m *mockProvider) Type() agent.AgentType                      { return m.agentType }
@@ -28,6 +29,7 @@ func (m *mockProvider) Badge() string                              { return m.ba
 func (m *mockProvider) IsAvailable() bool                          { return m.available }
 func (m *mockProvider) DiscoverProjects() ([]agent.Project, error) { return m.projects, m.projectsErr }
 func (m *mockProvider) DiscoverSessions(_ agent.Project) ([]agent.Session, error) {
+	m.sessionCalls++
 	return m.sessions, m.sessionsErr
 }
 func (m *mockProvider) ParseSession(_ agent.Session) ([]agent.ConversationEntry, error) {
@@ -39,6 +41,9 @@ func (m *mockProvider) ParseSessionStream(_ io.Reader) ([]agent.ConversationEntr
 
 func availableProvider(name string, at agent.AgentType, badge string, projCount int, sessCount int) *mockProvider {
 	projects := make([]agent.Project, projCount)
+	for i := range projects {
+		projects[i] = agent.Project{SessionCount: sessCount}
+	}
 	sessions := make([]agent.Session, sessCount)
 	return &mockProvider{
 		agentType:   at,
@@ -47,6 +52,19 @@ func availableProvider(name string, at agent.AgentType, badge string, projCount 
 		available:   true,
 		projects:    projects,
 		sessions:    sessions,
+	}
+}
+
+func TestNewAgentSelectorModel_DoesNotDiscoverSessions(t *testing.T) {
+	p := availableProvider("Codex", agent.AgentCodex, "[X]", 2, 3)
+
+	m := NewAgentSelectorModel([]agent.AgentProvider{p})
+
+	if len(m.VisibleProviders()) != 1 {
+		t.Fatalf("expected 1 visible provider, got %d", len(m.VisibleProviders()))
+	}
+	if p.sessionCalls != 0 {
+		t.Fatalf("expected selector to avoid DiscoverSessions, got %d calls", p.sessionCalls)
 	}
 }
 

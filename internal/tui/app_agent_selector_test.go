@@ -2,6 +2,7 @@ package tui
 
 import (
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,51 @@ func TestViewAgentSelector_RendersSelectorView(t *testing.T) {
 
 	if view == "" {
 		t.Error("expected non-empty view for agent selector state")
+	}
+}
+
+func TestNewAppModelWithProviders_StartsWithLoadingSelector(t *testing.T) {
+	p := makeTestProvider("Test", "[T]", 1, 1)
+	model := NewAppModelWithProviders([]agent.AgentProvider{p})
+
+	if len(model.agentSelectorModel.VisibleProviders()) != 0 {
+		t.Fatalf("expected provider discovery to be deferred, got %d visible providers", len(model.agentSelectorModel.VisibleProviders()))
+	}
+
+	view := model.View()
+	if !strings.Contains(view, "Loading agents") {
+		t.Fatalf("expected loading selector view, got %q", view)
+	}
+}
+
+func TestLoadAgentProvidersLoadsSelectorAndAutoSelectsSingleProvider(t *testing.T) {
+	p := makeTestProvider("Test", "[T]", 1, 1)
+	model := NewAppModelWithProviders([]agent.AgentProvider{p})
+
+	msg := model.loadAgentProviders()()
+	loaded, ok := msg.(agentProvidersLoadedMsg)
+	if !ok {
+		t.Fatalf("expected agentProvidersLoadedMsg, got %T", msg)
+	}
+	if len(loaded.selector.VisibleProviders()) != 1 {
+		t.Fatalf("expected 1 visible provider, got %d", len(loaded.selector.VisibleProviders()))
+	}
+
+	newModel, cmd := model.Update(loaded)
+	m := newModel.(AppModel)
+	if len(m.agentSelectorModel.VisibleProviders()) != 1 {
+		t.Fatalf("expected loaded selector to be installed")
+	}
+	if cmd == nil {
+		t.Fatal("expected single provider shortcut command")
+	}
+	cmdMsg := cmd()
+	selected, ok := cmdMsg.(AgentSelectedMsg)
+	if !ok {
+		t.Fatalf("expected AgentSelectedMsg, got %T", cmdMsg)
+	}
+	if selected.Provider != p {
+		t.Fatal("expected selected provider to be the loaded provider")
 	}
 }
 

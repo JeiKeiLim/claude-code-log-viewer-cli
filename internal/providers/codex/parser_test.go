@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
 )
@@ -770,14 +769,14 @@ func TestDiscoverSessions(t *testing.T) {
 	if sess.Model != "o3" {
 		t.Errorf("Model = %q, want %q", sess.Model, "o3")
 	}
-	if sess.MessageCount != 2 {
-		t.Errorf("MessageCount = %d, want 2", sess.MessageCount)
+	if sess.MessageCount != 0 {
+		t.Errorf("MessageCount = %d, want 0 before full parse", sess.MessageCount)
 	}
-	if sess.TurnCount != 1 {
-		t.Errorf("TurnCount = %d, want 1", sess.TurnCount)
+	if sess.TurnCount != 0 {
+		t.Errorf("TurnCount = %d, want 0 before full parse", sess.TurnCount)
 	}
-	if sess.FirstUserMessage != "Hello" {
-		t.Errorf("FirstUserMessage = %q, want %q", sess.FirstUserMessage, "Hello")
+	if sess.FirstUserMessage != "" {
+		t.Errorf("FirstUserMessage = %q, want empty before full parse", sess.FirstUserMessage)
 	}
 }
 
@@ -942,107 +941,6 @@ func TestFixtureJSONStructure(t *testing.T) {
 	for i, line := range lines {
 		if !json.Valid([]byte(line)) {
 			t.Errorf("full-session.jsonl line %d is not valid JSON: %s", i+1, line)
-		}
-	}
-}
-
-// --- UTF-8 truncation tests (bug fix: byte-based slicing broke multi-byte chars) ---
-
-func TestTruncateStringMultiByteUTF8(t *testing.T) {
-	tests := []struct {
-		name   string
-		input  string
-		maxLen int
-		want   string
-	}{
-		{
-			name:   "korean_short_enough",
-			input:  "안녕하세요",
-			maxLen: 80,
-			want:   "안녕하세요",
-		},
-		{
-			name:   "korean_truncated",
-			input:  "안녕하세요 세상입니다 이것은 긴 메시지입니다",
-			maxLen: 10,
-			want:   "안녕하세요 세...",
-		},
-		{
-			name:   "korean_exact_boundary",
-			input:  "안녕하세요",
-			maxLen: 5,
-			want:   "안녕하세요",
-		},
-		{
-			name:   "korean_one_rune_over",
-			input:  "안녕하세요",
-			maxLen: 4,
-			want:   "안...",
-		},
-		{
-			name:   "mixed_ascii_cjk",
-			input:  "Hello 안녕하세요 World 세계",
-			maxLen: 10,
-			want:   "Hello 안...",
-		},
-		{
-			name:   "ascii_only",
-			input:  "This is a long ASCII string for testing",
-			maxLen: 20,
-			want:   "This is a long AS...",
-		},
-		{
-			name:   "empty_string",
-			input:  "",
-			maxLen: 10,
-			want:   "",
-		},
-		{
-			name:   "short_string",
-			input:  "abc",
-			maxLen: 10,
-			want:   "abc",
-		},
-		{
-			name:   "emoji_multi_byte",
-			input:  "🎉🎊🎈🎁🎀🎉🎊🎈🎁🎀🎉",
-			maxLen: 5,
-			want:   "🎉🎊...",
-		},
-		{
-			name:   "maxlen_very_small",
-			input:  "안녕하세요",
-			maxLen: 2,
-			want:   "안녕",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := truncateString(tt.input, tt.maxLen)
-			if got != tt.want {
-				t.Errorf("truncateString(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
-			}
-			// Verify the result is valid UTF-8 (the core bug being fixed).
-			if !utf8.ValidString(got) {
-				t.Errorf("truncateString produced invalid UTF-8: %q", got)
-			}
-		})
-	}
-}
-
-func TestTruncateStringResultRuneCount(t *testing.T) {
-	// Verify that the truncated result never exceeds maxLen runes.
-	for _, input := range []string{
-		"안녕하세요 세상입니다 이것은 아주 긴 한국어 메시지입니다",
-		"Hello World this is a very long English message for testing",
-		strings.Repeat("🎉", 50),
-	} {
-		for maxLen := 1; maxLen <= 100; maxLen++ {
-			result := truncateString(input, maxLen)
-			runeCount := utf8.RuneCountInString(result)
-			if runeCount > maxLen {
-				t.Errorf("truncateString(%q, %d) = %q has %d runes, exceeds maxLen", input, maxLen, result, runeCount)
-			}
 		}
 	}
 }

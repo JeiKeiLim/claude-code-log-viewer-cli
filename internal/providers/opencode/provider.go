@@ -67,16 +67,7 @@ func (p *Provider) DiscoverSessions(project agent.Project) ([]agent.Session, err
 		dir = project.Directory
 	}
 
-	sessions, err := querySessions(db, dir)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := enrichSessions(db, sessions); err != nil {
-		return nil, err
-	}
-
-	return sessions, nil
+	return querySessions(db, dir)
 }
 
 // ParseSession parses a complete session from the OpenCode database.

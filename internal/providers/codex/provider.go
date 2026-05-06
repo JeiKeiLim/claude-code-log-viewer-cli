@@ -8,13 +8,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/agent"
 )
 
 // Provider implements agent.AgentProvider for OpenAI Codex.
 type Provider struct {
-	basePath string
+	basePath      string
+	mu            sync.Mutex
+	sessionsByCWD map[string][]string
 }
 
 // Option configures a Provider.
@@ -60,16 +63,12 @@ func (p *Provider) IsAvailable() bool {
 // DiscoverProjects walks the Codex sessions directory and groups sessions by
 // their cwd, returning one Project per unique cwd.
 func (p *Provider) DiscoverProjects() ([]agent.Project, error) {
-	baseDir := p.basePath
-	if baseDir == "" {
-		var err error
-		baseDir, err = getDefaultBaseDir()
-		if err != nil {
-			return nil, fmt.Errorf("codex discover projects: %w", err)
-		}
+	baseDir, err := p.resolveBaseDir()
+	if err != nil {
+		return nil, fmt.Errorf("codex discover projects: %w", err)
 	}
 
-	byCWD, err := discoverCodexSessions(baseDir)
+	byCWD, err := p.discoverSessionsByCWD(baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("codex discover projects: %w", err)
 	}
@@ -99,16 +98,12 @@ func (p *Provider) DiscoverProjects() ([]agent.Project, error) {
 
 // DiscoverSessions returns all sessions for a given project (identified by cwd).
 func (p *Provider) DiscoverSessions(project agent.Project) ([]agent.Session, error) {
-	baseDir := p.basePath
-	if baseDir == "" {
-		var err error
-		baseDir, err = getDefaultBaseDir()
-		if err != nil {
-			return nil, fmt.Errorf("codex discover sessions: %w", err)
-		}
+	baseDir, err := p.resolveBaseDir()
+	if err != nil {
+		return nil, fmt.Errorf("codex discover sessions: %w", err)
 	}
 
-	byCWD, err := discoverCodexSessions(baseDir)
+	byCWD, err := p.discoverSessionsByCWD(baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("codex discover sessions: %w", err)
 	}
@@ -125,9 +120,9 @@ func (p *Provider) DiscoverSessions(project agent.Project) ([]agent.Session, err
 
 	sessions := make([]agent.Session, 0, len(files))
 	for _, fp := range files {
-		sess, err := buildSession(fp, cwd)
+		sess, err := buildSessionSummary(fp, cwd)
 		if err != nil {
-			// Skip sessions that fail to parse rather than failing entirely.
+			// Skip sessions that fail to summarize rather than failing entirely.
 			continue
 		}
 		sessions = append(sessions, sess)
@@ -173,4 +168,30 @@ func (p *Provider) ParseBytes(data []byte) ([]agent.ConversationEntry, int) {
 // newBytesReader creates an io.Reader from a byte slice.
 func newBytesReader(data []byte) *strings.Reader {
 	return strings.NewReader(string(data))
+}
+
+func (p *Provider) resolveBaseDir() (string, error) {
+	if p.basePath != "" {
+		return p.basePath, nil
+	}
+	return getDefaultBaseDir()
+}
+
+func (p *Provider) discoverSessionsByCWD(baseDir string) (map[string][]string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.sessionsByCWD != nil {
+		return p.sessionsByCWD, nil
+	}
+
+	byCWD, err := discoverCodexSessions(baseDir)
+	if err != nil {
+		return nil, err
+	}
+	if byCWD == nil {
+		byCWD = make(map[string][]string)
+	}
+	p.sessionsByCWD = byCWD
+	return byCWD, nil
 }

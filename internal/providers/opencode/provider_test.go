@@ -969,24 +969,25 @@ func TestFullProviderPipelineWithTempDB(t *testing.T) {
 		t.Errorf("sessions[0].ID = %q, want %q (ordered by time_created DESC)", sessions[0].ID, "s2")
 	}
 
-	// Check enriched session data for s1.
+	// Session discovery is intentionally lightweight; full message parsing
+	// happens when the session is opened.
 	var s1 agent.Session
 	for _, s := range sessions {
 		if s.ID == "s1" {
 			s1 = s
 		}
 	}
-	if s1.MessageCount != 2 {
-		t.Errorf("s1.MessageCount = %d, want 2", s1.MessageCount)
+	if s1.MessageCount != 0 {
+		t.Errorf("s1.MessageCount = %d, want 0 before full parse", s1.MessageCount)
 	}
-	if s1.FirstUserMessage != "Fix the login bug" {
-		t.Errorf("s1.FirstUserMessage = %q, want %q", s1.FirstUserMessage, "Fix the login bug")
+	if s1.FirstUserMessage != "Fix bug" {
+		t.Errorf("s1.FirstUserMessage = %q, want title %q", s1.FirstUserMessage, "Fix bug")
 	}
-	if s1.Model != "claude-3.5-sonnet" {
-		t.Errorf("s1.Model = %q, want %q", s1.Model, "claude-3.5-sonnet")
+	if s1.Model != "" {
+		t.Errorf("s1.Model = %q, want empty before full parse", s1.Model)
 	}
-	if s1.TurnCount != 1 {
-		t.Errorf("s1.TurnCount = %d, want 1", s1.TurnCount)
+	if s1.TurnCount != 0 {
+		t.Errorf("s1.TurnCount = %d, want 0 before full parse", s1.TurnCount)
 	}
 
 	// Parse the full session.
