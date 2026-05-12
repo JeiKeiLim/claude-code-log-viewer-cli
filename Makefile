@@ -13,14 +13,18 @@ GOFMT=gofmt
 GOMOD=$(GOCMD) mod
 GOGET=$(GOCMD) get
 
-# Build flags
-LDFLAGS=-s -w
-BUILD_FLAGS=-ldflags "$(LDFLAGS)"
-
 # Version info (can be overridden)
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE?=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Build flags
+VERSION_PKG=github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version
+LDFLAGS=-s -w \
+	-X $(VERSION_PKG).Version=$(VERSION) \
+	-X $(VERSION_PKG).Commit=$(COMMIT) \
+	-X $(VERSION_PKG).BuildDate=$(BUILD_DATE)
+BUILD_FLAGS=-ldflags "$(LDFLAGS)"
 
 # Platforms for cross-compilation
 PLATFORMS=darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
@@ -217,8 +221,9 @@ release: clean build-all
 	@echo "Creating release artifacts..."
 	@cd $(BINARY_DIR) && \
 	for f in $(BINARY_NAME)-*; do \
-		tar -czf $$f.tar.gz $$f; \
-		echo "Created $$f.tar.gz"; \
+		archive=$$(echo $$f | sed 's/-/_/g').tar.gz; \
+		tar -czf $$archive $$f; \
+		echo "Created $$archive"; \
 	done
 	@echo "Release artifacts created in $(BINARY_DIR)/"
 

@@ -40,14 +40,15 @@ func printHelp() {
 	_, _ = fmt.Fprint(w, `cclv - Claude Code Log Viewer
 
 USAGE:
-  cclv                          Interactive mode - browse all projects
+  cclv                          Interactive mode - browse available agent projects
   cclv [options] <file>         View a specific conversation file
   cat file.jsonl | cclv         Read from stdin
 
 OPTIONS:
   --plain           Output plain text without TUI (for piping)
   --tui             Force interactive TUI mode even when piped
-  --agent=TYPE      Agent format: claude-code, codex, opencode (default: auto-detect)
+  --agent=TYPE      Agent/provider override: claude-code, codex, opencode
+                    (opencode is interactive-only; file/stdin uses claude-code or codex)
   --color=MODE      Color mode: auto (default), always, never
   --hide-thoughts   Hide Claude's thinking blocks
   --hide-tools      Hide tool use/result blocks
@@ -61,9 +62,11 @@ OPTIONS:
   -h, --help        Show this help message
 
 EXAMPLES:
-  cclv                                    Browse all Claude projects
+  cclv                                    Browse available agent projects
   cclv conversation.jsonl                 View a conversation file
   cat file.jsonl | cclv                   Read from stdin
+  cclv --agent=codex rollout.jsonl        Force Codex file parsing
+  cclv --agent=opencode                   Browse OpenCode sessions interactively
   cclv --plain file.jsonl | less          Pipeline with pager
   cclv --hide-thoughts --hide-tools file.jsonl  Show only messages
   cclv --width=100 file.jsonl             Fixed 100-char width
@@ -134,7 +137,7 @@ func main() {
 	// Parse command-line flags
 	plainFlag := flag.Bool("plain", false, "Output plain text without TUI")
 	tuiFlag := flag.Bool("tui", false, "Force TUI mode even when stdout is piped")
-	agentFlag := flag.String("agent", "", "Agent format override: claude-code, codex, opencode (default: auto-detect)")
+	agentFlag := flag.String("agent", "", "Agent/provider override: claude-code, codex, opencode (opencode interactive-only)")
 	colorFlag := flag.String("color", "auto", "Color output: auto, always, never")
 	versionFlag := flag.Bool("version", false, "Print version information and exit")
 	versionShortFlag := flag.Bool("v", false, "Print version information and exit (shorthand)")
@@ -194,6 +197,11 @@ func main() {
 	// Validate follow-latest requires watch mode (AC-5)
 	if followLatest && !watchMode {
 		fmt.Fprintf(os.Stderr, "Error: --follow-latest requires --watch mode\n")
+		os.Exit(1)
+	}
+
+	if err := validateAgentPipelineSupport(agentOverride, args, stdinTTY); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -400,6 +408,19 @@ func runUsageMode(colorMode string) error {
 	output := tui.RenderUsagePlain(limits)
 	fmt.Print(output)
 	return nil
+}
+
+// validateAgentPipelineSupport rejects agent overrides that cannot read file or
+// stdin streams. OpenCode is backed by SQLite, so it is only usable through the
+// interactive provider browser where a database session can be selected.
+func validateAgentPipelineSupport(agentOverride agent.AgentType, args []string, stdinTTY bool) error {
+	if agentOverride != agent.AgentOpenCode {
+		return nil
+	}
+	if stdinTTY && len(args) == 0 {
+		return nil
+	}
+	return fmt.Errorf("--agent=opencode is only supported in interactive mode; OpenCode sessions are stored in SQLite and cannot be read from file or stdin")
 }
 
 // runInteractiveMode launches the interactive provider/project browser.

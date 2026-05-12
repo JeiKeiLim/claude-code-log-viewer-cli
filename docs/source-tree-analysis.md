@@ -1,190 +1,164 @@
 # Source Tree Analysis: cclv
 
-**Generated**: 2026-01-13 | **Scan Level**: Exhaustive
+**Updated**: 2026-05-13
 
 ## Directory Structure
 
 ```
 claude-code-log-viewer-cli/
 ├── cmd/
-│   └── cclv/
-│       └── main.go              # Entry point, mode detection, flag parsing
+│   └── cclv/                  # CLI entry point, flag parsing, mode routing
 │
 ├── internal/
-│   ├── parser/                  # JSONL parsing
-│   │   ├── entry.go             # Single entry parsing, message type handling
-│   │   └── jsonl.go             # Batch/stream parsing, file reading
-│   │
-│   ├── scanner/                 # Project discovery
-│   │   └── projects.go          # Directory scanning, path decoding, metadata
-│   │
-│   ├── tui/                     # Terminal UI components
-│   │   ├── app.go               # Root model, view state routing
-│   │   ├── conversation.go      # Conversation list view
-│   │   ├── plain.go             # Plain text rendering (non-TUI)
-│   │   ├── project.go           # Project list view
-│   │   ├── styles.go            # Lipgloss styles, colors, icons
-│   │   ├── utils.go             # Formatting helpers, border drawing
-│   │   └── viewer.go            # Log viewer with search, toggles
-│   │
-│   ├── types/                   # Core data types
-│   │   ├── conversation.go      # Conversation struct
-│   │   ├── entry.go             # LogEntry, Message, TokenUsage
-│   │   └── project.go           # Project struct
-│   │
-│   └── version/                 # Version information
-│       └── version.go           # Build-time version injection
+│   ├── agent/                 # Provider interfaces and shared agent data model
+│   ├── parser/                # Claude Code JSONL parser
+│   ├── providers/
+│   │   ├── claudecode/        # Claude Code provider adapter
+│   │   ├── codex/             # Codex rollout JSONL provider
+│   │   └── opencode/          # OpenCode SQLite provider
+│   ├── scanner/               # Claude Code project/conversation discovery
+│   ├── session/               # Active Claude Code session detection
+│   ├── token/                 # Token estimation service
+│   ├── tui/                   # Bubble Tea models, dashboards, renderers
+│   ├── types/                 # Legacy/core Claude Code log types
+│   ├── usage/                 # Claude usage API client and usage bar
+│   ├── version/               # Build-time version metadata
+│   └── watcher/               # File and project watchers
 │
-├── docs/                        # Generated documentation (output folder)
-│   ├── index.md                 # Documentation index
-│   ├── project-overview.md      # Project summary
-│   ├── architecture.md          # Architecture documentation
-│   ├── source-tree-analysis.md  # This file
-│   ├── development-guide.md     # Development instructions
-│   ├── lessons-learned.md       # Technical notes (existing)
-│   └── project-scan-report.json # Workflow state file
-│
-├── specs/                       # Speckit feature specifications
-│   ├── 001-claude-log-viewer/   # Initial implementation spec
-│   │   ├── spec.md              # Feature specification
-│   │   ├── plan.md              # Implementation plan
-│   │   ├── research.md          # Research notes
-│   │   ├── data-model.md        # Data model design
-│   │   ├── quickstart.md        # Quick start guide
-│   │   ├── tasks.md             # Implementation tasks
-│   │   └── checklists/
-│   │       └── requirements.md  # Requirements checklist
-│   │
-│   ├── 002-cclv-fixes-enhancements/  # Bug fixes spec
-│   │   └── [same structure]
-│   │
-│   └── 003-ui-metadata-improvements/ # Current feature spec
-│       └── [same structure]
-│
-├── .claude/                     # Claude Code settings
-│   └── commands/
-│       └── bmad/                # BMAD commands (if installed)
-│
-├── _bmad/                       # BMAD installation
-│   ├── core/                    # Core BMAD components
-│   └── bmm/                     # BMM module
-│
-├── .github/
-│   └── workflows/               # GitHub Actions (if any)
-│
-├── .specify/                    # Speckit configuration
-│
-├── cclv                         # Built binary (gitignored)
-├── coverage.out                 # Test coverage output
-├── CLAUDE.md                    # Development guidelines
-├── go.mod                       # Go module definition
-├── go.sum                       # Go module checksums
-├── Makefile                     # Build automation
-└── README.md                    # Project readme
+├── docs/                      # Current documentation
+├── specs/                     # Historical Speckit specifications
+├── _bmad/                     # BMAD workflow assets
+├── _bmad-output/              # Historical planning/implementation artifacts
+├── .github/workflows/         # CI and release workflows
+├── .githooks/                 # Repository-managed git hooks
+├── .specify/                  # Speckit configuration
+├── testdata/fixtures/         # Sample Claude Code and Codex logs
+├── tests/acceptance/          # Cross-package acceptance tests
+├── CLAUDE.md                  # AI-agent development guidance
+├── Makefile                   # Build/test/release automation
+├── README.md                  # User-facing documentation
+├── go.mod
+└── go.sum
 ```
-
-## Critical Directories
-
-### cmd/cclv/ (Entry Point)
-
-**Purpose**: Application entry point and mode routing
-
-| File | LOC | Responsibility |
-|------|-----|----------------|
-| main.go | 165 | Flag parsing, TTY detection, mode routing |
-
-Key entry points:
-- `main()` - Application start
-- `runInteractiveMode()` - Launch project browser
-- `runPipelineMode()` - Handle stdin/file input
-
-### internal/parser/ (JSONL Parsing)
-
-**Purpose**: Parse Claude Code JSONL log format
-
-| File | LOC | Responsibility |
-|------|-----|----------------|
-| entry.go | 121 | Single entry parsing, user/assistant handling |
-| jsonl.go | 106 | Batch parsing, stream parsing, file I/O |
-
-Data flow: `JSONL bytes → RawLogEntry → LogEntry → Message/Content`
-
-### internal/scanner/ (Project Discovery)
-
-**Purpose**: Find and decode Claude Code projects
-
-| File | LOC | Responsibility |
-|------|-----|----------------|
-| projects.go | 403 | Project scanning, path decoding, metadata extraction |
-
-Key algorithms:
-- Path decoding with filesystem validation
-- Display name disambiguation
-- Lazy metadata loading
-
-### internal/tui/ (Terminal UI)
-
-**Purpose**: All TUI components using Bubbletea
-
-| File | LOC | Responsibility |
-|------|-----|----------------|
-| app.go | 261 | Root model, view state machine |
-| project.go | 300 | Project list, filtering |
-| conversation.go | 327 | Conversation list, lazy loading |
-| viewer.go | 551 | Log viewer, search, toggles |
-| styles.go | 229 | Colors, styles, icons, lazy config |
-| utils.go | 163 | Formatting, borders, truncation |
-| plain.go | 108 | Plain text output rendering |
-
-View hierarchy: `AppModel` → `ProjectModel` / `ConversationModel` / `ViewerModel`
-
-### internal/types/ (Data Types)
-
-**Purpose**: Core domain models
-
-| File | LOC | Responsibility |
-|------|-----|----------------|
-| entry.go | 127 | LogEntry, Message, MessageContent, TokenUsage |
-| conversation.go | 25 | Conversation metadata |
-| project.go | 15 | Project metadata |
-
-### internal/version/ (Version Info)
-
-**Purpose**: Build-time version injection
-
-| File | LOC | Responsibility |
-|------|-----|----------------|
-| version.go | 35 | Version, Commit, BuildDate variables |
 
 ## File Statistics
 
-| Category | Count | Total LOC |
-|----------|-------|-----------|
-| Go source files | 15 | ~2,400 |
-| Packages | 6 | - |
-| Spec files (md) | ~20 | - |
-| Config files | 4 | - |
+| Category | Count / Size |
+|----------|--------------|
+| Go source files | 56 non-test / 108 total |
+| Go packages | 15 |
+| Production Go LOC | ~16,700 |
+| Total Go LOC | ~63,500 including tests |
+| Direct dependencies | 9 |
+
+Counts were taken from tracked Go files. Untracked local tool state such as `.agents/`, `.codex/`, `.tenet/`, and generated coverage files is not part of this source-tree summary.
+
+## Critical Directories
+
+### `cmd/cclv/`
+
+**Purpose**: Application entry point and mode routing.
+
+Key responsibilities:
+
+- CLI flag registration and help text
+- TTY-based mode detection
+- provider override parsing
+- file/stdin parsing path
+- usage/version exit paths
+- interactive Bubble Tea program startup
+
+### `internal/agent/`
+
+**Purpose**: Provider-neutral interfaces and types.
+
+Important files:
+
+- `provider.go` - `AgentProvider`, `WatchableProvider`, and `SessionWatcher`
+- `types.go` - provider, project, and session metadata
+- `entry.go` - normalized conversation entries and content blocks
+- `detect.go` - JSONL format detection for pipeline mode
+
+### `internal/providers/`
+
+**Purpose**: Backend-specific discovery, parsing, and watching.
+
+| Package | Responsibility |
+|---------|----------------|
+| `claudecode` | Adapts Claude Code scanner/parser into the provider interface |
+| `codex` | Discovers `~/.codex/sessions`, groups rollout files by `cwd`, parses Codex JSONL |
+| `opencode` | Reads OpenCode projects/sessions from SQLite and watches DB-backed sessions |
+
+### `internal/parser/`
+
+**Purpose**: Claude Code JSONL parsing.
+
+The parser reads line-oriented JSON, extracts message content and usage fields, tolerates malformed lines, and returns parse-error counts alongside valid entries.
+
+### `internal/scanner/`
+
+**Purpose**: Claude Code project discovery.
+
+The scanner decodes Claude Code project directory names, uses filesystem validation to recover paths, scans conversations, and extracts metadata lazily.
+
+### `internal/session/`
+
+**Purpose**: Active Claude Code session lifecycle.
+
+It reads `~/.claude/sessions/{pid}.json`, checks PID liveness, maps active session metadata to JSONL files, emits opened/closed events, and supports the active-session dashboard.
+
+### `internal/tui/`
+
+**Purpose**: All terminal UI code.
+
+Major components:
+
+- `app.go` - root model and view routing
+- `agent_selector.go` - provider selector
+- `project.go` - project list
+- `conversation.go` - conversation/session list
+- `viewer.go` - log viewer
+- `dashboard.go` - selected-project dashboard
+- `session_dashboard.go` and `session_dashboard_viewmode.go` - active Claude Code session dashboard
+- `plain.go` - non-TUI rendering
+- `styles.go`, `grid_layout.go`, `stringwidth.go`, `listviewport.go` - layout and rendering support
+
+### `internal/usage/`
+
+**Purpose**: Claude Code usage-limit monitoring.
+
+This package reads credentials, fetches `https://api.anthropic.com/api/oauth/usage`, caches results in `~/.cache/cclv/usage.json`, renders usage-bar state, and handles rate-limit and timeout errors.
+
+### `internal/watcher/`
+
+**Purpose**: Live updates for file-backed sessions.
+
+Includes append-only file watching for new complete lines and project-directory watching for latest-conversation follow mode.
 
 ## Integration Points
 
-### External Dependencies
-
-| Package | Purpose |
-|---------|---------|
-| github.com/charmbracelet/bubbletea | TUI framework |
-| github.com/charmbracelet/lipgloss | Styling |
-| github.com/charmbracelet/bubbles | UI components (list, viewport, textinput) |
-| golang.org/x/term | Terminal detection |
-
-### File System Access
+### File System
 
 | Path | Purpose | Access |
 |------|---------|--------|
-| `~/.claude/projects/` | Claude Code project storage | Read |
-| `*.jsonl` | Conversation log files | Read |
-| stdin | Pipeline input | Read |
-| stdout | Plain mode output | Write |
+| `~/.claude/projects/` | Claude Code project logs | Read |
+| `~/.claude/sessions/` | Active Claude Code session metadata | Read/watch |
+| `~/.codex/sessions/` | Codex rollout logs | Read |
+| `~/.local/share/opencode/opencode.db` | OpenCode session database | Read |
+| `~/.cache/cclv/usage.json` | Usage API shared cache | Read/write |
+| stdin/stdout | Pipeline and plain modes | Read/write |
 
-### No Network Access
+### Network
 
-This is a local-only tool with no network dependencies.
+The core log viewer is local-first, but usage monitoring is networked. `cclv --usage` and the TUI usage bar call Anthropic's OAuth usage endpoint and cache responses to limit repeated requests.
+
+### GitHub Actions
+
+| Workflow | Purpose |
+|----------|---------|
+| `.github/workflows/ci.yml` | fmt, vet, lint, test, build |
+| `.github/workflows/release.yml` | tagged release builds and archive upload |
+
+## Generated or Local Artifacts
+
+The repository root may contain local binaries, coverage files, and tool state during development. These are not part of the intended architecture and should not be used as source-of-truth docs.

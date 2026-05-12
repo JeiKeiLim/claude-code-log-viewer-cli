@@ -1,51 +1,58 @@
-# Project Overview: Claude Code Log Viewer CLI (cclv)
+# Project Overview: cclv
 
-**Generated**: 2026-01-13 | **Scan Level**: Exhaustive | **Project Type**: CLI
+**Updated**: 2026-05-13 | **Project Type**: CLI/TUI
 
 ## Executive Summary
 
-`cclv` (Claude Code Log Viewer) is a terminal user interface (TUI) application for browsing and viewing Claude Code conversation logs stored in `~/.claude/projects/`. Built with Go and the Charm stack (Bubbletea, Lipgloss, Bubbles), it provides an interactive project browser, conversation timeline, and beautiful log viewer with vim-style navigation.
+`cclv` is a terminal user interface for browsing and viewing coding-agent sessions. It remains Claude Code-first by name and history, but the current implementation supports Claude Code, Codex, and OpenCode providers through a shared provider layer.
+
+The app supports interactive browsing, file/stdin viewing, plain-text export, live watching for file-backed sessions, active Claude Code session dashboards, token statistics, and Claude usage-limit monitoring.
 
 ## Key Features
 
-- **Interactive Project Browser** - Navigate all Claude Code projects from `~/.claude/projects/`
-- **Conversation Timeline** - Browse conversations sorted by most recent
-- **Beautiful Log Viewer** - View messages with syntax highlighting and proper formatting
-- **Vim-style Navigation** - `j/k`, `gg/G`, `/search`, and more
-- **Pipeline Mode** - Pipe JSONL logs directly: `cat file.jsonl | cclv`
-- **Plain Text Output** - Export logs without TUI for scripting
-- **Version Command** - `cclv --version` for version identification
-- **Lazy Loading** - Progressive loading for large conversation lists and logs
+- **Provider Browser** - Select available Claude Code, Codex, and OpenCode data sources
+- **Project and Session Navigation** - Browse projects, conversation lists, and active sessions
+- **Log Viewer** - Render messages with markdown, wrapping, search, line navigation, and collapsible blocks
+- **Dashboard Views** - Monitor selected projects or active Claude Code sessions in grid/single-session layouts
+- **Live Watching** - Follow growing JSONL sessions and optionally follow the newest conversation
+- **Plain Text Mode** - Export formatted logs for scripts, pagers, or other tools
+- **Token Statistics** - Display logged or estimated message/conversation token usage
+- **Usage Limit Monitor** - Fetch Claude Code subscription usage from Anthropic's OAuth usage API
+- **CJK Support** - Measure and render wide characters correctly
+
+## Provider Support
+
+| Provider | Interactive Browse | File/stdin Pipeline | Live Behavior | Storage |
+|----------|--------------------|---------------------|---------------|---------|
+| Claude Code | Yes | Yes | File/project watchers plus active-session dashboard | `~/.claude/projects/` and `~/.claude/sessions/` |
+| Codex | Yes | Yes | File watcher for rollout JSONL | `~/.codex/sessions/` |
+| OpenCode | Yes | No | SQLite polling watcher in interactive mode | `~/.local/share/opencode/opencode.db` |
+
+OpenCode does not support file/stdin pipeline mode because sessions are stored in SQLite, not append-only JSONL files.
 
 ## Technology Stack
 
 | Category | Technology | Version |
 |----------|------------|---------|
-| Language | Go | 1.24.3 |
-| TUI Framework | Bubbletea | v1.3.10 |
-| Styling | Lipgloss | v1.1.1 |
+| Language | Go | 1.25 |
+| TUI Framework | Bubble Tea | v1.3.10 |
+| Styling | Lip Gloss | v1.1.1 pre-release |
 | Components | Bubbles | v0.21.0 |
-| Terminal | golang.org/x/term | v0.39.0 |
+| Markdown | Glamour | v0.10.0 |
+| File Watching | fsnotify | v1.9.0 |
+| Token Counting | tiktoken-go | v0.1.8 |
+| SQLite | modernc.org/sqlite | v1.50.0 |
 
 ## Architecture Classification
 
 | Attribute | Value |
 |-----------|-------|
 | Repository Type | Monolith |
-| Project Type | CLI |
-| Architecture Pattern | Standard Go CLI (cmd/ + internal/) |
-| Build System | Makefile with cross-compilation |
-| Distribution | Single static binary |
-
-## Development History (Speckit)
-
-This project was developed using Speckit with 3 feature iterations:
-
-| Feature | Branch | Description |
-|---------|--------|-------------|
-| 001-claude-log-viewer | Initial | Core TUI implementation with project browser, conversation list, log viewer |
-| 002-cclv-fixes-enhancements | Fixes | Plain text output mode, navigation bug fix, hyphen path handling |
-| 003-ui-metadata-improvements | Current | Version command, UI decoration, token usage display, lazy loading |
+| Project Type | CLI/TUI |
+| Architecture Pattern | `cmd/` entry point with `internal/` packages |
+| Provider Model | Shared `internal/agent` interfaces with provider implementations |
+| Build System | Makefile plus GitHub Actions |
+| Distribution | Single binary release archives |
 
 ## Quick Start
 
@@ -61,11 +68,11 @@ make build
 # Run interactive mode
 cclv
 
-# View specific file
+# View a specific file
 cclv path/to/conversation.jsonl
 
-# Pipeline mode
-cat conversation.jsonl | cclv
+# Force Codex parsing
+cclv --agent=codex path/to/rollout.jsonl
 
 # Plain text output
 cclv --plain conversation.jsonl
@@ -73,10 +80,11 @@ cclv --plain conversation.jsonl
 
 ## Documentation Index
 
-- [Architecture](./architecture.md) - Detailed architecture documentation
+- [Architecture](./architecture.md) - Current architecture and data flow
 - [Source Tree Analysis](./source-tree-analysis.md) - Annotated directory structure
 - [Development Guide](./development-guide.md) - Setup, build, and testing instructions
-- [Lessons Learned](./lessons-learned.md) - Technical insights and solutions
+- [Known Issues](./known-issues.md) - Operational caveats
+- [Lessons Learned](./lessons-learned.md) - Technical notes and solutions
 
 ## Links
 

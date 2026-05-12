@@ -1,28 +1,29 @@
 # cclv - Claude Code Log Viewer
 
-A terminal UI for browsing and viewing Claude Code conversation logs.
+A terminal UI for browsing Claude Code, Codex, and OpenCode coding-agent sessions.
 
-![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
+![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 [![Release](https://img.shields.io/github/v/release/JeiKeiLim/claude-code-log-viewer-cli)](https://github.com/JeiKeiLim/claude-code-log-viewer-cli/releases/latest)
 
 ![cclv demo](docs/res/demo.gif)
 
-Browse your Claude Code projects, select a conversation, and view the full message history with collapsible thinking sections and tool call details — all from your terminal.
+Browse your coding-agent projects, select a session, and view the full message history with collapsible thinking sections and tool call details - all from your terminal.
 
 ## Features
 
-- **Interactive Project Browser** - Navigate all your Claude Code projects from `~/.claude/projects/`
+- **Multi-Agent Project Browser** - Navigate Claude Code, Codex, and OpenCode sessions from one TUI
 - **Conversation Timeline** - Browse conversations sorted by most recent
 - **Log Viewer** - View messages with markdown rendering and proper text wrapping
 - **Dashboard Mode** - Monitor up to 9 projects simultaneously in a grid layout
-- **Watch Mode** - Real-time updates as conversations grow (`-w` flag)
+- **Active Session Dashboard** - Auto-detect live Claude Code sessions for a selected project
+- **Watch Mode** - Real-time updates as file-backed conversations grow (`-w` flag)
 - **Usage Limit Monitor** - View Claude Code API usage limits in TUI status bar or via `--usage` flag
 - **Developer Power Tools** - Line numbers, raw JSONL mode, vim-style `:N` navigation
 - **Token Statistics** - View token counts per message and conversation totals
 - **Vim-style Navigation** - `j/k`, `gg/G`, `/search`, and more
 - **CJK Support** - Proper display of Korean, Japanese, and Chinese characters
-- **Pipeline Mode** - Pipe JSONL logs directly: `cat file.jsonl | cclv`
+- **Pipeline Mode** - Pipe Claude Code or Codex JSONL logs directly: `cat file.jsonl | cclv`
 - **Plain Text Output** - Export logs without TUI for scripting
 
 ## Installation
@@ -77,27 +78,40 @@ mv cclv ~/.local/bin/
 
 ### Interactive Mode
 
-Simply run `cclv` to browse all your Claude Code projects:
+Simply run `cclv` to browse available agent data:
 
 ```bash
 cclv
 ```
 
 This opens an interactive browser where you can:
-1. Select a project from the list
-2. Choose a conversation session
-3. View the full conversation log
+1. Select an available agent provider when more than one has sessions
+2. Select a project from the list
+3. Open the active-session dashboard or conversation list
+4. View the full conversation log
+
+### Agent Support
+
+| Agent | Interactive Browse | File/stdin Pipeline | Default Storage |
+|-------|--------------------|---------------------|-----------------|
+| Claude Code | Yes | Yes | `~/.claude/projects/` |
+| Codex | Yes | Yes | `~/.codex/sessions/` |
+| OpenCode | Yes | No | `~/.local/share/opencode/opencode.db` |
+
+Use `--agent=claude-code` or `--agent=codex` to force a file/stdin parser. Use `--agent=opencode` only with interactive mode, because OpenCode stores sessions in SQLite rather than append-only JSONL files.
 
 ### View a Specific File
 
 ```bash
 cclv path/to/conversation.jsonl
+cclv --agent=codex path/to/rollout.jsonl
 ```
 
 ### Pipeline Mode
 
 ```bash
 cat conversation.jsonl | cclv
+cat rollout.jsonl | cclv --agent=codex
 ```
 
 ### Plain Text Output
@@ -123,6 +137,8 @@ cclv -w conversation.jsonl
 
 # From interactive mode, press 'w' on a conversation to watch it
 ```
+
+`--watch` works with file-backed Claude Code and Codex sessions. OpenCode live updates are handled through the interactive OpenCode provider.
 
 ### Dashboard Mode
 
@@ -176,6 +192,8 @@ cclv -u
 
 This displays your daily token usage, reset time, and usage percentage. Useful for monitoring limits in scripts or checking before starting long sessions.
 
+`--usage` calls Anthropic's OAuth usage API and caches responses in `~/.cache/cclv/usage.json` to reduce rate-limit pressure.
+
 ### Streaming Plain Mode
 
 For integration with external tools, combine watch and plain modes:
@@ -189,6 +207,22 @@ cclv --watch --plain --color=always conversation.jsonl
 ```
 
 New entries appear formatted in real-time. The process continues until interrupted with Ctrl+C.
+
+### Additional Options
+
+```bash
+# Hide verbose blocks
+cclv --hide-thoughts --hide-tools conversation.jsonl
+
+# Set render width for plain/pipeline output
+cclv --width=100 conversation.jsonl
+
+# Follow the newest conversation while watching
+cclv -w -L conversation.jsonl
+
+# Skip the active-session dashboard and go straight to conversations
+cclv --no-multi-session
+```
 
 ## Keyboard Shortcuts
 
@@ -267,16 +301,16 @@ The status bar shows conversation totals with a `~` prefix when any tokens are e
 
 ## How It Works
 
-Claude Code stores conversation logs in `~/.claude/projects/` as JSONL files. Each project directory is named using an encoded path format. `cclv` automatically:
+Each provider stores sessions differently. `cclv` automatically:
 
-1. Scans the projects directory
-2. Decodes project paths (handles hyphens, underscores, and special characters)
-3. Parses JSONL conversation logs
-4. Renders them in a TUI
+1. Scans available provider storage
+2. Groups sessions by project directory
+3. Parses Claude Code and Codex JSONL files or reads OpenCode sessions from SQLite
+4. Renders messages in the TUI or as plain text
 
 ## Requirements
 
-- Go 1.21 or later
+- Go 1.25 or later
 - Terminal with ANSI color support
 
 ## License

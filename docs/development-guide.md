@@ -1,368 +1,201 @@
 # Development Guide: cclv
 
-**Generated**: 2026-01-13 | **Scan Level**: Exhaustive
+**Updated**: 2026-05-13
 
 ## Prerequisites
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Go | 1.21+ | Required (project uses 1.24.3) |
-| Make | Any | For build automation |
-| Git | Any | For version control |
-| golangci-lint | Latest | Optional, for linting |
-| air | Latest | Optional, for hot reload |
+| Go | 1.25+ | `go.mod` currently declares `go 1.25.0` |
+| Make | Any | Primary build/test interface |
+| Git | Any | Version metadata uses git tags and commit hashes |
+| golangci-lint | Latest | Optional locally; CI uses the GitHub Action |
+| air | Latest | Optional, for `make dev` hot reload |
 
 ## Quick Start
 
 ```bash
-# Clone repository
 git clone https://github.com/JeiKeiLim/claude-code-log-viewer-cli.git
 cd claude-code-log-viewer-cli
 
-# Install dependencies
 make deps
-
-# Build
 make build
-
-# Run
 ./cclv
 ```
 
-## Project Setup
+## Runtime Data Sources
 
-### Environment Setup
+The app reads agent data from local provider storage:
 
-No special environment variables required. The application reads from:
-- `~/.claude/projects/` - Claude Code project storage (read-only)
+| Provider | Location |
+|----------|----------|
+| Claude Code | `~/.claude/projects/`, `~/.claude/sessions/` |
+| Codex | `~/.codex/sessions/` |
+| OpenCode | `~/.local/share/opencode/opencode.db` |
 
-### Install Dependencies
-
-```bash
-# Download Go modules
-make deps
-# or
-go mod download
-
-# Verify dependencies
-make verify
-# or
-go mod verify
-
-# Tidy go.mod
-make tidy
-# or
-go mod tidy
-```
+Usage monitoring also reads Claude Code credentials and calls Anthropic's OAuth usage API. Responses are cached at `~/.cache/cclv/usage.json`.
 
 ## Build Commands
 
 ### Development Build
 
 ```bash
-# Build for current platform
 make build
-
-# Output: ./cclv
+./cclv --version
 ```
 
-### Production Build
+`make build` injects version metadata through Go `-ldflags` using:
+
+- `VERSION` from `git describe --tags --always --dirty`
+- `COMMIT` from `git rev-parse --short HEAD`
+- `BUILD_DATE` from UTC time
+
+You can override those values:
 
 ```bash
-# Build with optimizations (strips debug info)
-make build
-
-# Build flags applied: -ldflags "-s -w"
+make build VERSION=v0.7.0 COMMIT=local BUILD_DATE=2026-05-13T00:00:00Z
 ```
 
 ### Cross-Platform Builds
 
 ```bash
-# Build for all platforms
 make build-all
-# Outputs in dist/:
-#   cclv-darwin-amd64
-#   cclv-darwin-arm64
-#   cclv-linux-amd64
-#   cclv-linux-arm64
-
-# macOS only
 make build-darwin
-
-# Linux only
 make build-linux
 ```
 
-### Release Build
+Cross-platform binaries are written to `dist/` as:
+
+```
+cclv-darwin-amd64
+cclv-darwin-arm64
+cclv-linux-amd64
+cclv-linux-arm64
+```
+
+### Release Artifacts
 
 ```bash
-# Create release artifacts with tar.gz
 make release
-# Outputs: dist/cclv-{platform}.tar.gz
+```
+
+Local release archives use the same underscore style as GitHub releases:
+
+```
+dist/cclv_darwin_amd64.tar.gz
+dist/cclv_darwin_arm64.tar.gz
+dist/cclv_linux_amd64.tar.gz
+dist/cclv_linux_arm64.tar.gz
 ```
 
 ## Run Commands
 
 ```bash
-# Build and run
 make run
-
-# Run with specific file
 make run-file FILE=path/to/conversation.jsonl
-
-# Development mode with hot reload (requires air)
 make dev
 ```
 
-## Testing
-
-### Run Tests
+Useful manual checks:
 
 ```bash
-# Run all tests with coverage
-make test
-# Output: coverage.out
+./cclv --help
+./cclv --version
+./cclv --plain testdata/fixtures/claude-code/sample.jsonl
+./cclv --agent=codex --plain testdata/fixtures/codex/simple-session.jsonl
+./cclv --agent=opencode
+```
 
-# Run short tests only
+`--agent=opencode` is interactive-only. OpenCode sessions are loaded from SQLite and cannot be read from file/stdin pipeline mode.
+
+## Testing
+
+```bash
+# Full test suite with race detector and coverage
+make test
+
+# Short tests only
 make test-short
 
-# Generate HTML coverage report
+# HTML coverage report
 make coverage
-# Output: coverage.html
+
+# Stress tests
+make test-stress
 ```
 
-### Test Structure
-
-Tests are located alongside source files or in a `tests/` directory:
-
-```
-internal/
-├── parser/
-│   ├── entry.go
-│   └── entry_test.go
-├── scanner/
-│   ├── projects.go
-│   └── projects_test.go
-└── ...
-```
+Tests live alongside source files and under `tests/acceptance/`.
 
 ## Code Quality
 
-### Formatting
-
 ```bash
-# Format code
 make fmt
-
-# Check formatting (CI)
 make fmt-check
-```
-
-### Linting
-
-```bash
-# Run linter (golangci-lint or go vet)
-make lint
-
-# Run go vet only
 make vet
-```
-
-### Quick Validation
-
-```bash
-# Fast validation (fmt-check + vet)
+make lint
 make check
-```
-
-### CI Pipeline
-
-```bash
-# Full CI checks: deps + fmt-check + vet + test + build
 make ci
 ```
 
-## Installation
+`make ci` runs dependency download, formatting check, vet, lint, tests, and build. It mirrors the intended local validation path, while GitHub Actions splits lint/test/build into separate jobs.
 
-### Install to GOPATH/bin
+## Project Structure
 
-```bash
-make install
-# or
-go install ./cmd/cclv
 ```
-
-### Install to /usr/local/bin
-
-```bash
-# Requires sudo
-make install-global
-```
-
-### Uninstall
-
-```bash
-make uninstall        # From GOPATH/bin
-make uninstall-global # From /usr/local/bin (requires sudo)
-```
-
-## Version Management
-
-Version information is injected at build time via ldflags:
-
-```bash
-# View current version info
-make version
-
-# Build with version (example)
-go build -ldflags "-X github.com/JeiKeiLim/claude-code-log-viewer-cli/internal/version.Version=v1.0.0 -X ...Version.Commit=$(git rev-parse --short HEAD)" ./cmd/cclv
-```
-
-## Development Workflow
-
-### 1. Feature Development
-
-```bash
-# Create feature branch
-git checkout -b feature/my-feature
-
-# Make changes...
-
-# Format and lint
-make check
-
-# Run tests
-make test
-
-# Build and test manually
-make build
-./cclv
-```
-
-### 2. Speckit Workflow
-
-This project uses Speckit for feature planning:
-
-```bash
-# Feature specs are in specs/{feature-name}/
-# Each spec contains:
-#   - spec.md       # Feature specification
-#   - plan.md       # Implementation plan
-#   - research.md   # Research notes
-#   - data-model.md # Data model design
-#   - tasks.md      # Implementation tasks
-```
-
-### 3. Before Committing
-
-```bash
-# Full validation
-make ci
-
-# Or quick check
-make check && make test
-```
-
-## Debugging
-
-### Debug Output Height Issues
-
-If you encounter screen clipping issues with the list component:
-
-```go
-// Add debug output to View()
-listLines := strings.Count(listView, "\n") + 1
-footer := fmt.Sprintf("h:%d list:%d", m.height, listLines)
-```
-
-See [lessons-learned.md](./lessons-learned.md) for the Bubbletea list height issue solution.
-
-### Debug JSONL Parsing
-
-```go
-// Enable parse error tracking
-result := parser.ParseJSONL(reader)
-fmt.Printf("Entries: %d, Errors: %d\n", len(result.Entries), result.ParseErrors)
+cmd/cclv/                 CLI entry point
+internal/agent/           Provider interfaces and normalized types
+internal/providers/       Claude Code, Codex, OpenCode providers
+internal/parser/          Claude Code JSONL parser
+internal/scanner/         Claude Code project discovery
+internal/session/         Active Claude Code session detection
+internal/tui/             Bubble Tea UI
+internal/token/           Token estimation
+internal/usage/           Claude usage API integration
+internal/version/         Build metadata
+internal/watcher/         File/project watchers
 ```
 
 ## Common Tasks
 
-### Add a New TUI View
+### Add or Change a CLI Flag
 
-1. Create `internal/tui/newview.go`
-2. Implement `tea.Model` interface: `Init()`, `Update()`, `View()`
-3. Add view state to `viewState` enum in `app.go`
-4. Add routing in `AppModel.Update()` and `AppModel.View()`
+1. Add the flag in `cmd/cclv/main.go`.
+2. Update `printHelp()`.
+3. Decide where it belongs in mode validation.
+4. Add focused tests in `cmd/cclv/main_test.go`.
+5. Update README if user-facing.
 
-### Add a New Command Flag
+### Add a Provider
 
-1. Add flag in `cmd/cclv/main.go`:
-   ```go
-   myFlag := flag.Bool("myflag", false, "Description")
-   ```
-2. Handle before mode detection if it should exit early
-3. Pass to appropriate mode function if needed
+1. Implement `internal/agent.AgentProvider`.
+2. Add discovery, session summary, and parsing tests.
+3. Register it in `interactiveProviders()`.
+4. Decide whether file/stdin pipeline mode is supported.
+5. Document provider capabilities in README and docs.
 
-### Add a New Type
+### Add a TUI View
 
-1. Add to appropriate file in `internal/types/`
-2. Add raw JSON struct if parsing from JSONL
-3. Update parser in `internal/parser/entry.go`
+1. Create the model under `internal/tui/`.
+2. Implement `Init()`, `Update()`, and `View()`.
+3. Add routing in `AppModel`.
+4. Include resize, back-navigation, and cleanup behavior.
+5. Add tests for view transitions and key handling.
 
-## Performance Tips
+## Version Management
 
-### Large File Handling
+Version strings come from `internal/version` and are injected at build time.
 
-The application uses lazy loading for large files:
-- Conversations: Load metadata for first 20, then on-demand
-- Messages: Render first 40, load more on scroll
-
-Thresholds can be adjusted in `internal/tui/styles.go`:
-```go
-func DefaultLazyLoadConfig() LazyLoadConfig {
-    return LazyLoadConfig{
-        BatchSize:             20,
-        ConversationThreshold: 50,
-        MessageThreshold:      100,
-    }
-}
+```bash
+make version
+make build
+./cclv --version
 ```
 
-### Memory Optimization
+Release workflows inject the same fields in GitHub Actions. When tagging releases, use annotated tags and summarize the full commit range since the previous tag.
 
-- Use `ParseJSONLStream()` for very large files
-- Avoid storing full content in memory
-- Let viewport handle scrolling (it virtualizes content)
+## Known Operational Caveats
 
-## Makefile Reference
-
-| Target | Description |
-|--------|-------------|
-| `all` | Clean, lint, test, build |
-| `build` | Build for current platform |
-| `build-all` | Build for all platforms |
-| `build-darwin` | Build for macOS |
-| `build-linux` | Build for Linux |
-| `test` | Run tests with coverage |
-| `test-short` | Run short tests |
-| `coverage` | Generate HTML coverage report |
-| `fmt` | Format code |
-| `fmt-check` | Check formatting |
-| `vet` | Run go vet |
-| `lint` | Run linter |
-| `check` | Quick validation |
-| `ci` | Full CI checks |
-| `deps` | Download dependencies |
-| `tidy` | Tidy go.mod |
-| `verify` | Verify dependencies |
-| `install` | Install to GOPATH/bin |
-| `install-global` | Install to /usr/local/bin |
-| `uninstall` | Uninstall from GOPATH/bin |
-| `clean` | Clean build artifacts |
-| `run` | Build and run |
-| `run-file` | Run with FILE= argument |
-| `dev` | Development mode with hot reload |
-| `size` | Show binary size |
-| `version` | Show version info |
-| `release` | Create release artifacts |
-| `help` | Show help |
+- Usage monitoring depends on an internal/undocumented Anthropic OAuth endpoint and may be rate limited.
+- OpenCode is SQLite-backed and does not support file/stdin parsing.
+- Active session detection is Claude Code-specific.
+- Large TUI views use lazy loading and view caching; changes to scrolling or rendering should include regression tests.

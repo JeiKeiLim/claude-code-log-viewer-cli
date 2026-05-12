@@ -2,66 +2,86 @@
   "workflow_version": "1.2.0",
   "timestamps": {
     "started": "2026-01-13T15:00:00Z",
-    "last_updated": "2026-01-30T00:00:00Z"
+    "last_updated": "2026-05-13T00:00:00Z"
   },
-  "mode": "updated_scan",
-  "scan_level": "exhaustive",
+  "mode": "manual_refresh",
+  "scan_level": "source_and_docs_consistency",
   "project_root": "/Users/limjk/GitHub/JeiKeiLim/claude-code-log-viewer-cli",
   "output_folder": "/Users/limjk/GitHub/JeiKeiLim/claude-code-log-viewer-cli/docs",
   "completed_steps": [
-    {"step": "step_0.5", "status": "completed", "timestamp": "2026-01-13T15:00:00Z", "summary": "Loaded documentation requirements for 12 project types"},
-    {"step": "step_0.6", "status": "completed", "timestamp": "2026-01-13T15:00:00Z", "summary": "Set workflow_mode=initial_scan, scan_level=exhaustive"},
-    {"step": "step_1", "status": "completed", "timestamp": "2026-01-13T15:00:00Z", "summary": "Classified as monolith CLI with 1 part"},
-    {"step": "step_2", "status": "completed", "timestamp": "2026-01-13T15:00:00Z", "summary": "Found 4 existing docs + 3 Speckit specs"},
-    {"step": "step_3", "status": "completed", "timestamp": "2026-01-13T15:00:00Z", "summary": "Tech stack: Go 1.24.3 + Charm Stack"},
-    {"step": "step_4", "status": "completed", "timestamp": "2026-01-13T15:00:00Z", "summary": "CLI project - no API/data model scans needed"},
-    {"step": "step_5", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Source tree documented"},
-    {"step": "step_6", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Dev/deployment guides written"},
-    {"step": "step_8", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Architecture doc written"},
-    {"step": "step_9", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Supporting docs written"},
-    {"step": "step_10", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Master index generated"},
-    {"step": "step_12", "status": "completed", "timestamp": "2026-01-13T15:05:00Z", "summary": "Workflow complete"},
-    {"step": "update", "status": "completed", "timestamp": "2026-01-30T00:00:00Z", "summary": "Updated metrics and architecture for Epics 9-11"}
+    {
+      "step": "consistency_refresh",
+      "status": "completed",
+      "timestamp": "2026-05-13T00:00:00Z",
+      "summary": "Updated documentation to reflect Go 1.25, provider-backed architecture, usage API networking, and current source metrics"
+    }
   ],
   "current_step": "completed",
   "project_types": [
-    {"part_id": "main", "project_type_id": "cli", "display_name": "CLI Application"}
+    {
+      "part_id": "main",
+      "project_type_id": "cli",
+      "display_name": "CLI/TUI Application"
+    }
   ],
   "findings": {
     "project_classification": {
       "repository_type": "monolith",
       "parts_count": 1,
-      "primary_tech": "Go + Bubbletea"
+      "primary_tech": "Go + Bubble Tea"
     },
     "technology_stack": {
-      "language": "Go 1.24.3",
-      "framework": "Charm Stack (Bubbletea, Lipgloss, Bubbles)",
-      "testing": "Go standard testing",
-      "build": "Makefile with cross-compilation"
+      "language": "Go 1.25",
+      "framework": "Charm Stack (Bubble Tea, Lip Gloss, Bubbles, Glamour)",
+      "testing": "Go standard testing with race/coverage targets",
+      "build": "Makefile with version injection and cross-compilation"
     },
     "source_files": {
-      "go_files": 29,
-      "packages": ["cmd/cclv", "internal/parser", "internal/scanner", "internal/tui", "internal/types", "internal/token", "internal/usage", "internal/version", "internal/watcher"]
+      "go_files_total": 108,
+      "go_files_non_test": 56,
+      "packages_count": 15,
+      "packages": [
+        "cmd/cclv",
+        "internal/agent",
+        "internal/parser",
+        "internal/providers/claudecode",
+        "internal/providers/codex",
+        "internal/providers/opencode",
+        "internal/scanner",
+        "internal/session",
+        "internal/token",
+        "internal/tui",
+        "internal/types",
+        "internal/usage",
+        "internal/version",
+        "internal/watcher",
+        "tests/acceptance"
+      ]
     },
+    "providers": [
+      {
+        "name": "Claude Code",
+        "interactive": true,
+        "pipeline": true,
+        "storage": "~/.claude/projects/"
+      },
+      {
+        "name": "Codex",
+        "interactive": true,
+        "pipeline": true,
+        "storage": "~/.codex/sessions/"
+      },
+      {
+        "name": "OpenCode",
+        "interactive": true,
+        "pipeline": false,
+        "storage": "~/.local/share/opencode/opencode.db"
+      }
+    ],
     "speckit_specs": [
       "001-claude-log-viewer",
       "002-cclv-fixes-enhancements",
       "003-ui-metadata-improvements"
-    ],
-    "completed_epics": [
-      "Epic 1: Visual Polish",
-      "Epic 1.5: Visual Consistency",
-      "Epic 1.6: CLI Enhancements",
-      "Epic 2: Real-time File Watching",
-      "Epic 3: Markdown Rendering",
-      "Epic 4: Developer Power Tools",
-      "Epic 5: Dashboard Mode",
-      "Epic 6: Statistics View",
-      "Epic 7: Usage Limit Monitoring",
-      "Epic 8: Plain Mode & Output Enhancements",
-      "Epic 9: Dashboard File Descriptor Leak Fix",
-      "Epic 10: Dashboard Reliability",
-      "Epic 11: Live Updates & Auto-Refresh"
     ]
   },
   "outputs_generated": [
@@ -72,5 +92,5 @@
     "source-tree-analysis.md",
     "development-guide.md"
   ],
-  "resume_instructions": "Documentation is up to date as of 2026-01-30"
+  "resume_instructions": "Documentation refreshed for current source state as of 2026-05-13"
 }

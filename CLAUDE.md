@@ -9,12 +9,13 @@ For detailed guidance, see `_bmad-output/project-context.md` and `docs/lessons-l
 
 | Technology | Version | Purpose |
 |------------|---------|---------|
-| Go | 1.24.3+ | Language (minimum 1.21 for generics) |
+| Go | 1.25+ | Language version declared in `go.mod` |
 | Bubbletea | v1.3.10 | TUI Framework (Elm Architecture) |
-| Lipgloss | v1.1.1 | Terminal styling |
+| Lipgloss | v1.1.1 pre-release | Terminal styling |
 | Bubbles | v0.21.0 | UI components (list, viewport, textinput) |
 | Glamour | - | Markdown rendering |
 | fsnotify | v1.9.0 | File watching for live mode |
+| modernc.org/sqlite | v1.50.0 | OpenCode SQLite provider |
 
 **Key:** Charm stack (Bubbletea, Lipgloss, Bubbles) must be updated together.
 
@@ -25,8 +26,11 @@ For detailed guidance, see `_bmad-output/project-context.md` and `docs/lessons-l
 ```
 cmd/cclv/              # CLI entry point only (flag parsing, TTY detection, mode routing)
 internal/
+  ├── agent/           # Provider interfaces and normalized agent/session types
   ├── parser/          # JSONL parsing logic
+  ├── providers/       # Claude Code, Codex, and OpenCode providers
   ├── scanner/         # Project/conversation discovery, birthtime detection
+  ├── session/         # Active Claude Code session detection
   ├── tui/             # Bubbletea components (app, project, conversation, viewer, dashboard)
   ├── types/           # Core data structures (LogEntry, Conversation, Project)
   ├── token/           # Token usage calculations
@@ -61,7 +65,8 @@ Version is injected at build time via `-ldflags`. Never hardcode version strings
 ### Package Organization
 - `cmd/cclv/`: CLI entry point, TTY detection, mode routing ONLY
 - `internal/`: All business logic (Go visibility enforced, never export)
-- No circular imports: `cmd → tui → parser/scanner → types`
+- Provider-specific logic belongs under `internal/providers/{provider}/`
+- No circular imports: `cmd → tui/providers → parser/scanner/session → types/agent`
 
 ### Naming Conventions
 
@@ -141,7 +146,7 @@ func NewViewerModelWithBack(...) ViewerModel {
 1. **NO EMOJI IN UI** - Text icons only (`[U]`, `[A]`, `[T]`, `[>]`) per FR-017
 2. **TRUNCATE LIST OUTPUT** - `list.View()` lies about height, always truncate
 3. **USE MAKEFILE** - Never raw `go build/test`, version injection required
-4. **NO NEW DEPENDENCIES** - Charm stack only (constitution approved)
+4. **NO NEW DEPENDENCIES WITHOUT REVIEW** - Prefer existing provider/helper packages
 5. **CLI SMOKE TEST** - For CLI flag changes, test against real environment
 6. **MAKE CI MUST PASS** - Code is not complete until `make ci` passes successfully
 7. **Birthtime for Latest** - Use `CreationTime` (not `LastModified`) for "latest conversation"
@@ -154,11 +159,16 @@ func NewViewerModelWithBack(...) ViewerModel {
 Mode detection order in `cmd/cclv/main.go`:
 
 1. `--version` flag? → print and exit
-2. `--plain` flag? → Plain text mode
-3. `--tui` flag? → Force TUI mode
-4. stdin is TTY + no args? → Interactive mode (dashboard)
-5. stdout is TTY? → Pipeline TUI mode
-6. else → Pipeline plain text mode
+2. `--usage` flag? → fetch usage limits and exit
+3. validate `--watch`, `--follow-latest`, and provider/file mode compatibility
+4. `--watch --plain`? → Streaming plain mode
+5. `--plain` flag? → Plain text mode
+6. `--tui` flag? → Force TUI mode
+7. stdin is TTY + no args? → Interactive provider browser
+8. stdout is TTY? → Pipeline TUI mode
+9. else → Pipeline plain text mode
+
+OpenCode is SQLite-backed. `--agent=opencode` is supported for interactive mode only, not file/stdin pipeline mode.
 
 ---
 
@@ -189,9 +199,8 @@ Mode detection order in `cmd/cclv/main.go`:
 
 ```
 *_test.go                # Unit tests alongside source
-tests/integration/       # Cross-package tests
-tests/e2e/               # CLI behavior tests
-tests/testdata/fixtures/ # Sample input files
+tests/acceptance/        # Cross-package acceptance tests
+testdata/fixtures/       # Sample input files
 ```
 
 ### Test Commands

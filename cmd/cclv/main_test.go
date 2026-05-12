@@ -532,6 +532,64 @@ func TestParseAgentFlag(t *testing.T) {
 	}
 }
 
+func TestValidateAgentPipelineSupport(t *testing.T) {
+	tests := []struct {
+		name     string
+		agent    agent.AgentType
+		args     []string
+		stdinTTY bool
+		wantErr  bool
+	}{
+		{
+			name:     "claude-code file mode allowed",
+			agent:    agent.AgentClaudeCode,
+			args:     []string{"conversation.jsonl"},
+			stdinTTY: true,
+			wantErr:  false,
+		},
+		{
+			name:     "codex stdin mode allowed",
+			agent:    agent.AgentCodex,
+			args:     nil,
+			stdinTTY: false,
+			wantErr:  false,
+		},
+		{
+			name:     "opencode interactive mode allowed",
+			agent:    agent.AgentOpenCode,
+			args:     nil,
+			stdinTTY: true,
+			wantErr:  false,
+		},
+		{
+			name:     "opencode file mode rejected",
+			agent:    agent.AgentOpenCode,
+			args:     []string{"session.jsonl"},
+			stdinTTY: true,
+			wantErr:  true,
+		},
+		{
+			name:     "opencode stdin mode rejected",
+			agent:    agent.AgentOpenCode,
+			args:     nil,
+			stdinTTY: false,
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAgentPipelineSupport(tt.agent, tt.args, tt.stdinTTY)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateAgentPipelineSupport() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "interactive mode") {
+				t.Fatalf("validateAgentPipelineSupport() error = %q, want mention interactive mode", err.Error())
+			}
+		})
+	}
+}
+
 func TestInteractiveProvidersDefaultIncludesAllAgents(t *testing.T) {
 	providers := interactiveProviders("")
 

@@ -43,7 +43,7 @@ jobs:
 
       - name: Build
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION=${GITHUB_REF#refs/tags/}
           COMMIT=$(git rev-parse --short HEAD)
           DATE=$(date -u +%Y-%m-%d)
 
